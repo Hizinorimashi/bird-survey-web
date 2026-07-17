@@ -123,6 +123,21 @@
   .recaudio{width:100%; margin-top:8px; height:38px;}
   .recdot{display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--danger); margin-right:6px; animation:recblink 1s infinite;}
   @keyframes recblink{0%,100%{opacity:1;} 50%{opacity:.2;}}
+  /* 写真・動画 */
+  .mediagrid{margin-top:10px; display:grid; grid-template-columns:repeat(3,1fr); gap:8px;}
+  .mediaitem{position:relative;}
+  .mediathumb{position:relative; width:100%; aspect-ratio:1/1; background:var(--panel2);
+    border:1px solid var(--line); border-radius:10px; overflow:hidden;}
+  .mediael{width:100%; height:100%; object-fit:cover; display:block; background:#000;}
+  .mediadel{position:absolute; top:4px; right:4px; width:26px; height:26px; border-radius:50%;
+    background:rgba(0,0,0,.6); color:#fff; border:1px solid rgba(255,255,255,.5); font-size:16px;
+    line-height:1; cursor:pointer; z-index:2;}
+  .mediacap{margin-top:3px; text-align:center;}
+
+  /* 選択削除 */
+  .selcard.selected{border-color:var(--accent); background:var(--panel2);}
+  .selcb{font-size:22px; line-height:1; color:var(--accent); flex:0 0 auto;}
+  button:disabled,.btn:disabled{opacity:.45; pointer-events:none;}
 
   .empty{text-align:center; color:var(--muted); padding:40px 10px;}
   .divider{height:1px; background:var(--line); margin:14px 0;}
@@ -153,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v6（2026-07-17 録音メモ・現在地自動表示）';
+const APP_VERSION = 'v7（2026-07-17 写真・動画／検索／選択削除・ごみ箱）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -205,40 +220,50 @@ const DB = {
     rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; this.save(this.key.hr,a); },
   softDelete(k,u){ const a=this.load(k); const i=a.findIndex(x=>x.uuid===u);
     if(i>=0){ a[i].deleted_at=nowISO(); this.save(k,a);} },
+  restore(k,u){ const a=this.load(k); const i=a.findIndex(x=>x.uuid===u);
+    if(i>=0){ delete a[i].deleted_at; this.save(k,a);} },
+  hardDelete(k,u){ this.save(k, this.load(k).filter(x=>x.uuid!==u)); },
+  deleted(k){ return this.load(k).filter(x=>x.deleted_at); },
   recentSpecies(){ return this.load(this.key.recent); },
   pushRecent(name){ if(!name) return; let a=this.load(this.key.recent).filter(x=>x!==name);
     a.unshift(name); a=a.slice(0,12); this.save(this.key.recent,a); },
 };
 
-/* ---------- 録音の保存（IndexedDB：音声はサイズが大きいためlocalStorageと分離） ---------- */
-const AudioDB = {
-  _db:null,
-  open(){
-    if(this._db) return Promise.resolve(this._db);
-    return new Promise((res,rej)=>{
-      if(!window.indexedDB){ rej(new Error('no-indexeddb')); return; }
-      const r=indexedDB.open('bird_survey_audio',1);
-      r.onupgradeneeded=()=>{ const db=r.result;
-        if(!db.objectStoreNames.contains('audio')) db.createObjectStore('audio',{keyPath:'id'}); };
-      r.onsuccess=()=>{ this._db=r.result; res(this._db); };
-      r.onerror=()=>rej(r.error);
-    });
-  },
-  _do(mode, fn){ return this.open().then(db=>new Promise((res,rej)=>{
-    const st=db.transaction('audio',mode).objectStore('audio'); const q=fn(st);
-    q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error);
-  })); },
-  put(rec){ return this._do('readwrite', st=>st.put(rec)); },
-  get(id){ return this._do('readonly', st=>st.get(id)); },
-  del(id){ return this._do('readwrite', st=>st.delete(id)); },
-  all(){ return this._do('readonly', st=>st.getAll()).then(r=>r||[]); },
-  // どの観察にも参照されていない録音（保存されなかった・削除済みの残骸）を掃除
-  gc(){
-    const valid=new Set();
-    DB.load(DB.key.ob).forEach(o=>(o.audio||[]).forEach(a=>a&&a.id&&valid.add(a.id)));
-    return this.all().then(list=>Promise.all(list.filter(a=>!valid.has(a.id)).map(a=>this.del(a.id))));
-  }
-};
+/* ---------- 録音・写真・動画の保存（IndexedDB：サイズが大きいためlocalStorageと分離） ---------- */
+/* ストア 'audio' = 録音 / 'media' = 写真・動画 */
+let _mediaDbPromise=null;
+function openMediaDB(){
+  if(_mediaDbPromise) return _mediaDbPromise;
+  _mediaDbPromise=new Promise((res,rej)=>{
+    if(!window.indexedDB){ rej(new Error('no-indexeddb')); return; }
+    const r=indexedDB.open('bird_survey_audio',2);
+    r.onupgradeneeded=()=>{ const db=r.result;
+      if(!db.objectStoreNames.contains('audio')) db.createObjectStore('audio',{keyPath:'id'});
+      if(!db.objectStoreNames.contains('media')) db.createObjectStore('media',{keyPath:'id'}); };
+    r.onsuccess=()=>res(r.result);
+    r.onerror=()=>rej(r.error);
+  });
+  return _mediaDbPromise;
+}
+function idbDo(store, mode, fn){ return openMediaDB().then(db=>new Promise((res,rej)=>{
+  const st=db.transaction(store,mode).objectStore(store); const q=fn(st);
+  q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error);
+})); }
+function makeBlobStore(store, refField){
+  return {
+    put(rec){ return idbDo(store,'readwrite', st=>st.put(rec)); },
+    get(id){ return idbDo(store,'readonly', st=>st.get(id)); },
+    del(id){ return idbDo(store,'readwrite', st=>st.delete(id)); },
+    all(){ return idbDo(store,'readonly', st=>st.getAll()).then(r=>r||[]); },
+    // どの観察にも参照されていない残骸（保存されなかった・完全削除済み）を掃除
+    gc(){ const valid=new Set();
+      DB.load(DB.key.ob).forEach(o=>(o[refField]||[]).forEach(a=>a&&a.id&&valid.add(a.id)));
+      return this.all().then(list=>Promise.all(list.filter(a=>!valid.has(a.id)).map(a=>this.del(a.id)))); }
+  };
+}
+const AudioDB = makeBlobStore('audio','audio');   // 観察の o.audio[] が参照
+const PhotoDB = makeBlobStore('media','media');   // 観察の o.media[] が参照
+function mediaGcAll(){ return Promise.all([AudioDB.gc().catch(()=>{}), PhotoDB.gc().catch(()=>{})]); }
 
 /* ---------- 選択肢マスタ（指示書準拠） ---------- */
 const OPT = {
@@ -266,9 +291,9 @@ let currentSurveyUuid = null; // 調査中コンテキスト
 let mapObj = null;
 let mapCurMarker = null, mapCurCircle = null; // 地図上の現在地マーカー・精度円
 
-function nav(name, arg){ STACK.push({name,arg}); render(); }
-function goBack(){ if(STACK.length>1){ STACK.pop(); render(); } }
-function reset(name,arg){ STACK=[{name,arg}]; render(); }
+function nav(name, arg){ SCREENS._sel=null; STACK.push({name,arg}); render(); }
+function goBack(){ if(STACK.length>1){ SCREENS._sel=null; STACK.pop(); render(); } }
+function reset(name,arg){ SCREENS._sel=null; STACK=[{name,arg}]; render(); }
 
 const SCREENS = {}; // name -> function(arg) -> returns {title, sub[], html, onMount}
 
@@ -294,12 +319,14 @@ SCREENS.home = ()=>{
   const active = surveys.filter(s=>s.status==='調査中');
   const others = surveys.filter(s=>s.status!=='調査中');
 
+  const selMode = !!(SCREENS._sel && SCREENS._sel.scope==='home');
   const svCard = s=>{
     const obs = DB.obsOf(s.uuid);
     const spCount = new Set(obs.filter(o=>o.species_name_snapshot).map(o=>o.species_name_snapshot)).size;
     const review = obs.filter(o=>o.needs_review).length;
-    return `<div class="card tap" onclick="nav('survey','${s.uuid}')">
+    const body = `
       <div class="row">
+        ${selMode?`<span class="selcb">${SCREENS._sel.set.has(s.uuid)?'☑':'☐'}</span>`:''}
         <div class="grow">
           <div style="font-weight:700; font-size:17px;">${esc(s.name||'(無題の調査)')}</div>
           <div class="small muted">${fmtDate(s.survey_date)} ・ ${esc(s.location_name||'場所未設定')} ・ ${esc(s.survey_method||'')}</div>
@@ -310,23 +337,40 @@ SCREENS.home = ()=>{
         <span class="c">確認種数 ${spCount}</span>
         <span class="c">観察 ${obs.length}件</span>
         ${review?`<span class="c" style="color:var(--warn)">要確認 ${review}</span>`:''}
-      </div>
-    </div>`;
+      </div>`;
+    return selMode
+      ? `<div class="card tap selcard ${SCREENS._sel.set.has(s.uuid)?'selected':''}" onclick="toggleSel('${s.uuid}',this)">${body}</div>`
+      : `<div class="card tap" onclick="nav('survey','${s.uuid}')">${body}</div>`;
   };
+
+  const selBar = selMode
+    ? `<div class="sp"></div><button class="btn danger big" id="selDelBtn" ${SCREENS._sel.set.size?'':'disabled'} onclick="deleteSelected()">選択した${SCREENS._sel.set.size}件を削除</button>`
+    : '';
+  const listHeader = `<div class="row" style="align-items:center; margin-top:14px;">
+      <h3 class="muted small grow" style="margin:0;">調査一覧</h3>
+      ${surveys.length? (selMode
+        ? `<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="endSelect()">キャンセル</button>`
+        : `<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="startSelect('home')">☑ 選択して削除</button>`):''}
+    </div>`;
 
   return {
     title:'鳥類調査記録',
     html:`
       <button class="btn primary big" onclick="nav('surveyEdit',null)">＋ 新しい調査を作成</button>
       <div class="sp"></div>
+      <button class="btn" onclick="nav('search',null)">🔍 記録を検索</button>
+      <div class="sp"></div>
       ${active.length?`<h3 class="muted small">継続中の調査</h3>${active.map(svCard).join('')}`:''}
-      <h3 class="muted small" style="margin-top:14px;">調査一覧</h3>
-      ${others.length? others.map(svCard).join('') : (active.length?'':'<div class="empty">まだ調査がありません。<br>「新しい調査を作成」から始めましょう。</div>')}
+      ${listHeader}
+      ${(active.length||others.length)? others.map(svCard).join('') : '<div class="empty">まだ調査がありません。<br>「新しい調査を作成」から始めましょう。</div>'}
+      ${selBar}
       <div class="divider"></div>
       <div class="btn-grid">
         <button class="btn" onclick="nav('exportHub',null)">⤓ エクスポート</button>
         <button class="btn" onclick="nav('importHub',null)">⤒ インポート</button>
       </div>
+      <div class="sp"></div>
+      <button class="btn" onclick="nav('trash',null)">🗑 ごみ箱（削除したデータ）</button>
       <div class="sp"></div>
       <div class="note">観察記録の合計個体数は延べ数です。同一個体を重複して数えている可能性があるため、生息個体数とは限りません。</div>
       <div class="sp"></div>
@@ -426,12 +470,38 @@ function saveSurvey(u, editing){
   toast('保存しました');
   reset('home'); nav('survey', u);
 }
-function deleteSurvey(u){
-  if(!confirm('この調査と、ひも付く観察記録を削除します。よろしいですか？')) return;
+// 調査を関連データごとソフト削除（ごみ箱から戻せる）
+function softDeleteSurveyCascade(u){
   DB.softDelete(DB.key.sv,u);
   DB.obsOf(u).forEach(o=>DB.softDelete(DB.key.ob,o.uuid));
   DB.notesOf(u).forEach(n=>DB.softDelete(DB.key.nt,n.uuid));
+  DB.hypOf(u).forEach(h=>DB.softDelete(DB.key.hy,h.uuid));
+}
+function deleteSurvey(u){
+  if(!confirm('この調査と、ひも付く観察記録を削除します。よろしいですか？（あとで「ごみ箱」から戻せます）')) return;
+  softDeleteSurveyCascade(u);
   toast('削除しました'); reset('home');
+}
+
+/* ---------- 選択削除（一覧から複数まとめて削除） ---------- */
+// SCREENS._sel = { scope:'obs'|'home', sv:uuid|null, set:Set<uuid> }
+function startSelect(scope, sv){ SCREENS._sel={ scope, sv:sv||null, set:new Set() }; render(); }
+function endSelect(){ SCREENS._sel=null; render(); }
+function toggleSel(uuid, card){
+  const sel=SCREENS._sel; if(!sel) return;
+  if(sel.set.has(uuid)){ sel.set.delete(uuid); card.classList.remove('selected'); }
+  else { sel.set.add(uuid); card.classList.add('selected'); }
+  const cb=card.querySelector('.selcb'); if(cb) cb.textContent=sel.set.has(uuid)?'☑':'☐';
+  const btn=$('#selDelBtn'); const n=sel.set.size;
+  if(btn){ btn.textContent=`選択した${n}件を削除`; btn.disabled=n===0; }
+}
+function deleteSelected(){
+  const sel=SCREENS._sel; if(!sel||!sel.set.size) return;
+  const n=sel.set.size;
+  if(!confirm(`選択した${n}件を削除しますか？（あとで「ごみ箱」から戻せます）`)) return;
+  if(sel.scope==='home') sel.set.forEach(u=>softDeleteSurveyCascade(u));
+  else sel.set.forEach(u=>DB.softDelete(DB.key.ob,u));
+  toast(`${n}件を削除しました`); SCREENS._sel=null; render();
 }
 
 /* ============================================================
@@ -470,20 +540,33 @@ SCREENS.survey = (u)=>{
       <div class="act" onclick="nav('surveyEnd','${u}')"><span class="ic">⏹</span>調査を終了</div>
     </div>` : '';
 
-  const recent = obs.slice().sort((a,b)=>(b.observed_at||'').localeCompare(a.observed_at||'')).slice(0,20);
-  const obsList = recent.length ? recent.map(o=>`
-    <div class="card tap" onclick="nav('obsEdit', JSON.stringify({sv:'${u}',id:'${o.uuid}'}))">
-      <div class="row">
-        <div class="grow">
-          <div style="font-weight:700;">${esc(o.species_name_snapshot||'（未同定）')}
-            ${o.needs_review?'<span class="badge warn">要確認</span>':''}
-            ${o.identification_status&&o.identification_status!=='確定'?`<span class="badge">${esc(o.identification_status)}</span>`:''}
-          </div>
-          <div class="small muted">${fmtTime(o.observed_at)} ・ ${esc(o.count||1)}個体 ・ ${esc(o.detection_method||'')}${o.habitat?' ・ '+esc(o.habitat):''}</div>
-        </div>
-        <span class="tiny muted">${(o.audio&&o.audio.length)?'🎤':''}${o.latitude?'📍':''}</span>
+  const selMode = !!(SCREENS._sel && SCREENS._sel.scope==='obs' && SCREENS._sel.sv===u);
+  const recent = obs.slice().sort((a,b)=>(b.observed_at||'').localeCompare(a.observed_at||'')).slice(0,50);
+  const obsInner = o=>`
+    <div class="grow">
+      <div style="font-weight:700;">${esc(o.species_name_snapshot||'（未同定）')}
+        ${o.needs_review?'<span class="badge warn">要確認</span>':''}
+        ${o.identification_status&&o.identification_status!=='確定'?`<span class="badge">${esc(o.identification_status)}</span>`:''}
       </div>
-    </div>`).join('') : '<div class="empty small">まだ観察記録がありません。</div>';
+      <div class="small muted">${fmtTime(o.observed_at)} ・ ${esc(o.count||1)}個体 ・ ${esc(o.detection_method||'')}${o.habitat?' ・ '+esc(o.habitat):''}</div>
+    </div>
+    <span class="tiny muted">${(o.audio&&o.audio.length)?'🎤':''}${(o.media&&o.media.length)?'📷':''}${o.latitude?'📍':''}</span>`;
+  const obsCard = o=> selMode
+    ? `<div class="card tap selcard ${SCREENS._sel.set.has(o.uuid)?'selected':''}" onclick="toggleSel('${o.uuid}',this)">
+        <div class="row"><span class="selcb">${SCREENS._sel.set.has(o.uuid)?'☑':'☐'}</span>${obsInner(o)}</div></div>`
+    : `<div class="card tap" onclick="nav('obsEdit', JSON.stringify({sv:'${u}',id:'${o.uuid}'}))">
+        <div class="row">${obsInner(o)}</div></div>`;
+  const obsList = recent.length ? recent.map(obsCard).join('')
+    : '<div class="empty small">まだ観察記録がありません。</div>';
+  const obsHeader = `<div class="row" style="align-items:center;">
+      <h3 class="grow" style="margin:0;">観察記録 <span class="muted small">(${obs.length})</span></h3>
+      ${obs.length? (selMode
+        ? `<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="endSelect()">キャンセル</button>`
+        : `<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="startSelect('obs','${u}')">☑ 選択して削除</button>`):''}
+    </div>`;
+  const selBar = selMode
+    ? `<div class="sp"></div><button class="btn danger big" id="selDelBtn" ${SCREENS._sel.set.size?'':'disabled'} onclick="deleteSelected()">選択した${SCREENS._sel.set.size}件を削除</button>`
+    : '';
 
   const notes = DB.notesOf(u);
 
@@ -501,8 +584,9 @@ SCREENS.survey = (u)=>{
         <button class="btn" onclick="nav('surveyEnd','${u}')">⏹ 終了・振り返り</button>
       </div>`:''}
       <div class="divider"></div>
-      <div class="row"><h3 class="grow">観察記録 <span class="muted small">(${obs.length})</span></h3></div>
+      ${obsHeader}
       ${obsList}
+      ${selBar}
       ${notes.length?`<div class="divider"></div><h3>調査メモ <span class="muted small">(${notes.length})</span></h3>
         ${notes.map(n=>`<div class="card tap" onclick="nav('noteEdit', JSON.stringify({sv:'${u}',id:'${n.uuid}'}))">
           <div class="small"><span class="badge">${esc(n.category||'')}</span> ${fmtTime(n.recorded_at)}</div>
@@ -574,6 +658,8 @@ SCREENS.obsEdit = (argStr)=>{
           <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
         <div class="field"><span class="lab">録音メモ（鳴き声など）</span>
           <div id="recPanel"></div></div>
+        <div class="field"><span class="lab">写真・動画（カメラで撮影／ライブラリから選択）</span>
+          <div id="mediaPanel"></div></div>
         <label class="field"><span class="lab">外部写真番号・ファイル名</span>
           <input name="external_photo_reference" value="${esc(o.external_photo_reference)}" placeholder="別カメラの写真番号など"></label>
         <label class="field row" style="gap:12px; align-items:center;">
@@ -594,7 +680,8 @@ SCREENS.obsEdit = (argStr)=>{
       <div class="sp"></div>
       <div class="note">種名が未入力なら「未同定」として保存されます。GPSが取れなくても保存できます。</div>
     `,
-    onMount:()=>{ SCREENS._obs=o; SCREENS._audio=(o.audio||[]).slice(); renderQuickSpecies(); renderRecPanel();
+    onMount:()=>{ SCREENS._obs=o; SCREENS._audio=(o.audio||[]).slice(); SCREENS._media=(o.media||[]).slice();
+      renderQuickSpecies(); renderRecPanel(); renderMediaPanel();
       if(!o.latitude && lastFix){ /* すでに反映済み */ }
     }
   };
@@ -650,10 +737,10 @@ function saveObs(u, svUuid, editing){
     identification_status: name? idStatus : '未同定',
     confidence: segVal('confidence'), needs_review: $('#needsReview').checked,
     note: g('note'), external_photo_reference: g('external_photo_reference'),
-    audio: SCREENS._audio||[],
+    audio: SCREENS._audio||[], media: SCREENS._media||[],
   });
   DB.upsertObs(rec); if(name) DB.pushRecent(name);
-  SCREENS._acc=null; SCREENS._chosenId=null; SCREENS._audio=null;
+  SCREENS._acc=null; SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
   toast('保存しました'); goBack();
 }
 function deleteObs(u){ if(!confirm('この観察記録を削除しますか？')) return;
@@ -732,6 +819,59 @@ function renderRecPanel(){
     const el=box.querySelector(`.recitem[data-id="${a.id}"] audio`); if(!el) return;
     if(el._url) URL.revokeObjectURL(el._url);
     el._url=URL.createObjectURL(r.blob); el.src=el._url;
+  }).catch(()=>{}); });
+}
+
+/* ---------- 写真・動画（カメラ／ライブラリ） ---------- */
+function fileExt(name, mime){
+  const m=String(name||'').match(/\.([a-z0-9]{1,5})$/i); if(m) return m[1].toLowerCase();
+  mime=mime||''; const map={'image/jpeg':'jpg','image/png':'png','image/webp':'webp','image/heic':'heic',
+    'image/heif':'heif','image/gif':'gif','video/mp4':'mp4','video/quicktime':'mov','video/webm':'webm','video/3gpp':'3gp'};
+  return map[mime] || (mime.startsWith('video')?'mp4':'jpg');
+}
+function pickMedia(input){
+  const files=Array.from(input.files||[]); input.value='';
+  if(!files.length) return;
+  const obsUuid=(SCREENS._obs&&SCREENS._obs.uuid)||'';
+  const jobs=files.map(f=>{
+    const kind=(f.type||'').startsWith('video')?'video':'photo';
+    const meta={ id:uuid(), kind, mime:f.type||'', ext:fileExt(f.name,f.type), size:f.size, name:f.name||'', created_at:nowISO() };
+    return PhotoDB.put(Object.assign({}, meta, { blob:f, obs_uuid:obsUuid })).then(()=>{
+      SCREENS._media=SCREENS._media||[]; SCREENS._media.push(meta);
+    });
+  });
+  toast('取り込み中…');
+  Promise.all(jobs).then(()=>{ persistMediaIfSaved(); renderMediaPanel(); toast('写真・動画を追加しました'); })
+    .catch(()=>toast('取り込みに失敗しました'));
+}
+function delMedia(id){
+  PhotoDB.del(id).catch(()=>{}).then(()=>{
+    SCREENS._media=(SCREENS._media||[]).filter(m=>m.id!==id);
+    persistMediaIfSaved(); renderMediaPanel(); toast('削除しました');
+  });
+}
+function persistMediaIfSaved(){
+  const o=SCREENS._obs; if(!o) return;
+  const rec=DB.load(DB.key.ob).find(x=>x.uuid===o.uuid);
+  if(rec){ rec.media=SCREENS._media||[]; DB.upsertObs(rec); }
+}
+function renderMediaPanel(){
+  const box=$('#mediaPanel'); if(!box) return;
+  const list=SCREENS._media||[];
+  box.innerHTML=`
+    <input type="file" id="mediaInput" accept="image/*,video/*" multiple style="display:none" onchange="pickMedia(this)">
+    <button type="button" class="btn" onclick="document.getElementById('mediaInput').click()">📷 写真・動画を追加</button>
+    ${list.length?`<div class="mediagrid">${list.map(m=>`
+      <div class="mediaitem" data-id="${m.id}">
+        <div class="mediathumb">${m.kind==='video'
+          ? '<video class="mediael" controls preload="metadata"></video>'
+          : '<img class="mediael" alt="写真">'}</div>
+        <button type="button" class="mediadel" onclick="delMedia('${m.id}')">×</button>
+        <div class="tiny muted mediacap">${m.kind==='video'?'🎬 動画':'📷 写真'} ・ ${Math.max(1,Math.round(m.size/1024))}KB</div>
+      </div>`).join('')}</div>`:''}`;
+  list.forEach(m=>{ PhotoDB.get(m.id).then(r=>{ if(!r||!r.blob) return;
+    const el=box.querySelector(`.mediaitem[data-id="${m.id}"] .mediael`); if(!el) return;
+    if(el._url) URL.revokeObjectURL(el._url); el._url=URL.createObjectURL(r.blob); el.src=el._url;
   }).catch(()=>{}); });
 }
 
@@ -1128,6 +1268,110 @@ function addLocateControl(){
 }
 
 /* ============================================================
+   検索（全調査を横断）
+   ============================================================ */
+SCREENS.search = ()=>({
+  title:'検索',
+  html:`
+    <label class="field"><span class="lab">記録を横断して探す（種名・メモ・場所・行動など）</span>
+      <input id="searchBox" autocomplete="off" placeholder="例）カワセミ ／ 採餌 ／ 川の名前" oninput="runSearch(this.value)"></label>
+    <div id="searchResults"></div>`,
+  onMount:()=>{ const b=$('#searchBox'); if(b) b.value=SCREENS._searchQ||''; runSearch(SCREENS._searchQ||''); if(b) b.focus(); }
+});
+function runSearch(q){
+  SCREENS._searchQ=q; const box=$('#searchResults'); if(!box) return;
+  q=(q||'').trim();
+  if(!q){ box.innerHTML='<div class="empty small">種名・メモ・場所などを入力すると、すべての調査から探します。</div>'; return; }
+  const qk=toKata(q.toLowerCase());
+  const hit=txt=>toKata(String(txt||'').toLowerCase()).includes(qk);
+  const svMap={}; DB.surveys().forEach(s=>svMap[s.uuid]=s); // 削除されていない調査のみ
+  const results=[];
+  DB.observations().forEach(o=>{ const s=svMap[o.survey_uuid]; if(!s) return;
+    if([o.species_name_snapshot,o.note,o.behavior,o.habitat,o.detection_method,o.identification_status,s.name,s.location_name].some(hit)){
+      results.push({ kind:'obs', s, o, t:o.observed_at||'',
+        title:o.species_name_snapshot||'（未同定）',
+        sub:`${esc(s.name||'')} ・ ${fmtDate(o.observed_at)} ・ ${esc(o.detection_method||'')}${o.behavior?' ・ '+esc(o.behavior):''}`,
+        snippet:o.note||'', marks:`${(o.audio&&o.audio.length)?'🎤':''}${(o.media&&o.media.length)?'📷':''}${o.latitude?'📍':''}` });
+    }});
+  DB.notes().forEach(n=>{ const s=svMap[n.survey_uuid]; if(!s) return;
+    if([n.content,n.category,s.name,s.location_name].some(hit)){
+      results.push({ kind:'note', s, n, t:n.recorded_at||'',
+        title:'📝 メモ: '+esc(n.category||''), sub:`${esc(s.name||'')} ・ ${fmtDate(n.recorded_at)}`,
+        snippet:n.content||'', marks:'' });
+    }});
+  results.sort((a,b)=>String(b.t).localeCompare(String(a.t)));
+  if(!results.length){ box.innerHTML=`<div class="empty small">「${esc(q)}」に一致する記録はありませんでした。</div>`; return; }
+  box.innerHTML=`<div class="small muted" style="margin-bottom:8px;">${results.length}件見つかりました</div>`+
+    results.slice(0,200).map(r=>{
+      const act=r.kind==='obs'
+        ? `nav('obsEdit', JSON.stringify({sv:'${r.s.uuid}',id:'${r.o.uuid}'}))`
+        : `nav('noteEdit', JSON.stringify({sv:'${r.s.uuid}',id:'${r.n.uuid}'}))`;
+      return `<div class="card tap" onclick="${act}">
+        <div class="row"><div class="grow">
+          <div style="font-weight:700;">${esc(r.title)} <span class="tiny muted">${r.marks}</span></div>
+          <div class="small muted">${r.sub}</div>
+          ${r.snippet?`<div class="small" style="margin-top:4px;">${esc(String(r.snippet).slice(0,80))}</div>`:''}
+        </div><span class="muted">›</span></div></div>`;
+    }).join('');
+}
+
+/* ============================================================
+   ごみ箱（削除したデータの復元・完全削除）
+   ============================================================ */
+SCREENS.trash = ()=>{
+  const groups=[
+    { k:DB.key.sv, label:'調査',   items:DB.deleted(DB.key.sv), name:x=>x.name||'(無題の調査)', sub:x=>fmtDate(x.survey_date) },
+    { k:DB.key.ob, label:'観察記録', items:DB.deleted(DB.key.ob), name:x=>x.species_name_snapshot||'（未同定）', sub:x=>fmtTime(x.observed_at) },
+    { k:DB.key.nt, label:'メモ',   items:DB.deleted(DB.key.nt), name:x=>x.category||'メモ', sub:x=>String(x.content||'').slice(0,40) },
+    { k:DB.key.hy, label:'仮説',   items:DB.deleted(DB.key.hy), name:x=>x.title||'(無題の仮説)', sub:x=>'' },
+  ];
+  const total=groups.reduce((n,g)=>n+g.items.length,0);
+  return { title:'ごみ箱',
+    html: total? `
+      ${groups.filter(g=>g.items.length).map(g=>`
+        <h3 class="muted small">${g.label}（${g.items.length}）</h3>
+        ${g.items.map(x=>`<div class="card">
+          <div style="font-weight:700;">${esc(g.name(x))}</div>
+          <div class="small muted">${esc(g.sub(x))}</div>
+          <div class="row" style="margin-top:10px; gap:8px;">
+            <button class="btn" style="flex:1;" onclick="restoreItem('${g.k}','${x.uuid}')">↩ 復元</button>
+            <button class="btn danger" style="flex:1;" onclick="purgeItem('${g.k}','${x.uuid}')">完全に削除</button>
+          </div></div>`).join('')}`).join('')}
+      <div class="divider"></div>
+      <button class="btn danger" onclick="purgeAll()">ごみ箱を空にする（完全削除）</button>
+      <div class="sp"></div>
+      <div class="note">「復元」で元に戻せます。「完全に削除」すると取り消せません。調査を復元・完全削除すると、ひも付く観察記録・メモ・仮説もまとめて処理します。</div>
+    ` : '<div class="empty">ごみ箱は空です。</div>'
+  };
+};
+function restoreItem(k,u){
+  DB.restore(k,u);
+  if(k===DB.key.sv){
+    DB.deleted(DB.key.ob).filter(o=>o.survey_uuid===u).forEach(o=>DB.restore(DB.key.ob,o.uuid));
+    DB.deleted(DB.key.nt).filter(n=>n.survey_uuid===u).forEach(n=>DB.restore(DB.key.nt,n.uuid));
+    DB.deleted(DB.key.hy).filter(h=>h.survey_uuid===u).forEach(h=>DB.restore(DB.key.hy,h.uuid));
+  }
+  toast('復元しました'); render();
+}
+function purgeItem(k,u){
+  if(!confirm('完全に削除すると元に戻せません。よろしいですか？')) return;
+  if(k===DB.key.sv){
+    DB.load(DB.key.ob).filter(o=>o.survey_uuid===u).forEach(o=>DB.hardDelete(DB.key.ob,o.uuid));
+    DB.load(DB.key.nt).filter(n=>n.survey_uuid===u).forEach(n=>DB.hardDelete(DB.key.nt,n.uuid));
+    DB.load(DB.key.hy).filter(h=>h.survey_uuid===u).forEach(h=>{
+      DB.load(DB.key.hr).filter(r=>r.hypothesis_uuid===h.uuid).forEach(r=>DB.hardDelete(DB.key.hr,r.uuid));
+      DB.hardDelete(DB.key.hy,h.uuid); });
+  }
+  DB.hardDelete(k,u); mediaGcAll(); toast('完全に削除しました'); render();
+}
+function purgeAll(){
+  if(!confirm('ごみ箱の中身をすべて完全に削除します。元に戻せません。よろしいですか？')) return;
+  [DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.hr].forEach(k=>
+    DB.deleted(k).forEach(x=>DB.hardDelete(k,x.uuid)));
+  mediaGcAll(); toast('ごみ箱を空にしました'); render();
+}
+
+/* ============================================================
    書き出し（CSV / GeoJSON / JSONバックアップ）
    ============================================================ */
 function download(filename, text, mime){
@@ -1165,29 +1409,41 @@ function buildZip(files){
   parts.push(new Uint8Array(end));
   return new Blob(parts,{type:'application/zip'});
 }
-async function exportAudioZip(surveys, base){
-  const items=[];
-  surveys.forEach(s=>DB.obsOf(s.uuid).forEach(o=>(o.audio||[]).forEach((a,i)=>items.push({s,o,a,i}))));
-  if(!items.length){ toast('書き出す録音がありません'); return; }
-  toast('録音をまとめています…');
-  const files=[];
-  for(const it of items){
+function mediaFilename(o,i,m){ const k=(m&&m.kind==='video')?'video':'photo';
+  return `${o.uuid}_${k}${i+1}.${(m&&m.ext)||(k==='video'?'mp4':'jpg')}`; }
+// 録音・写真・動画をまとめてZIP出力（対応表 index.csv 付き）
+async function exportMediaZip(surveys, base){
+  const audioItems=[], mediaItems=[];
+  surveys.forEach(s=>DB.obsOf(s.uuid).forEach(o=>{
+    (o.audio||[]).forEach((a,i)=>audioItems.push({s,o,a,i}));
+    (o.media||[]).forEach((m,i)=>mediaItems.push({s,o,m,i}));
+  }));
+  if(!audioItems.length && !mediaItems.length){ toast('書き出す録音・写真・動画がありません'); return; }
+  toast('まとめています…');
+  const files=[]; const idxRows=[];
+  for(const it of audioItems){
     let r; try{ r=await AudioDB.get(it.a.id); }catch(e){ r=null; }
     if(!r||!r.blob) continue;
-    files.push({ name:audioFilename(it.o,it.i,it.a), u8:new Uint8Array(await r.blob.arrayBuffer()) });
+    const name=audioFilename(it.o,it.i,it.a);
+    files.push({ name, u8:new Uint8Array(await r.blob.arrayBuffer()) });
+    idxRows.push([name,'録音',csvCell(it.s.name),it.o.observed_at,csvCell(it.o.species_name_snapshot),it.o.latitude,it.o.longitude].join(','));
   }
-  if(!files.length){ toast('録音データが見つかりません'); return; }
-  const idxCols=['audio_file','survey_name','observed_at','species_name','duration_sec','latitude','longitude'];
-  const idx=[idxCols.join(',')].concat(items.map(it=>[
-    audioFilename(it.o,it.i,it.a), csvCell(it.s.name), it.o.observed_at,
-    csvCell(it.o.species_name_snapshot), it.a.dur, it.o.latitude, it.o.longitude].join(','))).join('\r\n');
+  for(const it of mediaItems){
+    let r; try{ r=await PhotoDB.get(it.m.id); }catch(e){ r=null; }
+    if(!r||!r.blob) continue;
+    const name=mediaFilename(it.o,it.i,it.m);
+    files.push({ name, u8:new Uint8Array(await r.blob.arrayBuffer()) });
+    idxRows.push([name,(it.m.kind==='video'?'動画':'写真'),csvCell(it.s.name),it.o.observed_at,csvCell(it.o.species_name_snapshot),it.o.latitude,it.o.longitude].join(','));
+  }
+  if(!files.length){ toast('データが見つかりません'); return; }
+  const idx=['file,type,survey_name,observed_at,species_name,latitude,longitude'].concat(idxRows).join('\r\n');
   files.push({ name:'index.csv', u8:new TextEncoder().encode('﻿'+idx) });
-  downloadBlob(`${base}_audio.zip`, buildZip(files));
-  toast('録音ZIPを書き出しました');
+  downloadBlob(`${base}_media.zip`, buildZip(files));
+  toast('録音・写真・動画ZIPを書き出しました');
 }
 const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','observation_id','observed_at',
   'latitude','longitude','species_name','count','detection_method','behavior','habitat',
-  'identification_status','confidence','needs_review','note','audio_file','external_photo_reference'];
+  'identification_status','confidence','needs_review','note','audio_file','media_file','external_photo_reference'];
 function csvCell(v){ v=v==null?'':String(v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
 function buildRows(surveys){
   const rows=[];
@@ -1198,6 +1454,7 @@ function buildRows(surveys){
       behavior:o.behavior, habitat:o.habitat, identification_status:o.identification_status,
       confidence:o.confidence, needs_review:o.needs_review?1:0, note:o.note,
       audio_file:(o.audio||[]).map((a,i)=>audioFilename(o,i,a)).join(';'),
+      media_file:(o.media||[]).map((m,i)=>mediaFilename(o,i,m)).join(';'),
       external_photo_reference:o.external_photo_reference });
   });});
   return rows;
@@ -1249,16 +1506,21 @@ function blobToB64(blob){ return new Promise(res=>{ const r=new FileReader();
 function b64ToBlob(b64,mime){ const bin=atob(b64||''); const u8=new Uint8Array(bin.length);
   for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i); return new Blob([u8],{type:mime||'application/octet-stream'}); }
 async function exportBackup(){
-  toast('バックアップを作成中…');
-  let audio=[];
+  toast('バックアップを作成中…（写真・動画が多いと時間がかかります）');
+  let audio=[], media=[];
   try{ const metas=await AudioDB.all();
     for(const a of metas){ if(!a||!a.blob) continue;
       audio.push({ id:a.id, mime:a.mime, ext:a.ext, dur:a.dur, size:a.size, obs_uuid:a.obs_uuid,
         created_at:a.created_at, b64:await blobToB64(a.blob) }); }
   }catch(e){ audio=[]; }
-  const data={ app:'bird_survey', version:3, exported_at:nowISO(),
+  try{ const metas=await PhotoDB.all();
+    for(const m of metas){ if(!m||!m.blob) continue;
+      media.push({ id:m.id, kind:m.kind, mime:m.mime, ext:m.ext, size:m.size, name:m.name, obs_uuid:m.obs_uuid,
+        created_at:m.created_at, b64:await blobToB64(m.blob) }); }
+  }catch(e){ media=[]; }
+  const data={ app:'bird_survey', version:4, exported_at:nowISO(),
     surveys:DB.allSurveys(), observations:DB.load(DB.key.ob), notes:DB.load(DB.key.nt),
-    hypotheses:DB.load(DB.key.hy), hyp_results:DB.load(DB.key.hr), recent:DB.recentSpecies(), audio };
+    hypotheses:DB.load(DB.key.hy), hyp_results:DB.load(DB.key.hr), recent:DB.recentSpecies(), audio, media };
   download(`bird_survey_backup_${dateValue().replace(/-/g,'')}.json`, JSON.stringify(data), 'application/json');
   toast('バックアップを書き出しました');
 }
@@ -1273,10 +1535,10 @@ SCREENS.exportHub = ()=>{
           <button class="btn" onclick="exportCSV(DB.surveys(),'BirdSurvey_all')">観察CSV</button>
           <button class="btn" onclick="exportGeoJSON(DB.surveys(),'BirdSurvey_all')">GeoJSON</button>
           <button class="btn" onclick="exportHypCSV(DB.surveys(),'BirdSurvey_all')">仮説CSV</button>
-          <button class="btn" onclick="exportAudioZip(DB.surveys(),'BirdSurvey_all')">🎤 録音ZIP</button>
+          <button class="btn" onclick="exportMediaZip(DB.surveys(),'BirdSurvey_all')">🎤📷 録音・写真ZIP</button>
         </div>
         <div class="sp"></div>
-        <button class="btn primary" onclick="exportBackup()">💾 JSONバックアップ（全データ・録音含む）</button>
+        <button class="btn primary" onclick="exportBackup()">💾 JSONバックアップ（全データ・録音・写真含む）</button>
       </div>
       <h3 class="muted small">調査ごとに書き出し</h3>
       ${surveys.length? surveys.map(s=>`<div class="card tap" onclick="nav('exportSurvey','${s.uuid}')">
@@ -1294,10 +1556,10 @@ SCREENS.exportSurvey = (u)=>{
         <button class="btn primary" onclick="exportCSV([DB.survey('${u}')],'${base}')">観察CSV</button>
         <button class="btn primary" onclick="exportGeoJSON([DB.survey('${u}')],'${base}')">GeoJSON</button>
         <button class="btn" onclick="exportHypCSV([DB.survey('${u}')],'${base}')">仮説CSV</button>
-        <button class="btn" onclick="exportAudioZip([DB.survey('${u}')],'${base}')">🎤 録音ZIP</button>
+        <button class="btn" onclick="exportMediaZip([DB.survey('${u}')],'${base}')">🎤📷 録音・写真ZIP</button>
       </div>
       <div class="sp"></div>
-      <div class="note">観察 ${DB.obsOf(u).length}件（位置付き ${DB.obsOf(u).filter(o=>o.latitude).length}件・録音 ${DB.obsOf(u).reduce((n,o)=>n+((o.audio||[]).length),0)}件）・仮説 ${DB.hypOf(u).length}件を書き出します。</div>
+      <div class="note">観察 ${DB.obsOf(u).length}件（位置付き ${DB.obsOf(u).filter(o=>o.latitude).length}件・録音 ${DB.obsOf(u).reduce((n,o)=>n+((o.audio||[]).length),0)}件・写真動画 ${DB.obsOf(u).reduce((n,o)=>n+((o.media||[]).length),0)}件）・仮説 ${DB.hypOf(u).length}件を書き出します。</div>
     `};
 };
 
@@ -1306,7 +1568,7 @@ SCREENS.importHub = ()=>({
   html:`
     <div class="card">
       <h3>JSONバックアップから復元</h3>
-      <p class="small muted">以前書き出した bird_survey_backup_*.json を選ぶと、調査・観察・メモ・録音を取り込みます（同じ記録は上書き）。</p>
+      <p class="small muted">以前書き出した bird_survey_backup_*.json を選ぶと、調査・観察・メモ・録音・写真・動画を取り込みます（同じ記録は上書き）。</p>
       <input type="file" id="impFile" accept="application/json,.json">
       <div class="sp"></div>
       <button class="btn primary" onclick="doImport()">このファイルを取り込む</button>
@@ -1329,6 +1591,11 @@ function doImport(){
         mime:a.mime, ext:a.ext, dur:a.dur, size:a.size, obs_uuid:a.obs_uuid, created_at:a.created_at
       }).catch(()=>{}) : null)).catch(()=>{});
     }
+    if(Array.isArray(d.media) && d.media.length){
+      Promise.all(d.media.map(m=>(m&&m.b64)? PhotoDB.put({ id:m.id, blob:b64ToBlob(m.b64,m.mime),
+        kind:m.kind, mime:m.mime, ext:m.ext, size:m.size, name:m.name, obs_uuid:m.obs_uuid, created_at:m.created_at
+      }).catch(()=>{}) : null)).catch(()=>{});
+    }
     toast('取り込みました'); reset('home');
   }catch(e){ toast('読み込みに失敗しました（ファイル形式を確認）'); } };
   rd.readAsText(f);
@@ -1338,7 +1605,7 @@ function doImport(){
    起動
    ============================================================ */
 reset('home');
-AudioDB.gc().catch(()=>{}); // 参照されなくなった録音を掃除
+mediaGcAll(); // 参照されなくなった録音・写真・動画を掃除
 if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{})); }
 </script>
 </body>
