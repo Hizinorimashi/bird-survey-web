@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v10（2026-07-17 種リスト333種＋学名）';
+const APP_VERSION = 'v11（2026-07-17 鳴き声にBird Research追加）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -621,8 +621,9 @@ const SPECIES = `
 function speciesByName(name){ return SPECIES.find(s=>s.japanese_name===name); }
 function guideUrlFor(s){ return 'https://ja.wikipedia.org/wiki/'+encodeURIComponent((s&&s.japanese_name)||''); }
 function callUrlFor(s){ const q=(s&&s.scientific_name)||(s&&s.japanese_name)||''; return 'https://xeno-canto.org/explore?query='+encodeURIComponent(q); }
+function brCallUrlFor(s){ return 'https://db3.bird-research.jp/saezuri/birdsong/list;name='+encodeURIComponent((s&&s.japanese_name)||''); }
 function guideLinksByName(name){ const s=speciesByName(name)||{japanese_name:name, scientific_name:''};
-  return { guide:guideUrlFor(s), call:callUrlFor(s) }; }
+  return { guide:guideUrlFor(s), call:callUrlFor(s), br:brCallUrlFor(s) }; }
 
 /* ---------- 画面遷移 ---------- */
 let STACK = [];               // {name, arg}
@@ -1732,7 +1733,7 @@ SCREENS.guide = ()=>({
   html:`
     <label class="field"><span class="lab">種を探す（和名・ひらがな）</span>
       <input id="guideBox" autocomplete="off" placeholder="例）カワセミ" oninput="renderGuideList(this.value)"></label>
-    <div class="note" style="margin-bottom:12px;">📖＝解説・写真（Wikipedia）／🔊＝鳴き声（Xeno-canto）。開くにはネット接続が必要です。全 ${SPECIES.length} 種。</div>
+    <div class="note" style="margin-bottom:12px;">📖＝解説・写真（Wikipedia）／🐦＝鳴き声（バードリサーチ・和名で検索）／🔊＝鳴き声（Xeno-canto）。開くにはネット接続が必要です。全 ${SPECIES.length} 種。</div>
     <div id="guideList"></div>`,
   onMount:()=>{ const b=$('#guideBox'); if(b) b.value=SCREENS._guideQ||''; renderGuideList(SCREENS._guideQ||''); }
 });
@@ -1742,11 +1743,14 @@ function renderGuideList(q){
   let list = q ? SPECIES.filter(s=>toKata(s.japanese_name).includes(qk)) : SPECIES;
   const shown=list.slice(0,300);
   box.innerHTML = shown.length ? shown.map(s=>`
-    <div class="card"><div class="row">
-      <div class="grow"><b>${esc(s.japanese_name)}</b>${s.scientific_name?`<div class="tiny muted"><i>${esc(s.scientific_name)}</i></div>`:''}</div>
-      <a class="btn" style="width:auto; padding:8px 12px; text-decoration:none;" href="${guideUrlFor(s)}" target="_blank" rel="noopener">📖</a>
-      <a class="btn" style="width:auto; padding:8px 12px; text-decoration:none;" href="${callUrlFor(s)}" target="_blank" rel="noopener">🔊</a>
-    </div></div>`).join('') + (list.length>shown.length?`<div class="note">絞り込むと残り ${list.length-shown.length} 種も表示されます。</div>`:'')
+    <div class="card">
+      <div><b>${esc(s.japanese_name)}</b>${s.scientific_name?` <span class="tiny muted"><i>${esc(s.scientific_name)}</i></span>`:''}</div>
+      <div class="chips" style="margin-top:8px;">
+        <a class="c" style="text-decoration:none;" href="${guideUrlFor(s)}" target="_blank" rel="noopener">📖 図鑑</a>
+        <a class="c" style="text-decoration:none;" href="${brCallUrlFor(s)}" target="_blank" rel="noopener">🐦 鳴き声(Bird Research)</a>
+        <a class="c" style="text-decoration:none;" href="${callUrlFor(s)}" target="_blank" rel="noopener">🔊 鳴き声(Xeno-canto)</a>
+      </div>
+    </div>`).join('') + (list.length>shown.length?`<div class="note">絞り込むと残り ${list.length-shown.length} 種も表示されます。</div>`:'')
     : '<div class="empty small">見つかりませんでした。</div>';
 }
 // 観察編集画面：入力中の種名に応じて図鑑・鳴き声リンクを出す
@@ -1754,8 +1758,9 @@ function updateSpRefLinks(name){
   const box=$('#spRefLinks'); if(!box) return; name=(name||'').trim();
   if(!name){ box.innerHTML=''; return; }
   const l=guideLinksByName(name);
-  box.innerHTML=`<a class="c" style="text-decoration:none;" href="${l.guide}" target="_blank" rel="noopener">📖 ${esc(name)}の図鑑</a>`+
-    `<a class="c" style="text-decoration:none;" href="${l.call}" target="_blank" rel="noopener">🔊 鳴き声</a>`;
+  box.innerHTML=`<a class="c" style="text-decoration:none;" href="${l.guide}" target="_blank" rel="noopener">📖 図鑑</a>`+
+    `<a class="c" style="text-decoration:none;" href="${l.br}" target="_blank" rel="noopener">🐦 鳴き声(BR)</a>`+
+    `<a class="c" style="text-decoration:none;" href="${l.call}" target="_blank" rel="noopener">🔊 鳴き声(XC)</a>`;
 }
 
 /* ============================================================
