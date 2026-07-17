@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v7（2026-07-17 写真・動画／検索／選択削除・ごみ箱）';
+const APP_VERSION = 'v8（2026-07-17 カメラ起動を確実化）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -858,9 +858,18 @@ function persistMediaIfSaved(){
 function renderMediaPanel(){
   const box=$('#mediaPanel'); if(!box) return;
   const list=SCREENS._media||[];
+  // ラベル直結＋capture属性で、端末のカメラを確実に起動（撮影と選択を分離）
+  const HID='position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;';
   box.innerHTML=`
-    <input type="file" id="mediaInput" accept="image/*,video/*" multiple style="display:none" onchange="pickMedia(this)">
-    <button type="button" class="btn" onclick="document.getElementById('mediaInput').click()">📷 写真・動画を追加</button>
+    <input type="file" id="mediaCamPhoto" accept="image/*" capture="environment" style="${HID}" onchange="pickMedia(this)">
+    <input type="file" id="mediaCamVideo" accept="video/*" capture="environment" style="${HID}" onchange="pickMedia(this)">
+    <input type="file" id="mediaLib" accept="image/*,video/*" multiple style="${HID}" onchange="pickMedia(this)">
+    <div class="btn-grid">
+      <label class="btn" for="mediaCamPhoto">📷 写真を撮る</label>
+      <label class="btn" for="mediaCamVideo">🎬 動画を撮る</label>
+    </div>
+    <div class="sp"></div>
+    <label class="btn" for="mediaLib">🖼 ライブラリから選ぶ</label>
     ${list.length?`<div class="mediagrid">${list.map(m=>`
       <div class="mediaitem" data-id="${m.id}">
         <div class="mediathumb">${m.kind==='video'
