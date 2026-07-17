@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v11（2026-07-17 鳴き声にBird Research追加）';
+const APP_VERSION = 'v12（2026-07-17 図鑑PDF取り込み・アプリ内閲覧）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -236,10 +236,11 @@ function openMediaDB(){
   if(_mediaDbPromise) return _mediaDbPromise;
   _mediaDbPromise=new Promise((res,rej)=>{
     if(!window.indexedDB){ rej(new Error('no-indexeddb')); return; }
-    const r=indexedDB.open('bird_survey_audio',2);
+    const r=indexedDB.open('bird_survey_audio',3);
     r.onupgradeneeded=()=>{ const db=r.result;
       if(!db.objectStoreNames.contains('audio')) db.createObjectStore('audio',{keyPath:'id'});
-      if(!db.objectStoreNames.contains('media')) db.createObjectStore('media',{keyPath:'id'}); };
+      if(!db.objectStoreNames.contains('media')) db.createObjectStore('media',{keyPath:'id'});
+      if(!db.objectStoreNames.contains('refdoc')) db.createObjectStore('refdoc',{keyPath:'id'}); };
     r.onsuccess=()=>res(r.result);
     r.onerror=()=>rej(r.error);
   });
@@ -264,6 +265,15 @@ function makeBlobStore(store, refField){
 const AudioDB = makeBlobStore('audio','audio');   // 観察の o.audio[] が参照
 const PhotoDB = makeBlobStore('media','media');   // 観察の o.media[] が参照
 function mediaGcAll(){ return Promise.all([AudioDB.gc().catch(()=>{}), PhotoDB.gc().catch(()=>{})]); }
+
+// 資料PDF（図鑑など）。端末内のみに保存し、公開URL・バックアップには含めない
+const RefDB = {
+  put(rec){ return idbDo('refdoc','readwrite', st=>st.put(rec)); },
+  get(id){ return idbDo('refdoc','readonly', st=>st.get(id)); },
+  del(id){ return idbDo('refdoc','readwrite', st=>st.delete(id)); },
+};
+function refdocList(){ try{ return JSON.parse(localStorage.getItem('bs_refdocs')||'[]'); }catch(e){ return []; } }
+function refdocSave(list){ localStorage.setItem('bs_refdocs', JSON.stringify(list)); }
 
 /* ---------- 選択肢マスタ（指示書準拠） ---------- */
 const OPT = {
@@ -639,6 +649,7 @@ const SCREENS = {}; // name -> function(arg) -> returns {title, sub[], html, onM
 
 function render(){
   if(REC) recAbort(); // 画面を離れたら録音を中断（保存はしない）
+  if(PDFCTX){ try{ PDFCTX.doc.destroy(); }catch(e){} PDFCTX=null; } // PDF閲覧の後始末
   if(mapObj){ try{ mapObj.remove(); }catch(e){} mapObj=null; }
   const cur = STACK[STACK.length-1] || {name:'home'};
   const scr = SCREENS[cur.name] || SCREENS.home;
@@ -702,6 +713,8 @@ SCREENS.home = ()=>{
         <button class="btn" onclick="nav('search',null)">🔍 記録を検索</button>
         <button class="btn" onclick="nav('guide',null)">📖 図鑑・鳴き声</button>
       </div>
+      <div class="sp"></div>
+      <button class="btn" onclick="nav('refdocs',null)">📚 資料・図鑑（PDF取り込み）</button>
       <div class="sp"></div>
       ${active.length?`<h3 class="muted small">継続中の調査</h3>${active.map(svCard).join('')}`:''}
       ${listHeader}
@@ -1762,6 +1775,105 @@ function updateSpRefLinks(name){
     `<a class="c" style="text-decoration:none;" href="${l.br}" target="_blank" rel="noopener">🐦 鳴き声(BR)</a>`+
     `<a class="c" style="text-decoration:none;" href="${l.call}" target="_blank" rel="noopener">🔊 鳴き声(XC)</a>`;
 }
+
+/* ============================================================
+   資料・図鑑（PDFを端末内に取り込み、アプリ内で閲覧）
+   ============================================================ */
+function importRefdoc(input){
+  const f=(input.files||[])[0]; input.value=''; if(!f) return;
+  if(f.type && f.type.indexOf('pdf')<0 && !/\.pdf$/i.test(f.name||'')){ toast('PDFファイルを選んでください'); return; }
+  const meta={ id:uuid(), name:f.name||'図鑑.pdf', size:f.size, created_at:nowISO() };
+  toast('取り込み中…（大きいPDFは少し時間がかかります）');
+  RefDB.put({ id:meta.id, blob:f }).then(()=>{
+    const l=refdocList(); l.unshift(meta); refdocSave(l); toast('取り込みました'); render();
+  }).catch(()=>toast('取り込みに失敗しました'));
+}
+function delRefdoc(id){
+  if(!confirm('この資料を削除しますか？')) return;
+  RefDB.del(id).catch(()=>{}).then(()=>{ refdocSave(refdocList().filter(r=>r.id!==id)); toast('削除しました'); render(); });
+}
+SCREENS.refdocs = ()=>{
+  const list=refdocList();
+  const HID='position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;';
+  return { title:'資料・図鑑',
+    html:`
+      <input type="file" id="refdocInput" accept="application/pdf,.pdf" style="${HID}" onchange="importRefdoc(this)">
+      <label class="btn primary big" for="refdocInput">＋ 図鑑PDFを取り込む</label>
+      <div class="sp"></div>
+      ${list.length? list.map(r=>`<div class="card">
+        <div class="row">
+          <div class="grow tap" onclick="nav('pdfView','${r.id}')"><b>📕 ${esc(r.name)}</b>
+            <div class="small muted">${Math.round(r.size/1024/1024*10)/10} MB ・ ${fmtDate(r.created_at)} ・ タップで開く</div></div>
+          <button class="btn danger" style="width:auto; padding:6px 12px;" onclick="delRefdoc('${r.id}')">削除</button>
+        </div></div>`).join('') : '<div class="empty small">まだ取り込んだ図鑑がありません。<br>手持ちのPDFを取り込むと、圏外でもアプリ内で開けます。</div>'}
+      <div class="note">取り込んだPDFは<b>この端末の中だけ</b>に保存され、公開URLやバックアップには一切上がりません（私的利用）。市販図鑑のスキャン等はこちらへ。</div>
+    `};
+};
+
+/* PDF.js は使う時だけ読み込む（起動を軽く保つ） */
+let _pdfjsLoading=null;
+function ensurePdfjs(){
+  if(window.pdfjsLib) return Promise.resolve();
+  if(_pdfjsLoading) return _pdfjsLoading;
+  _pdfjsLoading=new Promise((res,rej)=>{
+    const s=document.createElement('script'); s.src='./vendor/pdf.min.js';
+    s.onload=()=>{ if(window.pdfjsLib){ pdfjsLib.GlobalWorkerOptions.workerSrc='./vendor/pdf.worker.min.js'; res(); } else rej(new Error('pdfjs')); };
+    s.onerror=()=>rej(new Error('pdfjs load')); document.head.appendChild(s);
+  });
+  return _pdfjsLoading;
+}
+let PDFCTX=null; // { doc, page, total }
+SCREENS.pdfView = (id)=>{
+  const meta=refdocList().find(r=>r.id===id);
+  if(!meta) return SCREENS.refdocs();
+  return { title: meta.name, sub:[`<span class="pill" id="pdfPill">読み込み中…</span>`],
+    html:`
+      <div class="row" style="align-items:center; gap:8px;">
+        <button class="btn" style="width:auto; padding:10px 14px;" onclick="pdfPage(-1)">‹ 前</button>
+        <span class="grow" style="text-align:center;"><span id="pdfPageNum">-</span> / <span id="pdfPageTot">-</span></span>
+        <button class="btn" style="width:auto; padding:10px 14px;" onclick="pdfPage(1)">次 ›</button>
+      </div>
+      <div class="row" style="margin-top:8px; gap:8px;">
+        <input id="pdfJump" type="number" inputmode="numeric" placeholder="ページ番号へ移動" style="flex:1;">
+        <button class="btn" style="width:auto; padding:10px 14px;" onclick="pdfJump()">移動</button>
+      </div>
+      <div id="pdfWrap" style="margin-top:12px; overflow:auto; -webkit-overflow-scrolling:touch; text-align:center;">
+        <canvas id="pdfCanvas" style="max-width:100%; border:1px solid var(--line); border-radius:8px; background:#fff;"></canvas>
+      </div>`,
+    onMount:()=>{ loadPdf(id); }
+  };
+};
+async function loadPdf(id){
+  try{
+    await ensurePdfjs();
+    const rec=await RefDB.get(id); if(!rec||!rec.blob){ toast('PDFが見つかりません'); return; }
+    const buf=await rec.blob.arrayBuffer();
+    const doc=await pdfjsLib.getDocument({data:buf}).promise;
+    PDFCTX={ doc, page:1, total:doc.numPages };
+    const tot=$('#pdfPageTot'); if(tot) tot.textContent=doc.numPages;
+    const pill=$('#pdfPill'); if(pill) pill.textContent=`全 ${doc.numPages} ページ`;
+    renderPdfPage();
+  }catch(e){ toast('PDFを開けませんでした'); }
+}
+async function renderPdfPage(){
+  if(!PDFCTX) return;
+  const page=PDFCTX.page;
+  try{
+    const p=await PDFCTX.doc.getPage(page);
+    const canvas=$('#pdfCanvas'); if(!canvas || !PDFCTX) return;
+    const wrap=$('#pdfWrap'); const wrapW=Math.min((wrap&&wrap.clientWidth)||900, 1400);
+    const vp0=p.getViewport({scale:1});
+    const scale=Math.max(0.3, Math.min(3, (wrapW-4)/vp0.width));
+    const vp=p.getViewport({scale});
+    const ctx=canvas.getContext('2d');
+    canvas.width=vp.width; canvas.height=vp.height;
+    await p.render({canvasContext:ctx, viewport:vp}).promise;
+    const num=$('#pdfPageNum'); if(num) num.textContent=page;
+  }catch(e){}
+}
+function pdfPage(d){ if(!PDFCTX) return; const n=PDFCTX.page+d; if(n<1||n>PDFCTX.total) return; PDFCTX.page=n; renderPdfPage(); }
+function pdfJump(){ if(!PDFCTX) return; const el=$('#pdfJump'); const v=parseInt(el&&el.value,10);
+  if(v>=1 && v<=PDFCTX.total){ PDFCTX.page=v; renderPdfPage(); } else toast('1〜'+PDFCTX.total+' のページ番号を入れてください'); }
 
 /* ============================================================
    書き出し（CSV / GeoJSON / JSONバックアップ）

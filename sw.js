@@ -1,11 +1,13 @@
-const CACHE = 'bird-survey-v11';
+const CACHE = 'bird-survey-v12';
 const ASSETS = [
   './bird_survey.html',
   './manifest.json',
   './icon-192.svg',
   './icon-512.svg',
   './leaflet.css',
-  './leaflet.js'
+  './leaflet.js',
+  './vendor/pdf.min.js',
+  './vendor/pdf.worker.min.js'
 ];
 
 // 地図タイル用の別キャッシュ（容量制限付き）
