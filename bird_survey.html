@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v13（2026-07-17 オフライン鳴き声62種・出典一覧）';
+const APP_VERSION = 'v14（2026-07-17 複数種連続入力・マイ図鑑）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -258,8 +258,12 @@ function makeBlobStore(store, refField){
     del(id){ return idbDo(store,'readwrite', st=>st.delete(id)); },
     all(){ return idbDo(store,'readonly', st=>st.getAll()).then(r=>r||[]); },
     // どの観察にも参照されていない残骸（保存されなかった・完全削除済み）を掃除
+    // ただしマイ図鑑に登録済みのものは保護する
     gc(){ const valid=new Set();
       DB.load(DB.key.ob).forEach(o=>(o[refField]||[]).forEach(a=>a&&a.id&&valid.add(a.id)));
+      try{ JSON.parse(localStorage.getItem('bs_myguide')||'[]').forEach(g=>{
+        if((store==='audio'&&g.kind==='audio')||(store==='media'&&(g.kind==='photo'||g.kind==='video'))) valid.add(g.ref_id);
+      }); }catch(e){}
       return this.all().then(list=>Promise.all(list.filter(a=>!valid.has(a.id)).map(a=>this.del(a.id)))); }
   };
 }
@@ -1027,6 +1031,7 @@ SCREENS.obsEdit = (argStr)=>{
           <div id="recPanel"></div></div>
         <div class="field"><span class="lab">写真・動画（カメラで撮影／ライブラリから選択）</span>
           <div id="mediaPanel"></div></div>
+        <button type="button" class="btn ghost" style="margin-bottom:14px;" onclick="addObsToGuide()">🕮 この鳴き声・写真を図鑑に登録（確定種）</button>
         <label class="field"><span class="lab">外部写真番号・ファイル名</span>
           <input name="external_photo_reference" value="${esc(o.external_photo_reference)}" placeholder="別カメラの写真番号など"></label>
         <label class="field row" style="gap:12px; align-items:center;">
@@ -1042,10 +1047,11 @@ SCREENS.obsEdit = (argStr)=>{
         </div>
       </form>
       <div class="sp"></div>
-      <button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing})">保存する</button>
+      <button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing},false)">保存する</button>
+      ${!editing?`<div class="sp"></div><button class="btn" onclick="saveObs('${o.uuid}','${svUuid}',${editing},true)">＋ 保存して続けて別の種を追加</button>`:''}
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteObs('${o.uuid}')">この記録を削除</button>`:''}
       <div class="sp"></div>
-      <div class="note">種名が未入力なら「未同定」として保存されます。GPSが取れなくても保存できます。</div>
+      <div class="note">種名が未入力なら「未同定」として保存されます。同じ場所で何種も見たときは「保存して続けて別の種を追加」で位置を引き継いで連続入力できます。</div>
     `,
     onMount:()=>{ SCREENS._obs=o; SCREENS._audio=(o.audio||[]).slice(); SCREENS._media=(o.media||[]).slice();
       renderQuickSpecies(); renderRecPanel(); renderMediaPanel(); updateSpRefLinks(o.species_name_snapshot);
@@ -1090,7 +1096,7 @@ function grabGps(){
     toast('位置を取得しました');
   }, e=>toast('位置を取得できませんでした'), {enableHighAccuracy:true, timeout:15000});
 }
-function saveObs(u, svUuid, editing){
+function saveObs(u, svUuid, editing, cont){
   const f=$('#obForm'); const g=n=>{const el=f.querySelector(`[name="${n}"]`); return el?el.value:'';};
   const name=$('#spInput').value.trim();
   const idStatus = segVal('identification_status') || (name?'確定':'未同定');
@@ -1109,7 +1115,33 @@ function saveObs(u, svUuid, editing){
   });
   DB.upsertObs(rec); if(name) DB.pushRecent(name);
   SCREENS._acc=null; SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
-  toast('保存しました'); goBack();
+  toast('保存しました');
+  if(cont){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid})); } // 位置を引き継いで次の種へ
+  else goBack();
+}
+/* ---------- マイ図鑑（自分の確定記録を種の図鑑に登録） ---------- */
+function myguideList(){ try{ return JSON.parse(localStorage.getItem('bs_myguide')||'[]'); }catch(e){ return []; } }
+function myguideSave(l){ localStorage.setItem('bs_myguide', JSON.stringify(l)); }
+function myguideOf(sp){ return myguideList().filter(g=>g.species_name===sp); }
+function myguideSpecies(){ return [...new Set(myguideList().map(g=>g.species_name))]; }
+// 観察編集画面から、確定種の鳴き声・写真を図鑑に登録
+function addObsToGuide(){
+  const o=SCREENS._obs; if(!o) return;
+  const name=(($('#spInput')&&$('#spInput').value)||'').trim();
+  if(!name){ toast('先に種名を入れてください'); return; }
+  const status=segVal('identification_status');
+  if(status!=='確定'){ if(!confirm('この記録は「確定」ではありません。それでも図鑑に登録しますか？')) return; }
+  const audio=SCREENS._audio||[], media=SCREENS._media||[];
+  if(!audio.length && !media.length){ toast('登録できる録音・写真がありません'); return; }
+  const l=myguideList(); const have=new Set(l.filter(g=>g.species_name===name).map(g=>g.ref_id)); let added=0;
+  audio.forEach(a=>{ if(have.has(a.id)) return; l.push({ id:uuid(), species_name:name, kind:'audio', ref_id:a.id, ext:a.ext, mime:a.mime, source_obs:o.uuid, created_at:nowISO() }); added++; });
+  media.forEach(m=>{ if(have.has(m.id)) return; l.push({ id:uuid(), species_name:name, kind:m.kind, ref_id:m.id, ext:m.ext, mime:m.mime, source_obs:o.uuid, created_at:nowISO() }); added++; });
+  myguideSave(l);
+  toast(added?`図鑑に${added}件登録しました（${name}）`:'すでに登録済みです');
+}
+function removeFromGuide(id){
+  myguideSave(myguideList().filter(g=>g.id!==id));
+  toast('図鑑から外しました'); render(); mediaGcAll();
 }
 function deleteObs(u){ if(!confirm('この観察記録を削除しますか？')) return;
   DB.softDelete(DB.key.ob,u); toast('削除しました'); goBack(); }
@@ -1764,10 +1796,25 @@ SCREENS.guide = ()=>({
     </div>
     <label class="field"><span class="lab">種を探す（和名・ひらがな）</span>
       <input id="guideBox" autocomplete="off" placeholder="例）カワセミ" oninput="renderGuideList(this.value)"></label>
-    <div class="note" style="margin-bottom:12px;">🎧＝同梱のオフライン鳴き声（保存すれば圏外でも）／📖＝解説・写真（Wikipedia）／🐦＝鳴き声（バードリサーチ）／🔊＝鳴き声（Xeno-canto）。リンクはネット接続が必要。全 ${SPECIES.length} 種。</div>
+    <div class="row" style="margin-bottom:10px;"><button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="toggleGuideMine()">${SCREENS._guideMineOnly?'← すべての種を表示':'🕮 自分の記録がある種だけ'}</button></div>
+    <div class="note" style="margin-bottom:12px;">🕮＝自分の確定記録（観察画面から登録）／🎧＝同梱のオフライン鳴き声（保存すれば圏外でも）／📖＝Wikipedia／🐦＝バードリサーチ／🔊＝Xeno-canto。リンクはネット接続が必要。全 ${SPECIES.length} 種。</div>
     <div id="guideList"></div>`,
   onMount:()=>{ const b=$('#guideBox'); if(b) b.value=SCREENS._guideQ||''; renderGuideList(SCREENS._guideQ||''); updateCallSaved(); }
 });
+function toggleGuideMine(){ SCREENS._guideMineOnly=!SCREENS._guideMineOnly; SCREENS._guideQ=''; render(); }
+function myguideItemHtml(g){
+  const inner = g.kind==='audio'
+    ? '<audio class="myel recaudio" controls preload="none"></audio>'
+    : (g.kind==='video'
+        ? '<video class="myel" controls preload="metadata" style="max-width:100%; border-radius:8px; background:#000;"></video>'
+        : '<img class="myel" alt="写真" style="max-width:100%; border-radius:8px; display:block;">');
+  const lab = g.kind==='audio'?'🎧 自分の録音':(g.kind==='video'?'🎬 自分の動画':'📷 自分の写真');
+  return `<div class="myitem" data-kind="${g.kind}" data-ref="${esc(g.ref_id)}" style="margin-top:6px;">
+    ${inner}
+    <div class="row"><span class="tiny muted grow">${lab}</span>
+      <button type="button" class="btn ghost danger" style="width:auto; padding:4px 10px; font-size:12px;" onclick="removeFromGuide('${g.id}')">図鑑から外す</button></div>
+  </div>`;
+}
 function updateCallSaved(){
   const el=$('#callSaved'); if(!el) return;
   CallDB.keys().then(ks=>{ if($('#callSaved')) $('#callSaved').textContent=`端末に保存済み: ${ks.length} / ${Object.keys(CALLS).length} 種`; }).catch(()=>{});
@@ -1775,12 +1822,19 @@ function updateCallSaved(){
 function renderGuideList(q){
   SCREENS._guideQ=q; const box=$('#guideList'); if(!box) return;
   q=(q||'').trim(); const qk=toKata(q);
-  let list = q ? SPECIES.filter(s=>toKata(s.japanese_name).includes(qk)) : SPECIES;
+  const mineOnly=!!SCREENS._guideMineOnly;
+  const base = mineOnly ? SPECIES.filter(s=>myguideOf(s.japanese_name).length) : SPECIES;
+  let list = q ? base.filter(s=>toKata(s.japanese_name).includes(qk)) : base;
   const shown=list.slice(0,300);
   box.innerHTML = shown.length ? shown.map(s=>{
     const c=CALLS[s.japanese_name];
+    const mine=myguideOf(s.japanese_name);
     return `<div class="card">
       <div><b>${esc(s.japanese_name)}</b>${s.scientific_name?` <span class="tiny muted"><i>${esc(s.scientific_name)}</i></span>`:''}</div>
+      ${mine.length?`<div class="myguide" style="margin-top:8px; padding:8px; background:var(--panel2); border-radius:10px;">
+        <div class="tiny muted">🕮 自分の記録（${mine.length}）</div>
+        ${mine.map(myguideItemHtml).join('')}
+      </div>`:''}
       ${c?`<div class="callplay" data-jp="${esc(s.japanese_name)}" style="margin-top:8px;">
         <audio class="recaudio" controls preload="none" src="./assets/calls/${c.f}"></audio>
         <div class="tiny muted">🎧 録音: ${esc(c.rec)}（${esc(c.cty)}） ／ ${esc(c.lic)}</div>
@@ -1792,12 +1846,20 @@ function renderGuideList(q){
       </div>
     </div>`;
   }).join('') + (list.length>shown.length?`<div class="note">絞り込むと残り ${list.length-shown.length} 種も表示されます。</div>`:'')
-    : '<div class="empty small">見つかりませんでした。</div>';
+    : (mineOnly?'<div class="empty small">まだ自分の記録を図鑑に登録していません。<br>観察を「確定」にして「🕮 図鑑に登録」から追加できます。</div>':'<div class="empty small">見つかりませんでした。</div>');
   // 保存済みの鳴き声は端末内(IndexedDB)の音源に差し替え（圏外で再生可）
   Array.prototype.forEach.call(box.querySelectorAll('.callplay'), el=>{
     const jp=el.getAttribute('data-jp'); CallDB.get(jp).then(r=>{ if(!r||!r.blob) return;
       const a=el.querySelector('audio'); if(!a) return;
       if(a._url) URL.revokeObjectURL(a._url); a._url=URL.createObjectURL(r.blob); a.src=a._url;
+    }).catch(()=>{});
+  });
+  // マイ図鑑の音声・写真・動画を端末内から読み込み
+  Array.prototype.forEach.call(box.querySelectorAll('.myitem'), el=>{
+    const kind=el.getAttribute('data-kind'); const ref=el.getAttribute('data-ref');
+    const dbp = kind==='audio' ? AudioDB.get(ref) : PhotoDB.get(ref);
+    dbp.then(r=>{ if(!r||!r.blob) return; const m=el.querySelector('.myel'); if(!m) return;
+      if(m._url) URL.revokeObjectURL(m._url); m._url=URL.createObjectURL(r.blob); m.src=m._url;
     }).catch(()=>{});
   });
 }
@@ -2083,9 +2145,10 @@ async function exportBackup(){
       media.push({ id:m.id, kind:m.kind, mime:m.mime, ext:m.ext, size:m.size, name:m.name, obs_uuid:m.obs_uuid,
         created_at:m.created_at, b64:await blobToB64(m.blob) }); }
   }catch(e){ media=[]; }
-  const data={ app:'bird_survey', version:4, exported_at:nowISO(),
+  const data={ app:'bird_survey', version:5, exported_at:nowISO(),
     surveys:DB.allSurveys(), observations:DB.load(DB.key.ob), notes:DB.load(DB.key.nt),
-    hypotheses:DB.load(DB.key.hy), hyp_results:DB.load(DB.key.hr), recent:DB.recentSpecies(), audio, media };
+    hypotheses:DB.load(DB.key.hy), hyp_results:DB.load(DB.key.hr), recent:DB.recentSpecies(),
+    myguide:myguideList(), audio, media };
   download(`bird_survey_backup_${dateValue().replace(/-/g,'')}.json`, JSON.stringify(data), 'application/json');
   toast('バックアップを書き出しました');
 }
@@ -2151,6 +2214,10 @@ function doImport(){
     merge(DB.key.sv,d.surveys); merge(DB.key.ob,d.observations); merge(DB.key.nt,d.notes);
     merge(DB.key.hy,d.hypotheses); merge(DB.key.hr,d.hyp_results);
     if(d.recent) DB.save(DB.key.recent, d.recent);
+    if(Array.isArray(d.myguide) && d.myguide.length){
+      const cur=myguideList(); const byId={}; cur.forEach(g=>byId[g.id]=g);
+      d.myguide.forEach(g=>{ if(g&&g.id) byId[g.id]=g; }); myguideSave(Object.values(byId));
+    }
     if(Array.isArray(d.audio) && d.audio.length){
       Promise.all(d.audio.map(a=>(a&&a.b64)? AudioDB.put({ id:a.id, blob:b64ToBlob(a.b64,a.mime),
         mime:a.mime, ext:a.ext, dur:a.dur, size:a.size, obs_uuid:a.obs_uuid, created_at:a.created_at
