@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v16（2026-07-17 オフライン鳴き声90種・北海道追加）';
+const APP_VERSION = 'v17（2026-07-17 地図の背景切替＝航空写真ほか）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1679,7 +1679,7 @@ SCREENS.map = (u)=>{
     sub:[`<span class="pill">観察地点 ${obs.length}</span>`],
     html:`<div id="map"></div>
       <div class="sp"></div>
-      <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ノート＝メモ。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ移動。</div>`,
+      <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ノート＝メモ。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ。右上の重ねアイコンで背景（標準／淡色／航空写真／陰影）を切替（選択は次回も保持）。</div>`,
     onMount:()=>{ setTimeout(()=>drawMap(obs,notes),50); }
   };
 };
@@ -1690,8 +1690,18 @@ function drawMap(obs,notes){
   if(pts.length){ center=[parseFloat(pts[0].latitude), parseFloat(pts[0].longitude)]; zoom=15; }
   else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=15; }
   mapObj=L.map('map').setView(center,zoom);
-  L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png',
-    {maxZoom:18, attribution:'地理院タイル'}).addTo(mapObj);
+  // 背景地図（すべて地理院タイル＝オフラインキャッシュ対応）を切り替え可能に
+  const gsiAttr='<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>';
+  const bases={
+    '標準地図': L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {maxZoom:18, attribution:gsiAttr}),
+    '淡色地図': L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', {maxZoom:18, attribution:gsiAttr}),
+    '写真（航空・衛星）': L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {maxZoom:18, attribution:gsiAttr}),
+    '陰影起伏図': L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/hillshademap/{z}/{x}/{y}.png', {maxZoom:16, attribution:gsiAttr}),
+  };
+  let savedBase=localStorage.getItem('bs_basemap'); if(!bases[savedBase]) savedBase='標準地図';
+  bases[savedBase].addTo(mapObj);
+  L.control.layers(bases, null, {position:'topright', collapsed:true}).addTo(mapObj);
+  mapObj.on('baselayerchange', e=>{ try{ localStorage.setItem('bs_basemap', e.name); }catch(err){} });
   const mk=(lat,lon,html,color)=>L.marker([lat,lon],{icon:L.divIcon({className:'',
     html:`<div style="background:${color};border:2px solid #fff;border-radius:50%;width:22px;height:22px;
       display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;font-weight:700;
