@@ -1,0 +1,1345 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a0f0d">
+<title>鳥類調査記録</title>
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./icon-192.svg">
+<link rel="stylesheet" href="./leaflet.css">
+<style>
+  :root{
+    --bg:#0a0f0d; --panel:#12181a; --panel2:#1a2226; --line:#2a3438;
+    --fg:#e8efe9; --muted:#8a9a93; --accent:#3fb984; --accent2:#2c8a63;
+    --warn:#e0a030; --danger:#d05555; --chip:#233029;
+    --radius:14px;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;
+    font-size:16px; line-height:1.5; overscroll-behavior:none;}
+  body{padding-bottom:env(safe-area-inset-bottom);}
+  h1,h2,h3{margin:0 0 .4em;}
+  a{color:var(--accent);}
+  button{font-family:inherit; font-size:16px;}
+  .app{max-width:900px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column;}
+
+  /* ヘッダー */
+  header{position:sticky; top:0; z-index:500; background:var(--panel);
+    border-bottom:1px solid var(--line); padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;}
+  .hbar{display:flex; align-items:center; gap:10px;}
+  .htitle{font-weight:700; font-size:18px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .back{background:none; border:none; color:var(--accent); font-size:16px; padding:6px 4px; cursor:pointer;}
+  .hsub{display:flex; gap:10px; flex-wrap:wrap; margin-top:6px; font-size:13px; color:var(--muted);}
+  .hsub .pill{background:var(--chip); border:1px solid var(--line); border-radius:20px; padding:2px 10px;}
+  .pill.ok{color:var(--accent);} .pill.warn{color:var(--warn);} .pill.off{color:var(--muted);}
+
+  main{flex:1; padding:14px; padding-bottom:90px;}
+
+  /* カード・リスト */
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:14px; margin-bottom:12px;}
+  .card.tap{cursor:pointer;} .card.tap:active{background:var(--panel2);}
+  .row{display:flex; align-items:center; gap:10px;}
+  .grow{flex:1;}
+  .muted{color:var(--muted);} .small{font-size:13px;} .tiny{font-size:12px;}
+  .badge{display:inline-block; border-radius:20px; padding:2px 10px; font-size:12px; background:var(--chip); border:1px solid var(--line);}
+  .badge.status-未開始{color:var(--muted);}
+  .badge.status-調査中{color:var(--accent); border-color:var(--accent2);}
+  .badge.status-終了{color:var(--muted);}
+  .badge.warn{color:var(--warn);}
+  .sp{height:8px;}
+
+  /* ボタン */
+  .btn{display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    background:var(--panel2); color:var(--fg); border:1px solid var(--line);
+    border-radius:12px; padding:12px 16px; cursor:pointer; width:100%; text-align:center;}
+  .btn:active{background:var(--panel);}
+  .btn.primary{background:var(--accent2); border-color:var(--accent); color:#fff; font-weight:700;}
+  .btn.ghost{background:none;}
+  .btn.danger{color:var(--danger); border-color:#5a2e2e;}
+  .btn.big{font-size:18px; padding:18px; font-weight:700;}
+  .btn-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .btn-grid.one{grid-template-columns:1fr;}
+
+  /* フォーム */
+  label.field{display:block; margin-bottom:14px;}
+  label.field > .lab{display:block; font-size:13px; color:var(--muted); margin-bottom:5px;}
+  input,select,textarea{width:100%; background:var(--panel2); color:var(--fg);
+    border:1px solid var(--line); border-radius:10px; padding:11px 12px; font-size:16px;}
+  textarea{min-height:70px; resize:vertical;}
+  input:focus,select,textarea:focus{outline:none; border-color:var(--accent);}
+  .req{color:var(--accent);}
+  .seg{display:flex; flex-wrap:wrap; gap:8px;}
+  .seg button{background:var(--panel2); border:1px solid var(--line); color:var(--muted);
+    border-radius:20px; padding:8px 14px; cursor:pointer;}
+  .seg button.on{background:var(--accent2); border-color:var(--accent); color:#fff;}
+  .two{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+
+  /* 大ボタン群（調査中） */
+  .actions{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:6px;}
+  .act{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:20px 12px; text-align:center; cursor:pointer; font-size:17px; font-weight:700;}
+  .act:active{background:var(--panel2);}
+  .act .ic{font-size:26px; display:block; margin-bottom:6px;}
+  .act.primary{background:var(--accent2); border-color:var(--accent); color:#fff;}
+  .act.wide{grid-column:1 / -1;}
+
+  /* 検索候補 */
+  .suggest{border:1px solid var(--line); border-radius:10px; margin-top:6px; overflow:hidden; max-height:280px; overflow-y:auto;}
+  .suggest .item{padding:11px 12px; border-bottom:1px solid var(--line); cursor:pointer;}
+  .suggest .item:last-child{border-bottom:none;}
+  .suggest .item:active{background:var(--panel2);}
+  .suggest .item .fam{font-size:12px; color:var(--muted);}
+  .chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;}
+  .chips .c{background:var(--chip); border:1px solid var(--line); border-radius:16px; padding:5px 10px; font-size:13px; cursor:pointer;}
+
+  /* 地図 */
+  #map{height:calc(100vh - 220px); min-height:320px; border-radius:var(--radius); border:1px solid var(--line);}
+  .leaflet-container{background:#0d1412;}
+  .locate-btn{width:42px; height:42px; font-size:20px; line-height:1;
+    background:var(--panel); color:var(--fg); border:1px solid var(--line);
+    border-radius:10px; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
+  .locate-btn:active{background:var(--panel2);}
+
+  /* 集計テーブル */
+  table{width:100%; border-collapse:collapse; font-size:14px;}
+  th,td{text-align:left; padding:8px 6px; border-bottom:1px solid var(--line);}
+  th{color:var(--muted); font-weight:600; position:sticky; top:0; background:var(--panel);}
+  td.num,th.num{text-align:right;}
+  .tablewrap{overflow-x:auto; -webkit-overflow-scrolling:touch;}
+
+  /* トースト */
+  #toast{position:fixed; left:50%; bottom:26px; transform:translateX(-50%);
+    background:#000; color:#fff; padding:11px 18px; border-radius:24px; font-size:14px;
+    opacity:0; transition:opacity .25s; pointer-events:none; z-index:2000; max-width:90%;}
+  #toast.show{opacity:.94;}
+
+  /* 録音 */
+  .reclist{margin-top:10px; display:flex; flex-direction:column; gap:10px;}
+  .recitem{background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px;}
+  .recaudio{width:100%; margin-top:8px; height:38px;}
+  .recdot{display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--danger); margin-right:6px; animation:recblink 1s infinite;}
+  @keyframes recblink{0%,100%{opacity:1;} 50%{opacity:.2;}}
+
+  .empty{text-align:center; color:var(--muted); padding:40px 10px;}
+  .divider{height:1px; background:var(--line); margin:14px 0;}
+  .note{font-size:13px; color:var(--muted); background:var(--panel2); border:1px solid var(--line);
+    border-radius:10px; padding:10px 12px;}
+  .hidden{display:none !important;}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="hbar">
+      <button class="back hidden" id="backBtn" onclick="goBack()">‹ 戻る</button>
+      <div class="htitle" id="hTitle">鳥類調査記録</div>
+    </div>
+    <div class="hsub" id="hSub"></div>
+  </header>
+  <main id="main"></main>
+</div>
+<div id="toast"></div>
+
+<script src="./leaflet.js"></script>
+<script>
+/* ============================================================
+   鳥類調査員育成用フィールド記録アプリ — Web/PWA 試作版 v1
+   保存: localStorage(JSON) + IndexedDB(録音音声) / 地図: Leaflet + 地理院タイル
+   ※ 軌跡記録(GPSトラック)は次版で追加予定
+   ============================================================ */
+
+/* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
+const APP_VERSION = 'v6（2026-07-17 録音メモ・現在地自動表示）';
+
+/* ---------- ユーティリティ ---------- */
+const $ = (s,el=document)=>el.querySelector(s);
+const uuid = ()=> (crypto.randomUUID ? crypto.randomUUID()
+  : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{
+      const r=Math.random()*16|0, v=c==='x'?r:(r&0x3|0x8); return v.toString(16);}));
+const nowISO = ()=> new Date().toISOString();
+function localDatetimeValue(d=new Date()){
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function dateValue(d=new Date()){
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+function fmtDate(s){ if(!s) return '—'; return String(s).slice(0,10); }
+function fmtTime(s){ if(!s) return '—'; const d=new Date(s); if(isNaN(d)) return '—';
+  const p=n=>String(n).padStart(2,'0'); return `${p(d.getHours())}:${p(d.getMinutes())}`; }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),1800); }
+
+/* ---------- データ層（localStorage） ---------- */
+const DB = {
+  key:{sv:'bs_surveys', ob:'bs_observations', nt:'bs_notes', hy:'bs_hypotheses', hr:'bs_hyp_results', recent:'bs_recent_species', fav:'bs_fav_species'},
+  load(k){ try{ return JSON.parse(localStorage.getItem(k)||'[]'); }catch(e){ return []; } },
+  save(k,v){ localStorage.setItem(k, JSON.stringify(v)); },
+  surveys(){ return this.load(this.key.sv).filter(s=>!s.deleted_at); },
+  allSurveys(){ return this.load(this.key.sv); },
+  observations(){ return this.load(this.key.ob).filter(o=>!o.deleted_at); },
+  notes(){ return this.load(this.key.nt).filter(n=>!n.deleted_at); },
+  hypotheses(){ return this.load(this.key.hy).filter(h=>!h.deleted_at); },
+  hypResults(){ return this.load(this.key.hr).filter(r=>!r.deleted_at); },
+  obsOf(svUuid){ return this.observations().filter(o=>o.survey_uuid===svUuid); },
+  notesOf(svUuid){ return this.notes().filter(n=>n.survey_uuid===svUuid); },
+  hypOf(svUuid){ return this.hypotheses().filter(h=>h.survey_uuid===svUuid); },
+  hypothesis(u){ return this.load(this.key.hy).find(h=>h.uuid===u); },
+  resultsOf(hyUuid){ return this.hypResults().filter(r=>r.hypothesis_uuid===hyUuid); },
+  survey(u){ return this.allSurveys().find(s=>s.uuid===u); },
+  upsertSurvey(rec){ const a=this.load(this.key.sv); const i=a.findIndex(x=>x.uuid===rec.uuid);
+    rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; this.save(this.key.sv,a); },
+  upsertObs(rec){ const a=this.load(this.key.ob); const i=a.findIndex(x=>x.uuid===rec.uuid);
+    rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; this.save(this.key.ob,a); },
+  upsertNote(rec){ const a=this.load(this.key.nt); const i=a.findIndex(x=>x.uuid===rec.uuid);
+    rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; this.save(this.key.nt,a); },
+  upsertHyp(rec){ const a=this.load(this.key.hy); const i=a.findIndex(x=>x.uuid===rec.uuid);
+    rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; this.save(this.key.hy,a); },
+  upsertHypResult(rec){ const a=this.load(this.key.hr); const i=a.findIndex(x=>x.uuid===rec.uuid);
+    rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; this.save(this.key.hr,a); },
+  softDelete(k,u){ const a=this.load(k); const i=a.findIndex(x=>x.uuid===u);
+    if(i>=0){ a[i].deleted_at=nowISO(); this.save(k,a);} },
+  recentSpecies(){ return this.load(this.key.recent); },
+  pushRecent(name){ if(!name) return; let a=this.load(this.key.recent).filter(x=>x!==name);
+    a.unshift(name); a=a.slice(0,12); this.save(this.key.recent,a); },
+};
+
+/* ---------- 録音の保存（IndexedDB：音声はサイズが大きいためlocalStorageと分離） ---------- */
+const AudioDB = {
+  _db:null,
+  open(){
+    if(this._db) return Promise.resolve(this._db);
+    return new Promise((res,rej)=>{
+      if(!window.indexedDB){ rej(new Error('no-indexeddb')); return; }
+      const r=indexedDB.open('bird_survey_audio',1);
+      r.onupgradeneeded=()=>{ const db=r.result;
+        if(!db.objectStoreNames.contains('audio')) db.createObjectStore('audio',{keyPath:'id'}); };
+      r.onsuccess=()=>{ this._db=r.result; res(this._db); };
+      r.onerror=()=>rej(r.error);
+    });
+  },
+  _do(mode, fn){ return this.open().then(db=>new Promise((res,rej)=>{
+    const st=db.transaction('audio',mode).objectStore('audio'); const q=fn(st);
+    q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error);
+  })); },
+  put(rec){ return this._do('readwrite', st=>st.put(rec)); },
+  get(id){ return this._do('readonly', st=>st.get(id)); },
+  del(id){ return this._do('readwrite', st=>st.delete(id)); },
+  all(){ return this._do('readonly', st=>st.getAll()).then(r=>r||[]); },
+  // どの観察にも参照されていない録音（保存されなかった・削除済みの残骸）を掃除
+  gc(){
+    const valid=new Set();
+    DB.load(DB.key.ob).forEach(o=>(o.audio||[]).forEach(a=>a&&a.id&&valid.add(a.id)));
+    return this.all().then(list=>Promise.all(list.filter(a=>!valid.has(a.id)).map(a=>this.del(a.id))));
+  }
+};
+
+/* ---------- 選択肢マスタ（指示書準拠） ---------- */
+const OPT = {
+  method:['ラインセンサス','定点調査','任意観察','その他'],
+  weather:['快晴','晴','曇','雨','雪','霧'],
+  wind:['無風','弱い','やや強い','強い'],
+  detection:['目視','鳴き声','目視および鳴き声','飛翔','痕跡','不明'],
+  behavior:['さえずり','地鳴き','採餌','飛翔','休息','警戒','繁殖行動','巣材運搬','巣立ち雛','その他'],
+  habitat:['河畔林','森林','草地','農耕地','開放地','水域','市街地','その他'],
+  idStatus:['確定','仮同定','未同定'],
+  confidence:['高','中','低'],
+  noteCat:['調査条件','生息環境','調査結果','特記事項','考察メモ','報告書用メモ','次回課題','その他'],
+  hypStatus:['未検証','検証中','検証済み','保留'],
+  judgment:['支持','一部支持','支持されない','判断不能'],
+};
+
+/* ---------- 種名マスタ（日本の一般的な鳥類 和名） ---------- */
+const SPECIES = `カイツブリ,ハジロカイツブリ,カンムリカイツブリ,カワウ,ウミウ,ゴイサギ,ササゴイ,アマサギ,ダイサギ,チュウサギ,コサギ,アオサギ,クロサギ,マガモ,カルガモ,コガモ,ヨシガモ,オカヨシガモ,ヒドリガモ,オナガガモ,ハシビロガモ,ホシハジロ,キンクロハジロ,スズガモ,ウミアイサ,カワアイサ,ミサゴ,トビ,オオタカ,ツミ,ハイタカ,ノスリ,サシバ,ハチクマ,チュウヒ,ハヤブサ,チョウゲンボウ,コジュケイ,ウズラ,キジ,ヤマドリ,バン,オオバン,クイナ,ヒクイナ,タゲリ,ケリ,コチドリ,イカルチドリ,シロチドリ,ムナグロ,ダイゼン,キョウジョシギ,トウネン,ハマシギ,オバシギ,アオアシシギ,キアシシギ,イソシギ,ソリハシシギ,オグロシギ,オオソリハシシギ,チュウシャクシギ,タシギ,ヤマシギ,セイタカシギ,ユリカモメ,セグロカモメ,オオセグロカモメ,ウミネコ,カモメ,アジサシ,コアジサシ,キジバト,ドバト,アオバト,カッコウ,ツツドリ,ホトトギス,アオバズク,フクロウ,コノハズク,ヨタカ,アマツバメ,ヒメアマツバメ,カワセミ,ヤマセミ,アカショウビン,ブッポウソウ,アリスイ,コゲラ,アカゲラ,オオアカゲラ,アオゲラ,クマゲラ,ヒバリ,ショウドウツバメ,ツバメ,コシアカツバメ,イワツバメ,キセキレイ,ハクセキレイ,セグロセキレイ,ビンズイ,タヒバリ,サンショウクイ,ヒヨドリ,モズ,アカモズ,キレンジャク,ヒレンジャク,カワガラス,ミソサザイ,ヒバリシギ,カヤクグリ,コマドリ,ノゴマ,ルリビタキ,ジョウビタキ,ノビタキ,イソヒヨドリ,トラツグミ,クロツグミ,アカハラ,シロハラ,マミチャジナイ,ツグミ,ウグイス,ヤブサメ,オオヨシキリ,コヨシキリ,セッカ,メボソムシクイ,エゾムシクイ,センダイムシクイ,キクイタダキ,キビタキ,オオルリ,コサメビタキ,エゾビタキ,サメビタキ,サンコウチョウ,エナガ,コガラ,ヒガラ,ヤマガラ,シジュウカラ,ゴジュウカラ,キバシリ,メジロ,ホオジロ,ホオアカ,カシラダカ,ミヤマホオジロ,アオジ,クロジ,オオジュリン,アトリ,カワラヒワ,マヒワ,ベニマシコ,ウソ,シメ,イカル,コイカル,ニュウナイスズメ,スズメ,ムクドリ,コムクドリ,カケス,オナガ,ハシボソガラス,ハシブトガラス,ワタリガラス,ミヤマガラス,コクマルガラス`
+  .split(',').map((n,i)=>({ species_id:i+1, japanese_name:n.trim(), search_text:n.trim() }))
+  .filter(s=>s.japanese_name);
+
+/* ---------- 画面遷移 ---------- */
+let STACK = [];               // {name, arg}
+let currentSurveyUuid = null; // 調査中コンテキスト
+let mapObj = null;
+let mapCurMarker = null, mapCurCircle = null; // 地図上の現在地マーカー・精度円
+
+function nav(name, arg){ STACK.push({name,arg}); render(); }
+function goBack(){ if(STACK.length>1){ STACK.pop(); render(); } }
+function reset(name,arg){ STACK=[{name,arg}]; render(); }
+
+const SCREENS = {}; // name -> function(arg) -> returns {title, sub[], html, onMount}
+
+function render(){
+  if(REC) recAbort(); // 画面を離れたら録音を中断（保存はしない）
+  if(mapObj){ try{ mapObj.remove(); }catch(e){} mapObj=null; }
+  const cur = STACK[STACK.length-1] || {name:'home'};
+  const scr = SCREENS[cur.name] || SCREENS.home;
+  const out = scr(cur.arg) || {};
+  $('#hTitle').textContent = out.title || '鳥類調査記録';
+  $('#backBtn').classList.toggle('hidden', STACK.length<=1);
+  const sub = $('#hSub'); sub.innerHTML = (out.sub||[]).join('');
+  $('#main').innerHTML = out.html || '';
+  if(out.onMount) out.onMount();
+  window.scrollTo(0,0);
+}
+
+/* ============================================================
+   ホーム
+   ============================================================ */
+SCREENS.home = ()=>{
+  const surveys = DB.surveys().sort((a,b)=>(b.survey_date||'').localeCompare(a.survey_date||''));
+  const active = surveys.filter(s=>s.status==='調査中');
+  const others = surveys.filter(s=>s.status!=='調査中');
+
+  const svCard = s=>{
+    const obs = DB.obsOf(s.uuid);
+    const spCount = new Set(obs.filter(o=>o.species_name_snapshot).map(o=>o.species_name_snapshot)).size;
+    const review = obs.filter(o=>o.needs_review).length;
+    return `<div class="card tap" onclick="nav('survey','${s.uuid}')">
+      <div class="row">
+        <div class="grow">
+          <div style="font-weight:700; font-size:17px;">${esc(s.name||'(無題の調査)')}</div>
+          <div class="small muted">${fmtDate(s.survey_date)} ・ ${esc(s.location_name||'場所未設定')} ・ ${esc(s.survey_method||'')}</div>
+        </div>
+        <span class="badge status-${esc(s.status||'未開始')}">${esc(s.status||'未開始')}</span>
+      </div>
+      <div class="chips" style="margin-top:10px;">
+        <span class="c">確認種数 ${spCount}</span>
+        <span class="c">観察 ${obs.length}件</span>
+        ${review?`<span class="c" style="color:var(--warn)">要確認 ${review}</span>`:''}
+      </div>
+    </div>`;
+  };
+
+  return {
+    title:'鳥類調査記録',
+    html:`
+      <button class="btn primary big" onclick="nav('surveyEdit',null)">＋ 新しい調査を作成</button>
+      <div class="sp"></div>
+      ${active.length?`<h3 class="muted small">継続中の調査</h3>${active.map(svCard).join('')}`:''}
+      <h3 class="muted small" style="margin-top:14px;">調査一覧</h3>
+      ${others.length? others.map(svCard).join('') : (active.length?'':'<div class="empty">まだ調査がありません。<br>「新しい調査を作成」から始めましょう。</div>')}
+      <div class="divider"></div>
+      <div class="btn-grid">
+        <button class="btn" onclick="nav('exportHub',null)">⤓ エクスポート</button>
+        <button class="btn" onclick="nav('importHub',null)">⤒ インポート</button>
+      </div>
+      <div class="sp"></div>
+      <div class="note">観察記録の合計個体数は延べ数です。同一個体を重複して数えている可能性があるため、生息個体数とは限りません。</div>
+      <div class="sp"></div>
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <span class="tiny muted">バージョン ${APP_VERSION}</span>
+        <button class="btn ghost" style="width:auto; padding:6px 12px; font-size:13px;" onclick="forceUpdate()">↻ 最新に更新</button>
+      </div>
+    `
+  };
+};
+// アプリ本体のプログラムだけを最新に読み込み直す（記録データは消さない）
+function forceUpdate(){
+  if(!confirm('保存した記録（調査・観察・録音）はそのままで、アプリのプログラムだけを最新に読み込み直します。よろしいですか？')) return;
+  const reload=()=>location.reload();
+  const tasks=[];
+  if('serviceWorker' in navigator){ tasks.push(navigator.serviceWorker.getRegistrations()
+    .then(rs=>Promise.all(rs.map(r=>r.unregister()))).catch(()=>{})); }
+  if(window.caches){ tasks.push(caches.keys().then(ks=>Promise.all(ks.map(k=>caches.delete(k)))).catch(()=>{})); }
+  Promise.all(tasks).then(reload, reload);
+}
+
+/* ============================================================
+   調査 作成/編集
+   ============================================================ */
+const DRAFT_KEY='bs_draft_survey';
+SCREENS.surveyEdit = (svUuid)=>{
+  const editing = !!svUuid;
+  let s = editing ? Object.assign({}, DB.survey(svUuid)) : null;
+  if(!s){
+    // 下書き復元（新規作成時のみ）
+    let draft=null; try{ draft=JSON.parse(localStorage.getItem(DRAFT_KEY)||'null'); }catch(e){}
+    s = draft || { uuid:uuid(), name:'', survey_date:dateValue(), location_name:'',
+      survey_method:'ラインセンサス', investigator_name:'', weather:'晴', wind:'弱い',
+      temperature:'', purpose:'', pre_survey_notes:'', pre_hypothesis:'', status:'未開始' };
+  }
+  const seg=(field,opts)=>`<div class="seg" data-seg="${field}">${opts.map(o=>
+    `<button type="button" class="${s[field]===o?'on':''}" onclick="pickSeg(this,'${field}','${esc(o)}')">${esc(o)}</button>`).join('')}</div>`;
+
+  return {
+    title: editing?'調査を編集':'調査を作成',
+    html:`
+      <form id="svForm" oninput="draftSave()">
+        <label class="field"><span class="lab">調査名 <span class="req">*</span></span>
+          <input name="name" value="${esc(s.name)}" placeholder="例：〇〇川 河畔林 定点調査"></label>
+        <div class="two">
+          <label class="field"><span class="lab">調査日</span>
+            <input type="date" name="survey_date" value="${esc(s.survey_date)}"></label>
+          <label class="field"><span class="lab">気温(℃)</span>
+            <input type="number" name="temperature" inputmode="decimal" value="${esc(s.temperature)}" placeholder="任意"></label>
+        </div>
+        <label class="field"><span class="lab">調査場所</span>
+          <input name="location_name" value="${esc(s.location_name)}" placeholder="地名・地点名"></label>
+        <label class="field"><span class="lab">調査方法</span>${seg('survey_method',OPT.method)}</label>
+        <label class="field"><span class="lab">調査者名</span>
+          <input name="investigator_name" value="${esc(s.investigator_name)}" placeholder="任意"></label>
+        <div class="two">
+          <label class="field"><span class="lab">天候</span>${seg('weather',OPT.weather)}</label>
+          <label class="field"><span class="lab">風</span>${seg('wind',OPT.wind)}</label>
+        </div>
+        <label class="field"><span class="lab">調査目的</span>
+          <textarea name="purpose" placeholder="何を確かめる調査か">${esc(s.purpose)}</textarea></label>
+        <label class="field"><span class="lab">調査前の確認事項</span>
+          <textarea name="pre_survey_notes" placeholder="現場で確認したいこと">${esc(s.pre_survey_notes)}</textarea></label>
+        <label class="field"><span class="lab">調査前の仮説</span>
+          <textarea name="pre_hypothesis" placeholder="予想していること">${esc(s.pre_hypothesis||'')}</textarea></label>
+      </form>
+      <button class="btn primary big" onclick="saveSurvey('${s.uuid}',${editing})">保存する</button>
+      ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteSurvey('${s.uuid}')">この調査を削除</button>`:''}
+      <div class="sp"></div>
+      <div class="note">入力途中でも自動で下書き保存されます。開始・終了の時刻は「調査を開始／終了」で自動記録します。</div>
+    `,
+    onMount:()=>{ SCREENS._editUuid=s.uuid; SCREENS._editing=editing; }
+  };
+};
+function pickSeg(btn,field,val){
+  btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on'); btn.parentElement.dataset.value=val; draftSave();
+}
+function collectSurveyForm(){
+  const f=$('#svForm'); const g=n=>{const el=f.querySelector(`[name="${n}"]`); return el?el.value:'';};
+  const seg=field=>{ const on=f.querySelector(`[data-seg="${field}"] button.on`); return on?on.textContent:''; };
+  return { name:g('name'), survey_date:g('survey_date'), temperature:g('temperature'),
+    location_name:g('location_name'), survey_method:seg('survey_method'),
+    investigator_name:g('investigator_name'), weather:seg('weather'), wind:seg('wind'),
+    purpose:g('purpose'), pre_survey_notes:g('pre_survey_notes'), pre_hypothesis:g('pre_hypothesis') };
+}
+function draftSave(){ if(SCREENS._editing) return; // 新規のみ下書き
+  const base={uuid:SCREENS._editUuid, status:'未開始'};
+  localStorage.setItem(DRAFT_KEY, JSON.stringify(Object.assign(base, collectSurveyForm()))); }
+function saveSurvey(u, editing){
+  const data=collectSurveyForm();
+  if(!data.name.trim()){ toast('調査名を入力してください'); return; }
+  const cur = editing ? DB.survey(u) : {uuid:u, status:'未開始'};
+  const rec = Object.assign({}, cur, data);
+  DB.upsertSurvey(rec);
+  if(!editing) localStorage.removeItem(DRAFT_KEY);
+  toast('保存しました');
+  reset('home'); nav('survey', u);
+}
+function deleteSurvey(u){
+  if(!confirm('この調査と、ひも付く観察記録を削除します。よろしいですか？')) return;
+  DB.softDelete(DB.key.sv,u);
+  DB.obsOf(u).forEach(o=>DB.softDelete(DB.key.ob,o.uuid));
+  DB.notesOf(u).forEach(n=>DB.softDelete(DB.key.nt,n.uuid));
+  toast('削除しました'); reset('home');
+}
+
+/* ============================================================
+   調査 詳細 / 調査中
+   ============================================================ */
+SCREENS.survey = (u)=>{
+  const s = DB.survey(u); if(!s) return SCREENS.home();
+  currentSurveyUuid = u;
+  const obs = DB.obsOf(u);
+  const spCount = new Set(obs.filter(o=>o.species_name_snapshot).map(o=>o.species_name_snapshot)).size;
+  const review = obs.filter(o=>o.needs_review).length;
+  const running = s.status==='調査中';
+
+  let elapsed='—';
+  if(s.start_datetime){ const ms=(s.end_datetime?new Date(s.end_datetime):new Date())-new Date(s.start_datetime);
+    if(ms>=0){ const m=Math.floor(ms/60000); elapsed=`${Math.floor(m/60)}時間${m%60}分`; } }
+
+  const sub=[
+    `<span class="pill">${esc(s.status||'未開始')}</span>`,
+    running?`<span class="pill" id="pGps">GPS —</span>`:'',
+    `<span class="pill">経過 ${elapsed}</span>`,
+    `<span class="pill">観察 ${obs.length}</span>`,
+    review?`<span class="pill warn">要確認 ${review}</span>`:'',
+  ].filter(Boolean);
+
+  const startBtn = s.status==='未開始'
+    ? `<button class="btn primary big" onclick="startSurvey('${u}')">▶ 調査を開始</button>`
+    : '';
+  const actions = running ? `
+    <div class="actions">
+      <div class="act primary wide" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🐦</span>観察を追加</div>
+      <div class="act" onclick="nav('noteEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">📝</span>メモを追加</div>
+      <div class="act" onclick="nav('hypotheses','${u}')"><span class="ic">💡</span>仮説を見る</div>
+      <div class="act" onclick="nav('map','${u}')"><span class="ic">🗺</span>地図を見る</div>
+      <div class="act" onclick="nav('summary','${u}')"><span class="ic">📊</span>集計を見る</div>
+      <div class="act" onclick="nav('surveyEnd','${u}')"><span class="ic">⏹</span>調査を終了</div>
+    </div>` : '';
+
+  const recent = obs.slice().sort((a,b)=>(b.observed_at||'').localeCompare(a.observed_at||'')).slice(0,20);
+  const obsList = recent.length ? recent.map(o=>`
+    <div class="card tap" onclick="nav('obsEdit', JSON.stringify({sv:'${u}',id:'${o.uuid}'}))">
+      <div class="row">
+        <div class="grow">
+          <div style="font-weight:700;">${esc(o.species_name_snapshot||'（未同定）')}
+            ${o.needs_review?'<span class="badge warn">要確認</span>':''}
+            ${o.identification_status&&o.identification_status!=='確定'?`<span class="badge">${esc(o.identification_status)}</span>`:''}
+          </div>
+          <div class="small muted">${fmtTime(o.observed_at)} ・ ${esc(o.count||1)}個体 ・ ${esc(o.detection_method||'')}${o.habitat?' ・ '+esc(o.habitat):''}</div>
+        </div>
+        <span class="tiny muted">${(o.audio&&o.audio.length)?'🎤':''}${o.latitude?'📍':''}</span>
+      </div>
+    </div>`).join('') : '<div class="empty small">まだ観察記録がありません。</div>';
+
+  const notes = DB.notesOf(u);
+
+  return {
+    title: s.name||'調査', sub,
+    html:`
+      ${startBtn}
+      ${actions}
+      ${!running?`<div class="sp"></div><div class="btn-grid">
+        <button class="btn" onclick="nav('map','${u}')">🗺 地図</button>
+        <button class="btn" onclick="nav('summary','${u}')">📊 集計</button>
+        <button class="btn" onclick="nav('hypotheses','${u}')">💡 仮説・検証</button>
+        <button class="btn" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))">🐦 観察を追加</button>
+        <button class="btn" onclick="nav('surveyEdit','${u}')">✎ 調査情報を編集</button>
+        <button class="btn" onclick="nav('surveyEnd','${u}')">⏹ 終了・振り返り</button>
+      </div>`:''}
+      <div class="divider"></div>
+      <div class="row"><h3 class="grow">観察記録 <span class="muted small">(${obs.length})</span></h3></div>
+      ${obsList}
+      ${notes.length?`<div class="divider"></div><h3>調査メモ <span class="muted small">(${notes.length})</span></h3>
+        ${notes.map(n=>`<div class="card tap" onclick="nav('noteEdit', JSON.stringify({sv:'${u}',id:'${n.uuid}'}))">
+          <div class="small"><span class="badge">${esc(n.category||'')}</span> ${fmtTime(n.recorded_at)}</div>
+          <div>${esc((n.content||'').slice(0,120))}</div></div>`).join('')}`:''}
+    `,
+    onMount:()=>{ if(running) startGpsIndicator(); }
+  };
+};
+function startSurvey(u){ const s=DB.survey(u); if(!s) return;
+  s.status='調査中'; if(!s.start_datetime) s.start_datetime=nowISO(); DB.upsertSurvey(s);
+  toast('調査を開始しました'); render(); }
+
+/* GPS状態インジケータ（ヘッダの pill を更新） */
+let gpsWatchId=null, lastFix=null;
+function startGpsIndicator(){
+  stopGps();
+  if(!navigator.geolocation) return;
+  gpsWatchId=navigator.geolocation.watchPosition(p=>{
+    lastFix={lat:p.coords.latitude, lon:p.coords.longitude, acc:p.coords.accuracy, t:Date.now()};
+    const el=$('#pGps'); if(el){ el.textContent=`GPS ±${Math.round(p.coords.accuracy)}m`; el.className='pill ok'; }
+  }, e=>{ const el=$('#pGps'); if(el){ el.textContent='GPS 取得不可'; el.className='pill off'; } },
+  {enableHighAccuracy:true, maximumAge:5000, timeout:15000});
+}
+function stopGps(){ if(gpsWatchId!=null && navigator.geolocation){ navigator.geolocation.clearWatch(gpsWatchId); } gpsWatchId=null; }
+
+/* ============================================================
+   観察記録 追加/編集
+   ============================================================ */
+SCREENS.obsEdit = (argStr)=>{
+  const arg = JSON.parse(argStr||'{}');
+  const svUuid = arg.sv || currentSurveyUuid;
+  const editing = !!arg.id;
+  let o = editing ? Object.assign({}, DB.observations().find(x=>x.uuid===arg.id)) : null;
+  if(!o){
+    o = { uuid:uuid(), survey_uuid:svUuid, observed_at:localDatetimeValue(), latitude:'', longitude:'',
+      gps_accuracy:'', species_id:'', species_name_snapshot:'', count:1, detection_method:'目視',
+      behavior:'', habitat:'', note:'', identification_status:'確定', confidence:'中',
+      needs_review:false, external_photo_reference:'' };
+    // 現在のGPSを初期値に
+    if(lastFix){ o.latitude=lastFix.lat.toFixed(6); o.longitude=lastFix.lon.toFixed(6); o.gps_accuracy=Math.round(lastFix.acc); }
+  } else if(o.observed_at && o.observed_at.length>16){ o.observed_at=localDatetimeValue(new Date(o.observed_at)); }
+
+  const seg=(field,opts,allowEmpty)=>`<div class="seg" data-seg="${field}">
+    ${allowEmpty?`<button type="button" class="${!o[field]?'on':''}" onclick="pickObs(this,'${field}','')">なし</button>`:''}
+    ${opts.map(x=>`<button type="button" class="${o[field]===x?'on':''}" onclick="pickObs(this,'${field}','${esc(x)}')">${esc(x)}</button>`).join('')}</div>`;
+
+  return {
+    title: editing?'観察を編集':'観察を追加',
+    html:`
+      <form id="obForm">
+        <label class="field"><span class="lab">種名（未入力でも保存可）</span>
+          <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
+            placeholder="和名で検索…" oninput="spSearch(this.value)">
+          <div id="spSuggest"></div>
+          <div class="chips" id="spQuick"></div>
+        </label>
+        <div class="two">
+          <label class="field"><span class="lab">個体数</span>
+            <input type="number" name="count" inputmode="numeric" min="0" value="${esc(o.count!=null?o.count:1)}"></label>
+          <label class="field"><span class="lab">観察日時</span>
+            <input type="datetime-local" name="observed_at" value="${esc(o.observed_at)}"></label>
+        </div>
+        <label class="field"><span class="lab">確認方法</span>${seg('detection_method',OPT.detection)}</label>
+        <label class="field"><span class="lab">行動</span>${seg('behavior',OPT.behavior,true)}</label>
+        <label class="field"><span class="lab">生息環境</span>${seg('habitat',OPT.habitat,true)}</label>
+        <label class="field"><span class="lab">同定状態</span>${seg('identification_status',OPT.idStatus)}</label>
+        <label class="field"><span class="lab">信頼度</span>${seg('confidence',OPT.confidence)}</label>
+        <label class="field"><span class="lab">観察メモ</span>
+          <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
+        <div class="field"><span class="lab">録音メモ（鳴き声など）</span>
+          <div id="recPanel"></div></div>
+        <label class="field"><span class="lab">外部写真番号・ファイル名</span>
+          <input name="external_photo_reference" value="${esc(o.external_photo_reference)}" placeholder="別カメラの写真番号など"></label>
+        <label class="field row" style="gap:12px; align-items:center;">
+          <input type="checkbox" id="needsReview" style="width:auto;" ${o.needs_review?'checked':''}>
+          <span class="lab" style="margin:0;">要確認フラグ（あとで見直す）</span></label>
+        <div class="card" style="background:var(--panel2);">
+          <div class="row"><div class="grow small muted">位置：<span id="posLabel">${o.latitude?esc(o.latitude)+', '+esc(o.longitude)+(o.gps_accuracy?` (±${esc(o.gps_accuracy)}m)`:''):'未取得'}</span></div>
+            <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="grabGps()">📍 現在地</button></div>
+          <div class="two" style="margin-top:8px;">
+            <input id="latIn" inputmode="decimal" placeholder="緯度" value="${esc(o.latitude)}">
+            <input id="lonIn" inputmode="decimal" placeholder="経度" value="${esc(o.longitude)}">
+          </div>
+        </div>
+      </form>
+      <div class="sp"></div>
+      <button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing})">保存する</button>
+      ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteObs('${o.uuid}')">この記録を削除</button>`:''}
+      <div class="sp"></div>
+      <div class="note">種名が未入力なら「未同定」として保存されます。GPSが取れなくても保存できます。</div>
+    `,
+    onMount:()=>{ SCREENS._obs=o; SCREENS._audio=(o.audio||[]).slice(); renderQuickSpecies(); renderRecPanel();
+      if(!o.latitude && lastFix){ /* すでに反映済み */ }
+    }
+  };
+};
+function pickObs(btn,field,val){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); }
+function segVal(field){ const on=document.querySelector(`[data-seg="${field}"] button.on`); return on? (on.textContent==='なし'?'':on.textContent):''; }
+
+/* 種名検索（ひらがな・カタカナどちらの入力でもヒット） */
+function toKata(s){ return String(s||'').replace(/[ぁ-ゖ]/g,c=>String.fromCharCode(c.charCodeAt(0)+0x60)); }
+function spSearch(q){
+  const box=$('#spSuggest'); q=(q||'').trim();
+  if(!q){ box.innerHTML=''; return; }
+  const qk=toKata(q);
+  const pre = SPECIES.filter(s=>toKata(s.japanese_name).startsWith(qk));
+  const part = SPECIES.filter(s=>!toKata(s.japanese_name).startsWith(qk) && toKata(s.japanese_name).includes(qk));
+  const list=[...pre,...part].slice(0,12);
+  box.innerHTML = list.length ? `<div class="suggest">${list.map(s=>
+    `<div class="item" onclick="chooseSpecies(${s.species_id},'${esc(s.japanese_name)}')">${esc(s.japanese_name)}</div>`).join('')}
+    <div class="item" style="color:var(--muted)" onclick="chooseSpecies('','')">「${esc(q)}」は候補になし → 未同定で保存</div></div>`
+    : `<div class="suggest"><div class="item" style="color:var(--muted)" onclick="chooseSpecies('','')">候補なし → 未同定で保存</div></div>`;
+}
+function chooseSpecies(id,name){ $('#spInput').value=name; $('#spSuggest').innerHTML='';
+  if(!name){ document.querySelectorAll('[data-seg="identification_status"] button').forEach(b=>{
+    b.classList.toggle('on', b.textContent==='未同定'); }); } SCREENS._chosenId=id; }
+function renderQuickSpecies(){
+  const box=$('#spQuick'); const recent=DB.recentSpecies();
+  const inSurvey=[...new Set(DB.obsOf(currentSurveyUuid).map(o=>o.species_name_snapshot).filter(Boolean))];
+  const set=[...new Set([...inSurvey.slice(0,6),...recent])].slice(0,10);
+  box.innerHTML = set.map(n=>`<span class="c" onclick="chooseSpecies('','${esc(n)}');$('#spInput').value='${esc(n)}'">${esc(n)}</span>`).join('');
+}
+function grabGps(){
+  if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
+  toast('位置を取得中…');
+  navigator.geolocation.getCurrentPosition(p=>{
+    $('#latIn').value=p.coords.latitude.toFixed(6); $('#lonIn').value=p.coords.longitude.toFixed(6);
+    $('#posLabel').textContent=`${p.coords.latitude.toFixed(6)}, ${p.coords.longitude.toFixed(6)} (±${Math.round(p.coords.accuracy)}m)`;
+    SCREENS._acc=Math.round(p.coords.accuracy); lastFix={lat:p.coords.latitude,lon:p.coords.longitude,acc:p.coords.accuracy,t:Date.now()};
+    toast('位置を取得しました');
+  }, e=>toast('位置を取得できませんでした'), {enableHighAccuracy:true, timeout:15000});
+}
+function saveObs(u, svUuid, editing){
+  const f=$('#obForm'); const g=n=>{const el=f.querySelector(`[name="${n}"]`); return el?el.value:'';};
+  const name=$('#spInput').value.trim();
+  const idStatus = segVal('identification_status') || (name?'確定':'未同定');
+  const rec = Object.assign({}, editing?DB.observations().find(x=>x.uuid===u):{uuid:u}, {
+    uuid:u, survey_uuid:svUuid,
+    observed_at: g('observed_at')? new Date(g('observed_at')).toISOString() : nowISO(),
+    latitude: $('#latIn').value.trim(), longitude: $('#lonIn').value.trim(),
+    gps_accuracy: SCREENS._acc || (DB.observations().find(x=>x.uuid===u)||{}).gps_accuracy || '',
+    species_id: SCREENS._chosenId||'', species_name_snapshot: name,
+    count: parseInt(g('count'),10)||0, detection_method: segVal('detection_method'),
+    behavior: segVal('behavior'), habitat: segVal('habitat'),
+    identification_status: name? idStatus : '未同定',
+    confidence: segVal('confidence'), needs_review: $('#needsReview').checked,
+    note: g('note'), external_photo_reference: g('external_photo_reference'),
+    audio: SCREENS._audio||[],
+  });
+  DB.upsertObs(rec); if(name) DB.pushRecent(name);
+  SCREENS._acc=null; SCREENS._chosenId=null; SCREENS._audio=null;
+  toast('保存しました'); goBack();
+}
+function deleteObs(u){ if(!confirm('この観察記録を削除しますか？')) return;
+  DB.softDelete(DB.key.ob,u); toast('削除しました'); goBack(); }
+
+/* ---------- 録音 ---------- */
+let REC = null; // 録音中コンテキスト { mr, stream, t0, chunks, timer, abort }
+function recSupported(){ return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder); }
+function pickRecMime(){
+  const c=['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/aac','audio/ogg'];
+  for(const m of c){ try{ if(MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m; }catch(e){} }
+  return '';
+}
+function mimeExt(m){ m=m||''; if(m.includes('webm'))return 'webm'; if(m.includes('mp4'))return 'm4a';
+  if(m.includes('aac'))return 'aac'; if(m.includes('ogg'))return 'ogg'; return 'bin'; }
+function fmtDur(s){ s=Math.max(0,Math.round(+s||0)); const m=Math.floor(s/60); return `${m}:${String(s%60).padStart(2,'0')}`; }
+
+async function recToggle(){
+  if(REC){ recStop(); return; }
+  if(!recSupported()){ toast('この端末では録音を利用できません（httpsで開いてください）'); return; }
+  let stream;
+  try{ stream=await navigator.mediaDevices.getUserMedia({audio:true}); }
+  catch(e){ toast('マイクを使えません（許可を確認してください）'); return; }
+  const mime=pickRecMime();
+  let mr;
+  try{ mr=new MediaRecorder(stream, mime?{mimeType:mime}:undefined); }
+  catch(e){ stream.getTracks().forEach(t=>t.stop()); toast('録音を開始できませんでした'); return; }
+  const ctx={ mr, stream, t0:Date.now(), chunks:[], timer:null, abort:false };
+  mr.ondataavailable=e=>{ if(e.data && e.data.size) ctx.chunks.push(e.data); };
+  mr.onstop=()=>{ clearInterval(ctx.timer); stream.getTracks().forEach(t=>t.stop());
+    const wasAbort=ctx.abort; REC=null; renderRecPanel();
+    if(!wasAbort) recFinalize(ctx.chunks, mr.mimeType||mime, ctx.t0); };
+  REC=ctx; mr.start(); ctx.timer=setInterval(updateRecTimer,250); renderRecPanel();
+}
+function recStop(){ if(REC){ clearInterval(REC.timer); try{ REC.mr.stop(); }catch(e){} } }
+function recAbort(){ if(REC){ REC.abort=true; clearInterval(REC.timer); try{ REC.mr.stop(); }catch(e){} } }
+function updateRecTimer(){ const el=$('#recTime'); if(el && REC) el.textContent=fmtDur((Date.now()-REC.t0)/1000); }
+
+function recFinalize(chunks, mime, t0){
+  const dur=Math.round((Date.now()-t0)/1000);
+  const blob=new Blob(chunks,{type:mime}); if(!blob.size){ toast('録音が空でした'); return; }
+  const meta={ id:uuid(), dur, size:blob.size, mime, ext:mimeExt(mime), created_at:nowISO() };
+  const obsUuid=(SCREENS._obs&&SCREENS._obs.uuid)||'';
+  AudioDB.put(Object.assign({}, meta, { blob, obs_uuid:obsUuid })).then(()=>{
+    SCREENS._audio=SCREENS._audio||[]; SCREENS._audio.push(meta);
+    persistAudioIfSaved(); renderRecPanel(); toast('録音を保存しました');
+  }).catch(()=>toast('録音の保存に失敗しました'));
+}
+function delAudio(id){
+  AudioDB.del(id).catch(()=>{}).then(()=>{
+    SCREENS._audio=(SCREENS._audio||[]).filter(a=>a.id!==id);
+    persistAudioIfSaved(); renderRecPanel(); toast('録音を削除しました');
+  });
+}
+// 編集中の観察がすでに保存済みなら、録音の追加・削除を即座に反映（保存待ちの不整合を防ぐ）
+function persistAudioIfSaved(){
+  const o=SCREENS._obs; if(!o) return;
+  const rec=DB.load(DB.key.ob).find(x=>x.uuid===o.uuid);
+  if(rec){ rec.audio=SCREENS._audio||[]; DB.upsertObs(rec); }
+}
+function renderRecPanel(){
+  const box=$('#recPanel'); if(!box) return;
+  if(!recSupported()){ box.innerHTML='<div class="note">この端末・接続では録音を利用できません（httpsまたはホーム画面から起動すると使えます）。</div>'; return; }
+  const list=SCREENS._audio||[]; const active=!!REC;
+  box.innerHTML=`
+    <button type="button" class="btn ${active?'danger':''}" onclick="recToggle()">
+      ${active?'<span class="recdot"></span>録音を停止 <span id="recTime">0:00</span>':'🎤 録音する'}</button>
+    ${list.length?`<div class="reclist">${list.map((a,i)=>`
+      <div class="recitem" data-id="${a.id}">
+        <div class="row"><span class="small muted grow">録音${i+1} ・ ${fmtDur(a.dur)} ・ ${Math.max(1,Math.round(a.size/1024))}KB</span>
+          <button type="button" class="btn danger" style="width:auto; padding:6px 12px;" onclick="delAudio('${a.id}')">削除</button></div>
+        <audio controls preload="none" class="recaudio"></audio>
+      </div>`).join('')}</div>`:''}`;
+  // 各プレーヤーにIndexedDBの音声を割り当て
+  list.forEach(a=>{ AudioDB.get(a.id).then(r=>{ if(!r||!r.blob) return;
+    const el=box.querySelector(`.recitem[data-id="${a.id}"] audio`); if(!el) return;
+    if(el._url) URL.revokeObjectURL(el._url);
+    el._url=URL.createObjectURL(r.blob); el.src=el._url;
+  }).catch(()=>{}); });
+}
+
+/* ============================================================
+   調査メモ
+   ============================================================ */
+SCREENS.noteEdit = (argStr)=>{
+  const arg=JSON.parse(argStr||'{}'); const svUuid=arg.sv||currentSurveyUuid; const editing=!!arg.id;
+  let n = editing ? Object.assign({},DB.notes().find(x=>x.uuid===arg.id)) : null;
+  if(!n) n={ uuid:uuid(), survey_uuid:svUuid, recorded_at:nowISO(), latitude:'', longitude:'',
+    category:'特記事項', content:'', needs_review:false };
+  if(lastFix && !n.latitude){ n.latitude=lastFix.lat.toFixed(6); n.longitude=lastFix.lon.toFixed(6); }
+  const seg=`<div class="seg" data-seg="category">${OPT.noteCat.map(c=>
+    `<button type="button" class="${n.category===c?'on':''}" onclick="pickObs(this,'category','${esc(c)}')">${esc(c)}</button>`).join('')}</div>`;
+  return {
+    title: editing?'メモを編集':'メモを追加',
+    html:`
+      <form id="ntForm">
+        <label class="field"><span class="lab">分類</span>${seg}</label>
+        <label class="field"><span class="lab">本文</span>
+          <textarea name="content" style="min-height:140px;" placeholder="調査条件・環境・気づき・次回課題など">${esc(n.content)}</textarea></label>
+        <label class="field row" style="gap:12px; align-items:center;">
+          <input type="checkbox" id="ntReview" style="width:auto;" ${n.needs_review?'checked':''}>
+          <span class="lab" style="margin:0;">要確認フラグ</span></label>
+      </form>
+      <button class="btn primary big" onclick="saveNote('${n.uuid}','${svUuid}',${editing})">保存する</button>
+      ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteNote('${n.uuid}')">このメモを削除</button>`:''}
+    `,
+    onMount:()=>{ SCREENS._note=n; }
+  };
+};
+function saveNote(u,svUuid,editing){
+  const content=$('#ntForm [name="content"]').value.trim();
+  if(!content){ toast('本文を入力してください'); return; }
+  const prev=editing?DB.notes().find(x=>x.uuid===u):{uuid:u};
+  const rec=Object.assign({},prev,{ uuid:u, survey_uuid:svUuid, recorded_at:prev.recorded_at||nowISO(),
+    latitude:(SCREENS._note&&SCREENS._note.latitude)||'', longitude:(SCREENS._note&&SCREENS._note.longitude)||'',
+    category:segVal('category'), content, needs_review:$('#ntReview').checked });
+  DB.upsertNote(rec); toast('保存しました'); goBack();
+}
+function deleteNote(u){ if(!confirm('このメモを削除しますか？')) return; DB.softDelete(DB.key.nt,u); toast('削除しました'); goBack(); }
+
+/* ============================================================
+   仮説管理（一覧・登録・詳細）
+   ============================================================ */
+const HYP_BADGE={'未検証':'','検証中':'','検証済み':'ok','保留':'warn'};
+SCREENS.hypotheses = (u)=>{
+  const s=DB.survey(u); if(!s) return SCREENS.home();
+  currentSurveyUuid=u;
+  const hyps=DB.hypOf(u).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+  const card=h=>{
+    const results=DB.resultsOf(h.uuid);
+    const last=results.sort((a,b)=>(b.verified_at||'').localeCompare(a.verified_at||''))[0];
+    return `<div class="card tap" onclick="nav('hypDetail','${h.uuid}')">
+      <div class="row"><div class="grow"><b>${esc(h.title||'(無題の仮説)')}</b></div>
+        <span class="badge status-${esc(h.status||'未検証')}">${esc(h.status||'未検証')}</span></div>
+      ${h.target_species||h.target_location?`<div class="small muted" style="margin-top:4px;">${esc([h.target_species,h.target_location].filter(Boolean).join(' / '))}</div>`:''}
+      ${h.hypothesis_text?`<div class="small" style="margin-top:6px;">${esc(h.hypothesis_text.slice(0,90))}</div>`:''}
+      ${last?`<div class="chips" style="margin-top:8px;"><span class="c ${last.judgment==='支持'?'':''}">判定: ${esc(last.judgment||'—')}</span></div>`:''}
+    </div>`;
+  };
+  return {
+    title:'仮説・検証', sub:[`<span class="pill">${esc(s.name)}</span>`,`<span class="pill">仮説 ${hyps.length}</span>`],
+    html:`
+      <button class="btn primary big" onclick="nav('hypEdit', JSON.stringify({sv:'${u}'}))">＋ 仮説を追加</button>
+      <div class="sp"></div>
+      ${hyps.length? hyps.map(card).join('') : '<div class="empty">まだ仮説がありません。<br>調査前・調査中・調査後、いつでも追加できます。</div>'}
+      <div class="sp"></div>
+      <div class="note">仮説は「予想が当たったか」を確かめるためのもの。外れても失敗ではなく、次回の課題が見つかります。</div>
+    `
+  };
+};
+
+SCREENS.hypEdit = (argStr)=>{
+  const arg=JSON.parse(argStr||'{}'); const svUuid=arg.sv||currentSurveyUuid; const editing=!!arg.id;
+  let h = editing ? Object.assign({},DB.hypothesis(arg.id)) : null;
+  if(!h) h={ uuid:uuid(), survey_uuid:svUuid, title:'', hypothesis_text:'', expected_result:'',
+    rationale:'', required_data:'', target_location:'', target_species:'', status:'未検証' };
+  const seg=`<div class="seg" data-seg="status">${OPT.hypStatus.map(x=>
+    `<button type="button" class="${h.status===x?'on':''}" onclick="pickObs(this,'status','${esc(x)}')">${esc(x)}</button>`).join('')}</div>`;
+  return {
+    title: editing?'仮説を編集':'仮説を追加',
+    html:`
+      <form id="hyForm">
+        <label class="field"><span class="lab">仮説タイトル <span class="req">*</span></span>
+          <input name="title" value="${esc(h.title)}" placeholder="例：河畔林の定点はアオジが多い"></label>
+        <label class="field"><span class="lab">仮説の本文</span>
+          <textarea name="hypothesis_text" placeholder="どういう予想か">${esc(h.hypothesis_text)}</textarea></label>
+        <label class="field"><span class="lab">予想される結果</span>
+          <textarea name="expected_result" placeholder="どうなれば予想どおりか">${esc(h.expected_result)}</textarea></label>
+        <label class="field"><span class="lab">仮説を考えた理由</span>
+          <textarea name="rationale" placeholder="なぜそう考えたか">${esc(h.rationale)}</textarea></label>
+        <label class="field"><span class="lab">確認に必要なデータ</span>
+          <textarea name="required_data" placeholder="何を記録すれば確かめられるか">${esc(h.required_data)}</textarea></label>
+        <div class="two">
+          <label class="field"><span class="lab">対象種</span>
+            <input name="target_species" value="${esc(h.target_species)}" placeholder="任意"></label>
+          <label class="field"><span class="lab">対象地点</span>
+            <input name="target_location" value="${esc(h.target_location)}" placeholder="任意"></label>
+        </div>
+        <label class="field"><span class="lab">ステータス</span>${seg}</label>
+      </form>
+      <button class="btn primary big" onclick="saveHyp('${h.uuid}','${svUuid}',${editing})">保存する</button>
+      ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteHyp('${h.uuid}')">この仮説を削除</button>`:''}
+    `
+  };
+};
+function saveHyp(u,svUuid,editing){
+  const f=$('#hyForm'); const g=n=>{const el=f.querySelector(`[name="${n}"]`); return el?el.value:'';};
+  if(!g('title').trim()){ toast('仮説タイトルを入力してください'); return; }
+  const prev=editing?DB.hypothesis(u):{uuid:u};
+  const rec=Object.assign({},prev,{ uuid:u, survey_uuid:svUuid, title:g('title'),
+    hypothesis_text:g('hypothesis_text'), expected_result:g('expected_result'), rationale:g('rationale'),
+    required_data:g('required_data'), target_species:g('target_species'), target_location:g('target_location'),
+    status:segVal('status')||'未検証' });
+  DB.upsertHyp(rec); toast('保存しました');
+  if(editing) goBack(); else { goBack(); nav('hypDetail',u); }
+}
+function deleteHyp(u){ if(!confirm('この仮説と検証結果を削除しますか？')) return;
+  DB.softDelete(DB.key.hy,u); DB.resultsOf(u).forEach(r=>DB.softDelete(DB.key.hr,r.uuid));
+  toast('削除しました'); goBack(); }
+
+SCREENS.hypDetail = (u)=>{
+  const h=DB.hypothesis(u); if(!h) return SCREENS.home();
+  currentSurveyUuid=h.survey_uuid;
+  const results=DB.resultsOf(u).sort((a,b)=>(b.verified_at||'').localeCompare(a.verified_at||''));
+  const kv=(lab,val)=> val?`<div class="field" style="margin-bottom:10px;"><span class="lab">${lab}</span><div>${esc(val)}</div></div>`:'';
+  const resCard=r=>{
+    const obs=(r.observation_uuids||[]).map(id=>DB.observations().find(o=>o.uuid===id)).filter(Boolean);
+    return `<div class="card">
+      <div class="row"><div class="grow"><b>判定：${esc(r.judgment||'—')}</b></div>
+        <button class="btn ghost" style="width:auto;padding:4px 10px;" onclick="nav('hypVerify', JSON.stringify({hy:'${u}',id:'${r.uuid}'}))">編集</button></div>
+      <div class="small muted">${fmtDate(r.verified_at)}</div>
+      ${kv('観察結果',r.observed_result)}${kv('判定理由',r.judgment_reason)}
+      ${kv('不足している情報',r.missing_information)}${kv('別の可能性',r.alternative_explanation)}
+      ${kv('次回の確認事項',r.next_action)}${kv('次回の調査方法',r.next_method)}${kv('補足',r.note)}
+      ${obs.length?`<div class="small muted" style="margin-top:6px;">根拠の観察: ${obs.map(o=>esc(o.species_name_snapshot||'未同定')).join('、')}</div>`:''}
+    </div>`;
+  };
+  return {
+    title:'仮説の詳細',
+    sub:[`<span class="badge status-${esc(h.status||'未検証')}">${esc(h.status||'未検証')}</span>`],
+    html:`
+      <div class="card">
+        <h3>${esc(h.title||'(無題の仮説)')}</h3>
+        ${kv('仮説',h.hypothesis_text)}${kv('予想される結果',h.expected_result)}
+        ${kv('考えた理由',h.rationale)}${kv('必要なデータ',h.required_data)}
+        ${kv('対象種',h.target_species)}${kv('対象地点',h.target_location)}
+        <button class="btn ghost" onclick="nav('hypEdit', JSON.stringify({sv:'${h.survey_uuid}',id:'${u}'}))">✎ 仮説を編集</button>
+      </div>
+      <div class="row"><h3 class="grow">検証結果 <span class="muted small">(${results.length})</span></h3></div>
+      <button class="btn primary" onclick="nav('hypVerify', JSON.stringify({hy:'${u}'}))">＋ 検証結果を追加</button>
+      <div class="sp"></div>
+      ${results.length? results.map(resCard).join('') : '<div class="empty small">まだ検証していません。</div>'}
+    `
+  };
+};
+
+SCREENS.hypVerify = (argStr)=>{
+  const arg=JSON.parse(argStr||'{}'); const hyUuid=arg.hy; const editing=!!arg.id;
+  const h=DB.hypothesis(hyUuid); if(!h) return SCREENS.home();
+  let r = editing ? Object.assign({},DB.resultsOf(hyUuid).find(x=>x.uuid===arg.id)) : null;
+  if(!r) r={ uuid:uuid(), hypothesis_uuid:hyUuid, verified_at:dateValue(), observed_result:'',
+    judgment:'', judgment_reason:'', missing_information:'', alternative_explanation:'',
+    next_action:'', next_method:'', note:'', observation_uuids:[] };
+  const seg=`<div class="seg" data-seg="judgment">${OPT.judgment.map(x=>
+    `<button type="button" class="${r.judgment===x?'on':''}" onclick="pickObs(this,'judgment','${esc(x)}')">${esc(x)}</button>`).join('')}</div>`;
+  const svObs=DB.obsOf(h.survey_uuid);
+  const chosen=new Set(r.observation_uuids||[]);
+  const obsPick=svObs.length? `<div class="chips">${svObs.map(o=>
+    `<span class="c ${chosen.has(o.uuid)?'on':''}" data-obs="${o.uuid}" onclick="this.classList.toggle('on')"
+      style="${chosen.has(o.uuid)?'background:var(--accent2);border-color:var(--accent);color:#fff':''}">${esc(o.species_name_snapshot||'未同定')} ${fmtTime(o.observed_at)}</span>`).join('')}</div>`
+    : '<div class="small muted">この調査にはまだ観察記録がありません。</div>';
+  return {
+    title: editing?'検証結果を編集':'検証結果を追加',
+    sub:[`<span class="pill">${esc(h.title||'仮説')}</span>`],
+    html:`
+      <form id="hrForm">
+        <label class="field"><span class="lab">検証日</span>
+          <input type="date" name="verified_at" value="${esc((r.verified_at||'').slice(0,10)||dateValue())}"></label>
+        <label class="field"><span class="lab">観察結果（実際どうだったか）</span>
+          <textarea name="observed_result">${esc(r.observed_result)}</textarea></label>
+        <label class="field"><span class="lab">判定</span>${seg}</label>
+        <label class="field"><span class="lab">判定理由 <span class="req">*判定するなら必須</span></span>
+          <textarea name="judgment_reason" placeholder="なぜその判定か">${esc(r.judgment_reason)}</textarea></label>
+        <label class="field"><span class="lab">根拠となる観察記録（タップで選択）</span>${obsPick}</label>
+        <label class="field"><span class="lab">不足している情報</span>
+          <textarea name="missing_information">${esc(r.missing_information)}</textarea></label>
+        <label class="field"><span class="lab">別の可能性</span>
+          <textarea name="alternative_explanation">${esc(r.alternative_explanation)}</textarea></label>
+        <label class="field"><span class="lab">次回の確認事項</span>
+          <textarea name="next_action">${esc(r.next_action)}</textarea></label>
+        <label class="field"><span class="lab">次回の調査方法</span>
+          <textarea name="next_method">${esc(r.next_method)}</textarea></label>
+        <label class="field"><span class="lab">補足メモ</span>
+          <textarea name="note">${esc(r.note)}</textarea></label>
+      </form>
+      <button class="btn primary big" onclick="saveHypResult('${r.uuid}','${hyUuid}',${editing})">保存する</button>
+      ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteHypResult('${r.uuid}')">この検証結果を削除</button>`:''}
+      <div class="sp"></div>
+      <div class="note">判定だけでは保存できません（判定を選ぶなら理由も入力）。途中まででも、判定を空にすれば下書きとして保存できます。</div>
+    `
+  };
+};
+function saveHypResult(u,hyUuid,editing){
+  const f=$('#hrForm'); const g=n=>{const el=f.querySelector(`[name="${n}"]`); return el?el.value:'';};
+  const judgment=segVal('judgment');
+  if(judgment && !g('judgment_reason').trim()){ toast('判定するときは判定理由を入力してください'); return; }
+  const obsIds=[...document.querySelectorAll('#hrForm .chips .c.on')].map(el=>el.dataset.obs).filter(Boolean);
+  const prev=editing?DB.resultsOf(hyUuid).find(x=>x.uuid===u):{uuid:u};
+  const rec=Object.assign({},prev,{ uuid:u, hypothesis_uuid:hyUuid,
+    verified_at:g('verified_at'), observed_result:g('observed_result'), judgment,
+    judgment_reason:g('judgment_reason'), missing_information:g('missing_information'),
+    alternative_explanation:g('alternative_explanation'), next_action:g('next_action'),
+    next_method:g('next_method'), note:g('note'), observation_uuids:obsIds });
+  DB.upsertHypResult(rec);
+  // 判定が付いたら仮説ステータスを検証済みへ更新（未検証のときのみ）
+  const h=DB.hypothesis(hyUuid);
+  if(judgment && h && (h.status==='未検証'||h.status==='検証中')){ h.status='検証済み'; DB.upsertHyp(h); }
+  toast('保存しました'); goBack();
+}
+function deleteHypResult(u){ if(!confirm('この検証結果を削除しますか？')) return; DB.softDelete(DB.key.hr,u); toast('削除しました'); goBack(); }
+
+/* ============================================================
+   調査終了・振り返り
+   ============================================================ */
+SCREENS.surveyEnd = (u)=>{
+  const s=DB.survey(u); if(!s) return SCREENS.home();
+  const obs=DB.obsOf(u);
+  const spCount=new Set(obs.filter(o=>o.species_name_snapshot).map(o=>o.species_name_snapshot)).size;
+  const total=obs.reduce((a,o)=>a+(parseInt(o.count,10)||0),0);
+  const undet=obs.filter(o=>o.identification_status==='未同定'||!o.species_name_snapshot).length;
+  const review=obs.filter(o=>o.needs_review).length;
+  const hyps=DB.hypOf(u);
+  const verified=hyps.filter(h=>h.status==='検証済み').length;
+  const r=s.review||{};
+  const fields=[['learned','今日分かったこと'],['unknown','今日分からなかったこと'],
+    ['limits','調査条件による制約'],['missed','見落とした可能性'],
+    ['next','次回確認すること'],['report','報告書に記載する事項'],['overall','全体所感']];
+  return {
+    title:'調査終了・振り返り',
+    html:`
+      <div class="card">
+        <h3>自動集計</h3>
+        <div class="tablewrap"><table>
+          <tr><td>観察記録数</td><td class="num">${obs.length}</td><td>確認種数</td><td class="num">${spCount}</td></tr>
+          <tr><td>総個体数</td><td class="num">${total}</td><td>未同定件数</td><td class="num">${undet}</td></tr>
+          <tr><td>要確認件数</td><td class="num">${review}</td><td>メモ件数</td><td class="num">${DB.notesOf(u).length}</td></tr>
+          <tr><td>仮説件数</td><td class="num">${hyps.length}</td><td>検証済み仮説</td><td class="num">${verified}</td></tr>
+        </table></div>
+      </div>
+      <form id="rvForm">
+        ${fields.map(([k,lab])=>`<label class="field"><span class="lab">${lab}</span>
+          <textarea name="${k}">${esc(r[k]||'')}</textarea></label>`).join('')}
+      </form>
+      <button class="btn primary big" onclick="finishSurvey('${u}')">${s.status==='終了'?'振り返りを保存':'振り返りを保存して調査を終了'}</button>
+      <div class="sp"></div>
+      <div class="note">終了後も再編集できます。総個体数は延べ数のため、生息個体数とは限りません。</div>
+    `
+  };
+};
+function finishSurvey(u){
+  const s=DB.survey(u); const f=$('#rvForm'); const review={};
+  f.querySelectorAll('textarea').forEach(t=>review[t.name]=t.value);
+  s.review=review;
+  if(s.status!=='終了'){ s.status='終了'; s.end_datetime=nowISO(); }
+  DB.upsertSurvey(s); stopGps(); toast('保存しました'); reset('home'); nav('survey',u);
+}
+
+/* ============================================================
+   種別集計
+   ============================================================ */
+SCREENS.summary = (u)=>{
+  const s=DB.survey(u); const obs=DB.obsOf(u);
+  const map={};
+  obs.forEach(o=>{ const key=o.species_name_snapshot||'（未同定）';
+    const m=map[key]||(map[key]={name:key, total:0, count:0, first:null, last:null, methods:new Set(), review:0, undet:0});
+    m.total+=parseInt(o.count,10)||0; m.count++;
+    if(o.detection_method) m.methods.add(o.detection_method);
+    if(o.needs_review) m.review++;
+    if(o.identification_status==='未同定'||!o.species_name_snapshot) m.undet++;
+    const t=o.observed_at; if(t){ if(!m.first||t<m.first) m.first=t; if(!m.last||t>m.last) m.last=t; }
+  });
+  const rows=Object.values(map).sort((a,b)=>b.total-a.total);
+  const totalInd=rows.reduce((a,r)=>a+r.total,0);
+  return {
+    title:'種別集計',
+    sub:[`<span class="pill">確認種数 ${rows.filter(r=>r.name!=='（未同定）').length}</span>`,`<span class="pill">延べ ${totalInd}個体</span>`],
+    html:`
+      ${rows.length? `<div class="tablewrap"><table>
+        <thead><tr><th>種名</th><th class="num">個体</th><th class="num">回数</th><th>初認</th><th>終認</th><th>確認</th></tr></thead>
+        <tbody>${rows.map(r=>`<tr>
+          <td>${esc(r.name)}${r.review?` <span class="badge warn tiny">要${r.review}</span>`:''}</td>
+          <td class="num">${r.total}</td><td class="num">${r.count}</td>
+          <td>${fmtTime(r.first)}</td><td>${fmtTime(r.last)}</td>
+          <td class="tiny muted">${[...r.methods].join('/')}</td></tr>`).join('')}</tbody>
+      </table></div>` : '<div class="empty">観察記録がありません。</div>'}
+      <div class="sp"></div>
+      <div class="note">合計個体数は延べ数です。同一個体の重複記録を含むため、生息個体数とは限りません。</div>
+      <div class="sp"></div>
+      <button class="btn" onclick="nav('exportSurvey','${u}')">⤓ この調査を書き出す（CSV/GeoJSON）</button>
+    `
+  };
+};
+
+/* ============================================================
+   地図
+   ============================================================ */
+SCREENS.map = (u)=>{
+  const obs=DB.obsOf(u).filter(o=>o.latitude&&o.longitude);
+  const notes=DB.notesOf(u).filter(n=>n.latitude&&n.longitude);
+  return {
+    title:'地図',
+    sub:[`<span class="pill">観察地点 ${obs.length}</span>`],
+    html:`<div id="map"></div>
+      <div class="sp"></div>
+      <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ノート＝メモ。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ移動。</div>`,
+    onMount:()=>{ setTimeout(()=>drawMap(obs,notes),50); }
+  };
+};
+function drawMap(obs,notes){
+  const el=$('#map'); if(!el) return;
+  let center=[35.68,139.77], zoom=13;
+  const pts=obs.filter(o=>!isNaN(parseFloat(o.latitude)));
+  if(pts.length){ center=[parseFloat(pts[0].latitude), parseFloat(pts[0].longitude)]; zoom=15; }
+  else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=15; }
+  mapObj=L.map('map').setView(center,zoom);
+  L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png',
+    {maxZoom:18, attribution:'地理院タイル'}).addTo(mapObj);
+  const mk=(lat,lon,html,color)=>L.marker([lat,lon],{icon:L.divIcon({className:'',
+    html:`<div style="background:${color};border:2px solid #fff;border-radius:50%;width:22px;height:22px;
+      display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;font-weight:700;
+      box-shadow:0 1px 4px rgba(0,0,0,.5)">${html}</div>`, iconSize:[22,22], iconAnchor:[11,11]})});
+  const group=[];
+  pts.forEach(o=>{ const lat=parseFloat(o.latitude), lon=parseFloat(o.longitude);
+    let sym='●', col='#3fb984';
+    if(o.needs_review){ sym='▲'; col='#e0a030'; }
+    else if(o.identification_status==='未同定'||!o.species_name_snapshot){ sym='?'; col='#8a9a93'; }
+    const m=mk(lat,lon,sym,col).addTo(mapObj);
+    m.bindPopup(`<b>${esc(o.species_name_snapshot||'（未同定）')}</b><br>${esc(o.count||1)}個体 ・ ${esc(o.detection_method||'')}<br>${fmtTime(o.observed_at)}`);
+    group.push([lat,lon]);
+  });
+  notes.forEach(n=>{ const lat=parseFloat(n.latitude), lon=parseFloat(n.longitude);
+    const m=mk(lat,lon,'✎','#5a7de0').addTo(mapObj);
+    m.bindPopup(`<b>メモ:${esc(n.category||'')}</b><br>${esc((n.content||'').slice(0,80))}`); group.push([lat,lon]); });
+  mapCurMarker=null; mapCurCircle=null;
+  if(lastFix){ addCurrentPos(lastFix.lat,lastFix.lon,lastFix.acc); }
+  if(group.length>1){ try{ mapObj.fitBounds(group,{padding:[40,40]}); }catch(e){} }
+  else if(group.length===1 && !lastFix){ mapObj.setView(group[0],15); }
+  // コンテナ確定後にサイズを再計算（初期表示のタイル欠け・灰色化を防ぐ）
+  setTimeout(()=>{ if(mapObj) mapObj.invalidateSize(); }, 200);
+  addLocateControl();   // 右上に「現在地へ」ボタンを設置
+  locateOnMap(group);   // 現在地を取得し、自動で表示範囲に含める
+}
+// 地図上の現在地マーカー（青丸）と精度円を更新
+function addCurrentPos(lat,lon,acc){
+  if(!mapObj) return;
+  if(mapCurMarker){ try{ mapObj.removeLayer(mapCurMarker); }catch(e){} }
+  if(mapCurCircle){ try{ mapObj.removeLayer(mapCurCircle); }catch(e){} }
+  if(acc && acc>0 && acc<3000){
+    mapCurCircle=L.circle([lat,lon],{radius:acc,color:'#3f7de0',fillColor:'#3f7de0',fillOpacity:.08,weight:1}).addTo(mapObj);
+  }
+  mapCurMarker=L.circleMarker([lat,lon],{radius:7,color:'#fff',weight:2,fillColor:'#3f7de0',fillOpacity:1}).addTo(mapObj).bindPopup('現在地');
+}
+// 現在地を取得して表示範囲を自動調整（観察地点があれば両方が収まるように）
+function locateOnMap(group){
+  if(!navigator.geolocation) return;
+  toast('現在地を取得中…');
+  navigator.geolocation.getCurrentPosition(p=>{
+    const lat=p.coords.latitude, lon=p.coords.longitude, acc=p.coords.accuracy;
+    lastFix={lat,lon,acc,t:Date.now()};
+    if(!mapObj) return;
+    addCurrentPos(lat,lon,acc);
+    const all=(group||[]).concat([[lat,lon]]);
+    if(all.length>1){ try{ mapObj.fitBounds(all,{padding:[40,40], maxZoom:17}); }catch(e){} }
+    else { mapObj.setView([lat,lon],16); }
+  }, e=>{ /* 取得失敗時は既存の表示のまま */ }, {enableHighAccuracy:true, timeout:15000, maximumAge:10000});
+}
+// 右上の「現在地へ」ボタン（自分中心に寄せ直す）
+function addLocateControl(){
+  if(!mapObj || !navigator.geolocation) return;
+  const Ctl=L.Control.extend({ options:{position:'topright'},
+    onAdd:function(){
+      const b=L.DomUtil.create('button','locate-btn'); b.type='button'; b.innerHTML='📍'; b.title='現在地へ';
+      L.DomEvent.disableClickPropagation(b); L.DomEvent.on(b,'click',L.DomEvent.stop);
+      b.onclick=()=>{ toast('現在地を取得中…');
+        navigator.geolocation.getCurrentPosition(p=>{
+          const lat=p.coords.latitude, lon=p.coords.longitude, acc=p.coords.accuracy;
+          lastFix={lat,lon,acc,t:Date.now()}; addCurrentPos(lat,lon,acc); if(mapObj) mapObj.setView([lat,lon],16);
+        }, ()=>toast('現在地を取得できませんでした'), {enableHighAccuracy:true, timeout:15000}); };
+      return b;
+    } });
+  mapObj.addControl(new Ctl());
+}
+
+/* ============================================================
+   書き出し（CSV / GeoJSON / JSONバックアップ）
+   ============================================================ */
+function download(filename, text, mime){
+  downloadBlob(filename, new Blob([text],{type:mime||'text/plain;charset=utf-8'}));
+}
+function downloadBlob(filename, blob){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),3000);
+}
+function audioFilename(o,i,a){ return `${o.uuid}_${i+1}.${(a&&a.ext)||'webm'}`; }
+
+/* ---------- 録音ZIP（無圧縮・追加ライブラリ不要） ---------- */
+function crc32(u8){ let c=~0>>>0; for(let i=0;i<u8.length;i++){ c^=u8[i];
+  for(let k=0;k<8;k++) c=(c>>>1)^(0xEDB88320 & -(c&1)); } return (~c)>>>0; }
+function buildZip(files){
+  const enc=new TextEncoder(); const parts=[]; const central=[]; let offset=0;
+  const u16=n=>[n&255,(n>>8)&255]; const u32=n=>[n&255,(n>>8)&255,(n>>16)&255,(n>>24)&255];
+  files.forEach(f=>{
+    const name=enc.encode(f.name); const data=f.u8; const crc=crc32(data);
+    const lh=[].concat([0x50,0x4b,0x03,0x04], u16(20), u16(0x0800), u16(0), u16(0), u16(0),
+      u32(crc), u32(data.length), u32(data.length), u16(name.length), u16(0));
+    parts.push(new Uint8Array(lh), name, data);
+    const ch=[].concat([0x50,0x4b,0x01,0x02], u16(20), u16(20), u16(0x0800), u16(0), u16(0), u16(0),
+      u32(crc), u32(data.length), u32(data.length), u16(name.length), u16(0), u16(0), u16(0), u16(0),
+      u32(0), u32(offset));
+    central.push({ head:new Uint8Array(ch), name });
+    offset += lh.length + name.length + data.length;
+  });
+  const cdStart=offset; let cdSize=0;
+  central.forEach(c=>{ parts.push(c.head, c.name); cdSize += c.head.length + c.name.length; });
+  const end=[].concat([0x50,0x4b,0x05,0x06], u16(0), u16(0), u16(central.length), u16(central.length),
+    u32(cdSize), u32(cdStart), u16(0));
+  parts.push(new Uint8Array(end));
+  return new Blob(parts,{type:'application/zip'});
+}
+async function exportAudioZip(surveys, base){
+  const items=[];
+  surveys.forEach(s=>DB.obsOf(s.uuid).forEach(o=>(o.audio||[]).forEach((a,i)=>items.push({s,o,a,i}))));
+  if(!items.length){ toast('書き出す録音がありません'); return; }
+  toast('録音をまとめています…');
+  const files=[];
+  for(const it of items){
+    let r; try{ r=await AudioDB.get(it.a.id); }catch(e){ r=null; }
+    if(!r||!r.blob) continue;
+    files.push({ name:audioFilename(it.o,it.i,it.a), u8:new Uint8Array(await r.blob.arrayBuffer()) });
+  }
+  if(!files.length){ toast('録音データが見つかりません'); return; }
+  const idxCols=['audio_file','survey_name','observed_at','species_name','duration_sec','latitude','longitude'];
+  const idx=[idxCols.join(',')].concat(items.map(it=>[
+    audioFilename(it.o,it.i,it.a), csvCell(it.s.name), it.o.observed_at,
+    csvCell(it.o.species_name_snapshot), it.a.dur, it.o.latitude, it.o.longitude].join(','))).join('\r\n');
+  files.push({ name:'index.csv', u8:new TextEncoder().encode('﻿'+idx) });
+  downloadBlob(`${base}_audio.zip`, buildZip(files));
+  toast('録音ZIPを書き出しました');
+}
+const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','observation_id','observed_at',
+  'latitude','longitude','species_name','count','detection_method','behavior','habitat',
+  'identification_status','confidence','needs_review','note','audio_file','external_photo_reference'];
+function csvCell(v){ v=v==null?'':String(v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+function buildRows(surveys){
+  const rows=[];
+  surveys.forEach(s=>{ DB.obsOf(s.uuid).forEach(o=>{
+    rows.push({ survey_id:s.uuid, survey_name:s.name, survey_date:fmtDate(s.survey_date), survey_method:s.survey_method,
+      observation_id:o.uuid, observed_at:o.observed_at, latitude:o.latitude, longitude:o.longitude,
+      species_name:o.species_name_snapshot, count:o.count, detection_method:o.detection_method,
+      behavior:o.behavior, habitat:o.habitat, identification_status:o.identification_status,
+      confidence:o.confidence, needs_review:o.needs_review?1:0, note:o.note,
+      audio_file:(o.audio||[]).map((a,i)=>audioFilename(o,i,a)).join(';'),
+      external_photo_reference:o.external_photo_reference });
+  });});
+  return rows;
+}
+function exportCSV(surveys, base){
+  const rows=buildRows(surveys);
+  if(!rows.length){ toast('書き出す観察記録がありません'); return; }
+  const body=[CSV_COLS.join(',')].concat(rows.map(r=>CSV_COLS.map(c=>csvCell(r[c])).join(','))).join('\r\n');
+  download(`${base}_observations.csv`, '﻿'+body, 'text/csv;charset=utf-8');
+  toast('CSVを書き出しました');
+}
+function exportGeoJSON(surveys, base){
+  const rows=buildRows(surveys).filter(r=>r.latitude&&r.longitude&&!isNaN(parseFloat(r.latitude)));
+  const fc={ type:'FeatureCollection', features: rows.map(r=>({
+    type:'Feature',
+    geometry:{ type:'Point', coordinates:[parseFloat(r.longitude), parseFloat(r.latitude)] },
+    properties: CSV_COLS.reduce((p,c)=>{ p[c]=r[c]; return p; }, {})
+  }))};
+  if(!fc.features.length){ toast('位置付きの記録がありません'); return; }
+  download(`${base}_observations.geojson`, JSON.stringify(fc,null,1), 'application/geo+json');
+  toast('GeoJSONを書き出しました');
+}
+const HYP_COLS=['survey_id','survey_name','hypothesis_id','title','hypothesis_text','expected_result',
+  'rationale','required_data','target_species','target_location','status'];
+const HYPRES_COLS=['survey_id','hypothesis_id','hypothesis_title','result_id','verified_at','observed_result',
+  'judgment','judgment_reason','missing_information','alternative_explanation','next_action','next_method','note'];
+function exportHypCSV(surveys, base){
+  const hrows=[], rrows=[];
+  surveys.forEach(s=>{ DB.hypOf(s.uuid).forEach(h=>{
+    hrows.push({ survey_id:s.uuid, survey_name:s.name, hypothesis_id:h.uuid, title:h.title,
+      hypothesis_text:h.hypothesis_text, expected_result:h.expected_result, rationale:h.rationale,
+      required_data:h.required_data, target_species:h.target_species, target_location:h.target_location, status:h.status });
+    DB.resultsOf(h.uuid).forEach(r=>{
+      rrows.push({ survey_id:s.uuid, hypothesis_id:h.uuid, hypothesis_title:h.title, result_id:r.uuid,
+        verified_at:r.verified_at, observed_result:r.observed_result, judgment:r.judgment,
+        judgment_reason:r.judgment_reason, missing_information:r.missing_information,
+        alternative_explanation:r.alternative_explanation, next_action:r.next_action,
+        next_method:r.next_method, note:r.note });
+    });
+  });});
+  if(!hrows.length){ toast('書き出す仮説がありません'); return; }
+  const mk=(cols,rows)=>'﻿'+[cols.join(',')].concat(rows.map(r=>cols.map(c=>csvCell(r[c])).join(','))).join('\r\n');
+  download(`${base}_hypotheses.csv`, mk(HYP_COLS,hrows), 'text/csv;charset=utf-8');
+  if(rrows.length) download(`${base}_hypothesis_results.csv`, mk(HYPRES_COLS,rrows), 'text/csv;charset=utf-8');
+  toast('仮説CSVを書き出しました');
+}
+function blobToB64(blob){ return new Promise(res=>{ const r=new FileReader();
+  r.onload=()=>res(String(r.result).split(',')[1]||''); r.onerror=()=>res(''); r.readAsDataURL(blob); }); }
+function b64ToBlob(b64,mime){ const bin=atob(b64||''); const u8=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i); return new Blob([u8],{type:mime||'application/octet-stream'}); }
+async function exportBackup(){
+  toast('バックアップを作成中…');
+  let audio=[];
+  try{ const metas=await AudioDB.all();
+    for(const a of metas){ if(!a||!a.blob) continue;
+      audio.push({ id:a.id, mime:a.mime, ext:a.ext, dur:a.dur, size:a.size, obs_uuid:a.obs_uuid,
+        created_at:a.created_at, b64:await blobToB64(a.blob) }); }
+  }catch(e){ audio=[]; }
+  const data={ app:'bird_survey', version:3, exported_at:nowISO(),
+    surveys:DB.allSurveys(), observations:DB.load(DB.key.ob), notes:DB.load(DB.key.nt),
+    hypotheses:DB.load(DB.key.hy), hyp_results:DB.load(DB.key.hr), recent:DB.recentSpecies(), audio };
+  download(`bird_survey_backup_${dateValue().replace(/-/g,'')}.json`, JSON.stringify(data), 'application/json');
+  toast('バックアップを書き出しました');
+}
+
+SCREENS.exportHub = ()=>{
+  const surveys=DB.surveys();
+  return { title:'エクスポート',
+    html:`
+      <div class="card">
+        <h3>全調査をまとめて書き出し</h3>
+        <div class="btn-grid">
+          <button class="btn" onclick="exportCSV(DB.surveys(),'BirdSurvey_all')">観察CSV</button>
+          <button class="btn" onclick="exportGeoJSON(DB.surveys(),'BirdSurvey_all')">GeoJSON</button>
+          <button class="btn" onclick="exportHypCSV(DB.surveys(),'BirdSurvey_all')">仮説CSV</button>
+          <button class="btn" onclick="exportAudioZip(DB.surveys(),'BirdSurvey_all')">🎤 録音ZIP</button>
+        </div>
+        <div class="sp"></div>
+        <button class="btn primary" onclick="exportBackup()">💾 JSONバックアップ（全データ・録音含む）</button>
+      </div>
+      <h3 class="muted small">調査ごとに書き出し</h3>
+      ${surveys.length? surveys.map(s=>`<div class="card tap" onclick="nav('exportSurvey','${s.uuid}')">
+        <div class="row"><div class="grow"><b>${esc(s.name)}</b><div class="small muted">${fmtDate(s.survey_date)} ・ 観察${DB.obsOf(s.uuid).length}件</div></div><span class="muted">›</span></div>
+      </div>`).join('') : '<div class="empty small">調査がありません。</div>'}
+      <div class="sp"></div>
+      <div class="note">CSVはExcel/QGISで開ける文字コード(UTF-8 BOM)、GeoJSONは座標系EPSG:4326・QGISでそのまま読み込めます。iPhoneでは共有シートから「ファイルに保存」を選べます。</div>
+    `};
+};
+SCREENS.exportSurvey = (u)=>{
+  const s=DB.survey(u); const base=`BirdSurvey_${fmtDate(s.survey_date).replace(/-/g,'')}_${(s.name||'').replace(/[^\w一-龠ぁ-んァ-ヶ]/g,'').slice(0,12)}`;
+  return { title:'書き出し', sub:[`<span class="pill">${esc(s.name)}</span>`],
+    html:`
+      <div class="btn-grid">
+        <button class="btn primary" onclick="exportCSV([DB.survey('${u}')],'${base}')">観察CSV</button>
+        <button class="btn primary" onclick="exportGeoJSON([DB.survey('${u}')],'${base}')">GeoJSON</button>
+        <button class="btn" onclick="exportHypCSV([DB.survey('${u}')],'${base}')">仮説CSV</button>
+        <button class="btn" onclick="exportAudioZip([DB.survey('${u}')],'${base}')">🎤 録音ZIP</button>
+      </div>
+      <div class="sp"></div>
+      <div class="note">観察 ${DB.obsOf(u).length}件（位置付き ${DB.obsOf(u).filter(o=>o.latitude).length}件・録音 ${DB.obsOf(u).reduce((n,o)=>n+((o.audio||[]).length),0)}件）・仮説 ${DB.hypOf(u).length}件を書き出します。</div>
+    `};
+};
+
+SCREENS.importHub = ()=>({
+  title:'インポート',
+  html:`
+    <div class="card">
+      <h3>JSONバックアップから復元</h3>
+      <p class="small muted">以前書き出した bird_survey_backup_*.json を選ぶと、調査・観察・メモ・録音を取り込みます（同じ記録は上書き）。</p>
+      <input type="file" id="impFile" accept="application/json,.json">
+      <div class="sp"></div>
+      <button class="btn primary" onclick="doImport()">このファイルを取り込む</button>
+    </div>
+    <div class="note">既存データは消えません。同じ調査ID・観察IDは新しい内容で置き換えられます。</div>
+  `
+});
+function doImport(){
+  const f=$('#impFile').files[0]; if(!f){ toast('ファイルを選んでください'); return; }
+  const rd=new FileReader();
+  rd.onload=()=>{ try{
+    const d=JSON.parse(rd.result);
+    const merge=(key,arr)=>{ const cur=DB.load(key); const byId={}; cur.forEach(x=>byId[x.uuid]=x);
+      (arr||[]).forEach(x=>{ if(x&&x.uuid) byId[x.uuid]=x; }); DB.save(key,Object.values(byId)); };
+    merge(DB.key.sv,d.surveys); merge(DB.key.ob,d.observations); merge(DB.key.nt,d.notes);
+    merge(DB.key.hy,d.hypotheses); merge(DB.key.hr,d.hyp_results);
+    if(d.recent) DB.save(DB.key.recent, d.recent);
+    if(Array.isArray(d.audio) && d.audio.length){
+      Promise.all(d.audio.map(a=>(a&&a.b64)? AudioDB.put({ id:a.id, blob:b64ToBlob(a.b64,a.mime),
+        mime:a.mime, ext:a.ext, dur:a.dur, size:a.size, obs_uuid:a.obs_uuid, created_at:a.created_at
+      }).catch(()=>{}) : null)).catch(()=>{});
+    }
+    toast('取り込みました'); reset('home');
+  }catch(e){ toast('読み込みに失敗しました（ファイル形式を確認）'); } };
+  rd.readAsText(f);
+}
+
+/* ============================================================
+   起動
+   ============================================================ */
+reset('home');
+AudioDB.gc().catch(()=>{}); // 参照されなくなった録音を掃除
+if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{})); }
+</script>
+</body>
+</html>
