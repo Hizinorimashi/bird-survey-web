@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v14（2026-07-17 複数種連続入力・マイ図鑑）';
+const APP_VERSION = 'v15（2026-07-17 まとめて記録・北海道音源準備）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -903,6 +903,7 @@ SCREENS.survey = (u)=>{
   const actions = running ? `
     <div class="actions">
       <div class="act primary wide" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🐦</span>観察を追加</div>
+      <div class="act wide" onclick="nav('obsBatch','${u}')"><span class="ic">🐦🐦</span>まとめて記録（複数種）</div>
       <div class="act" onclick="nav('noteEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">📝</span>メモを追加</div>
       <div class="act" onclick="nav('hypotheses','${u}')"><span class="ic">💡</span>仮説を見る</div>
       <div class="act" onclick="nav('map','${u}')"><span class="ic">🗺</span>地図を見る</div>
@@ -950,6 +951,7 @@ SCREENS.survey = (u)=>{
         <button class="btn" onclick="nav('summary','${u}')">📊 集計</button>
         <button class="btn" onclick="nav('hypotheses','${u}')">💡 仮説・検証</button>
         <button class="btn" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))">🐦 観察を追加</button>
+        <button class="btn" onclick="nav('obsBatch','${u}')">🐦🐦 まとめて記録</button>
         <button class="btn" onclick="nav('surveyEdit','${u}')">✎ 調査情報を編集</button>
         <button class="btn" onclick="nav('surveyEnd','${u}')">⏹ 終了・振り返り</button>
       </div>`:''}
@@ -1142,6 +1144,86 @@ function addObsToGuide(){
 function removeFromGuide(id){
   myguideSave(myguideList().filter(g=>g.id!==id));
   toast('図鑑から外しました'); render(); mediaGcAll();
+}
+
+/* ---------- まとめて記録（定点で複数種を共通の位置・時刻で一括入力） ---------- */
+SCREENS.obsBatch = (svUuid)=>{
+  const s=DB.survey(svUuid); if(!s) return SCREENS.home();
+  const lat=lastFix?lastFix.lat.toFixed(6):''; const lon=lastFix?lastFix.lon.toFixed(6):'';
+  const seg=(field,opts,allowEmpty,def)=>`<div class="seg" data-seg="${field}">
+    ${allowEmpty?`<button type="button" class="" onclick="pickObs(this,'${field}','')">なし</button>`:''}
+    ${opts.map(x=>`<button type="button" class="${x===def?'on':''}" onclick="pickObs(this,'${field}','${esc(x)}')">${esc(x)}</button>`).join('')}</div>`;
+  return { title:'まとめて記録', sub:[`<span class="pill">${esc(s.name)}</span>`],
+    html:`
+      <datalist id="spDatalist">${SPECIES.map(sp=>`<option value="${esc(sp.japanese_name)}"></option>`).join('')}</datalist>
+      <div class="note" style="margin-bottom:12px;">定点などで見た複数の種を、位置・時刻を共通にしてまとめて記録します（1種ずつ別の記録として保存）。写真・録音は保存後に各記録から追加できます。</div>
+      <div class="card" style="background:var(--panel2);">
+        <div class="row"><div class="grow small muted">位置（全種で共通）</div>
+          <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="batchGps()">📍 現在地</button></div>
+        <div class="two" style="margin-top:8px;">
+          <input id="batchLat" inputmode="decimal" placeholder="緯度" value="${esc(lat)}">
+          <input id="batchLon" inputmode="decimal" placeholder="経度" value="${esc(lon)}">
+        </div>
+      </div>
+      <label class="field"><span class="lab">確認方法（共通）</span>${seg('detection_method',OPT.detection,false,'目視')}</label>
+      <label class="field"><span class="lab">生息環境（共通・任意）</span>${seg('habitat',OPT.habitat,true)}</label>
+      <div class="divider"></div>
+      <div class="two">
+        <input id="batchSp" list="spDatalist" autocomplete="off" placeholder="種名（和名）">
+        <input id="batchCnt" type="number" inputmode="numeric" min="1" value="1" placeholder="個体数">
+      </div>
+      <div class="sp"></div>
+      <button class="btn" onclick="batchAdd()">＋ この種を追加</button>
+      <div class="sp"></div>
+      <h3 class="muted small">追加した種</h3>
+      <div id="batchList"></div>
+      <div class="sp"></div>
+      <button class="btn primary big" id="batchSaveBtn" onclick="batchSave('${svUuid}')" disabled>0種をまとめて保存</button>
+    `,
+    onMount:()=>{ SCREENS._batchItems=[]; SCREENS._batchAcc=null; renderBatchList(); const i=$('#batchSp'); if(i) i.focus(); }
+  };
+};
+function batchAdd(){
+  const inp=$('#batchSp'), cnt=$('#batchCnt');
+  const name=((inp&&inp.value)||'').trim(); if(!name){ toast('種名を入れてください'); return; }
+  const count=parseInt(cnt&&cnt.value,10)||1;
+  SCREENS._batchItems=SCREENS._batchItems||[]; SCREENS._batchItems.push({name, count});
+  if(inp) inp.value=''; if(cnt) cnt.value='1'; renderBatchList(); if(inp) inp.focus();
+}
+function batchRemove(i){ (SCREENS._batchItems||[]).splice(i,1); renderBatchList(); }
+function renderBatchList(){
+  const box=$('#batchList'); if(!box) return; const items=SCREENS._batchItems||[];
+  box.innerHTML = items.length ? items.map((it,i)=>`<div class="card"><div class="row">
+    <div class="grow"><b>${esc(it.name)}</b> <span class="muted small">${esc(it.count)}個体</span></div>
+    <button type="button" class="btn ghost danger" style="width:auto; padding:4px 10px;" onclick="batchRemove(${i})">×</button></div></div>`).join('')
+    : '<div class="empty small">まだ追加されていません。上で種名と個体数を入れて「＋ この種を追加」。</div>';
+  const btn=$('#batchSaveBtn'); if(btn){ btn.disabled=!items.length; btn.textContent=`${items.length}種をまとめて保存`; }
+}
+function batchGps(){
+  if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
+  toast('位置を取得中…');
+  navigator.geolocation.getCurrentPosition(p=>{
+    if($('#batchLat')) $('#batchLat').value=p.coords.latitude.toFixed(6);
+    if($('#batchLon')) $('#batchLon').value=p.coords.longitude.toFixed(6);
+    SCREENS._batchAcc=Math.round(p.coords.accuracy);
+    lastFix={lat:p.coords.latitude, lon:p.coords.longitude, acc:p.coords.accuracy, t:Date.now()};
+    toast('位置を取得しました');
+  }, ()=>toast('位置を取得できませんでした'), {enableHighAccuracy:true, timeout:15000});
+}
+function batchSave(svUuid){
+  const items=SCREENS._batchItems||[]; if(!items.length) return;
+  const lat=(($('#batchLat')&&$('#batchLat').value)||'').trim(), lon=(($('#batchLon')&&$('#batchLon').value)||'').trim();
+  const method=segVal('detection_method')||'目視'; const habitat=segVal('habitat'); const when=nowISO();
+  items.forEach(it=>{
+    const sp=speciesByName(it.name);
+    DB.upsertObs({ uuid:uuid(), survey_uuid:svUuid, observed_at:when, latitude:lat, longitude:lon,
+      gps_accuracy: SCREENS._batchAcc||'', species_id: sp?sp.species_id:'', species_name_snapshot:it.name,
+      count: it.count, detection_method:method, behavior:'', habitat:habitat,
+      identification_status:'確定', confidence:'中', needs_review:false, note:'', external_photo_reference:'', audio:[], media:[] });
+    DB.pushRecent(it.name);
+  });
+  toast(`${items.length}種を保存しました`);
+  SCREENS._batchItems=null; SCREENS._batchAcc=null; goBack();
 }
 function deleteObs(u){ if(!confirm('この観察記録を削除しますか？')) return;
   DB.softDelete(DB.key.ob,u); toast('削除しました'); goBack(); }
