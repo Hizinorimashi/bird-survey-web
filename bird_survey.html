@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v20（2026-07-17 短い鳴き声41種を長めに差し替え）';
+const APP_VERSION = 'v21（2026-07-17 図鑑の重さ解消＝鳴き声は再生時のみ読込）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1922,13 +1922,24 @@ function updateCallSaved(){
   const el=$('#callSaved'); if(!el) return;
   CallDB.keys().then(ks=>{ if($('#callSaved')) $('#callSaved').textContent=`端末に保存済み: ${ks.length} / ${Object.keys(CALLS).length} 種`; }).catch(()=>{});
 }
+// タップされた種の鳴き声だけを読み込んで再生（一覧で一括ロードしないので軽い）
+function playCall(btn, jp){
+  const c=CALLS[jp]; if(!c || !btn) return;
+  btn.disabled=true; btn.textContent='読み込み中…';
+  const show=(src)=>{ const a=document.createElement('audio'); a.className='recaudio'; a.controls=true; a.autoplay=true;
+    a.style.display='block'; a.src=src; if(btn.parentNode) btn.replaceWith(a); try{ a.play&&a.play().catch(()=>{}); }catch(e){} };
+  CallDB.get(jp).then(r=>{
+    if(r&&r.blob) show(URL.createObjectURL(r.blob)); // 端末保存済み＝圏外でも再生
+    else show('./assets/calls/'+c.f);                // 未保存＝ネットから
+  }).catch(()=>show('./assets/calls/'+c.f));
+}
 function renderGuideList(q){
   SCREENS._guideQ=q; const box=$('#guideList'); if(!box) return;
   q=(q||'').trim(); const qk=toKata(q);
   const mineOnly=!!SCREENS._guideMineOnly;
   const base = mineOnly ? SPECIES.filter(s=>myguideOf(s.japanese_name).length) : SPECIES;
   let list = q ? base.filter(s=>toKata(s.japanese_name).includes(qk)) : base;
-  const shown=list.slice(0,300);
+  const shown=list.slice(0,150);
   box.innerHTML = shown.length ? shown.map(s=>{
     const c=CALLS[s.japanese_name];
     const mine=myguideOf(s.japanese_name);
@@ -1938,9 +1949,9 @@ function renderGuideList(q){
         <div class="tiny muted">🕮 自分の記録（${mine.length}）</div>
         ${mine.map(myguideItemHtml).join('')}
       </div>`:''}
-      ${c?`<div class="callplay" data-jp="${esc(s.japanese_name)}" style="margin-top:8px;">
-        <audio class="recaudio" controls preload="none" src="./assets/calls/${c.f}"></audio>
-        <div class="tiny muted">🎧 録音: ${esc(c.rec)}（${esc(c.cty)}） ／ ${esc(c.lic)}</div>
+      ${c?`<div class="callplay" style="margin-top:8px;">
+        <button type="button" class="btn" style="width:auto; padding:8px 14px;" onclick="playCall(this,'${esc(s.japanese_name)}')">🎧 鳴き声を再生</button>
+        <div class="tiny muted" style="margin-top:4px;">録音: ${esc(c.rec)}（${esc(c.cty)}） ／ ${esc(c.lic)}</div>
       </div>`:''}
       <div class="chips" style="margin-top:8px;">
         <a class="c" style="text-decoration:none;" href="${guideUrlFor(s)}" target="_blank" rel="noopener">📖 図鑑</a>
@@ -1950,13 +1961,6 @@ function renderGuideList(q){
     </div>`;
   }).join('') + (list.length>shown.length?`<div class="note">絞り込むと残り ${list.length-shown.length} 種も表示されます。</div>`:'')
     : (mineOnly?'<div class="empty small">まだ自分の記録を図鑑に登録していません。<br>観察を「確定」にして「🕮 図鑑に登録」から追加できます。</div>':'<div class="empty small">見つかりませんでした。</div>');
-  // 保存済みの鳴き声は端末内(IndexedDB)の音源に差し替え（圏外で再生可）
-  Array.prototype.forEach.call(box.querySelectorAll('.callplay'), el=>{
-    const jp=el.getAttribute('data-jp'); CallDB.get(jp).then(r=>{ if(!r||!r.blob) return;
-      const a=el.querySelector('audio'); if(!a) return;
-      if(a._url) URL.revokeObjectURL(a._url); a._url=URL.createObjectURL(r.blob); a.src=a._url;
-    }).catch(()=>{});
-  });
   // マイ図鑑の音声・写真・動画を端末内から読み込み
   Array.prototype.forEach.call(box.querySelectorAll('.myitem'), el=>{
     const kind=el.getAttribute('data-kind'); const ref=el.getAttribute('data-ref');
