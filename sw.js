@@ -1,4 +1,4 @@
-const CACHE = 'bird-survey-v8';
+const CACHE = 'bird-survey-v9';
 const ASSETS = [
   './bird_survey.html',
   './manifest.json',

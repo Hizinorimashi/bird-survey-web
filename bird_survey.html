@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v8（2026-07-17 カメラ起動を確実化）';
+const APP_VERSION = 'v9（2026-07-17 図鑑・鳴き声リンク）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -282,8 +282,15 @@ const OPT = {
 
 /* ---------- 種名マスタ（日本の一般的な鳥類 和名） ---------- */
 const SPECIES = `カイツブリ,ハジロカイツブリ,カンムリカイツブリ,カワウ,ウミウ,ゴイサギ,ササゴイ,アマサギ,ダイサギ,チュウサギ,コサギ,アオサギ,クロサギ,マガモ,カルガモ,コガモ,ヨシガモ,オカヨシガモ,ヒドリガモ,オナガガモ,ハシビロガモ,ホシハジロ,キンクロハジロ,スズガモ,ウミアイサ,カワアイサ,ミサゴ,トビ,オオタカ,ツミ,ハイタカ,ノスリ,サシバ,ハチクマ,チュウヒ,ハヤブサ,チョウゲンボウ,コジュケイ,ウズラ,キジ,ヤマドリ,バン,オオバン,クイナ,ヒクイナ,タゲリ,ケリ,コチドリ,イカルチドリ,シロチドリ,ムナグロ,ダイゼン,キョウジョシギ,トウネン,ハマシギ,オバシギ,アオアシシギ,キアシシギ,イソシギ,ソリハシシギ,オグロシギ,オオソリハシシギ,チュウシャクシギ,タシギ,ヤマシギ,セイタカシギ,ユリカモメ,セグロカモメ,オオセグロカモメ,ウミネコ,カモメ,アジサシ,コアジサシ,キジバト,ドバト,アオバト,カッコウ,ツツドリ,ホトトギス,アオバズク,フクロウ,コノハズク,ヨタカ,アマツバメ,ヒメアマツバメ,カワセミ,ヤマセミ,アカショウビン,ブッポウソウ,アリスイ,コゲラ,アカゲラ,オオアカゲラ,アオゲラ,クマゲラ,ヒバリ,ショウドウツバメ,ツバメ,コシアカツバメ,イワツバメ,キセキレイ,ハクセキレイ,セグロセキレイ,ビンズイ,タヒバリ,サンショウクイ,ヒヨドリ,モズ,アカモズ,キレンジャク,ヒレンジャク,カワガラス,ミソサザイ,ヒバリシギ,カヤクグリ,コマドリ,ノゴマ,ルリビタキ,ジョウビタキ,ノビタキ,イソヒヨドリ,トラツグミ,クロツグミ,アカハラ,シロハラ,マミチャジナイ,ツグミ,ウグイス,ヤブサメ,オオヨシキリ,コヨシキリ,セッカ,メボソムシクイ,エゾムシクイ,センダイムシクイ,キクイタダキ,キビタキ,オオルリ,コサメビタキ,エゾビタキ,サメビタキ,サンコウチョウ,エナガ,コガラ,ヒガラ,ヤマガラ,シジュウカラ,ゴジュウカラ,キバシリ,メジロ,ホオジロ,ホオアカ,カシラダカ,ミヤマホオジロ,アオジ,クロジ,オオジュリン,アトリ,カワラヒワ,マヒワ,ベニマシコ,ウソ,シメ,イカル,コイカル,ニュウナイスズメ,スズメ,ムクドリ,コムクドリ,カケス,オナガ,ハシボソガラス,ハシブトガラス,ワタリガラス,ミヤマガラス,コクマルガラス`
-  .split(',').map((n,i)=>({ species_id:i+1, japanese_name:n.trim(), search_text:n.trim() }))
+  .split(',').map((n,i)=>({ species_id:i+1, japanese_name:n.trim(), scientific_name:'', search_text:n.trim() }))
   .filter(s=>s.japanese_name);
+
+/* 図鑑・鳴き声の参照リンク（📖=Wikipedia日本語 / 🔊=Xeno-canto。学名があれば鳴き声検索が正確） */
+function speciesByName(name){ return SPECIES.find(s=>s.japanese_name===name); }
+function guideUrlFor(s){ return 'https://ja.wikipedia.org/wiki/'+encodeURIComponent((s&&s.japanese_name)||''); }
+function callUrlFor(s){ const q=(s&&s.scientific_name)||(s&&s.japanese_name)||''; return 'https://xeno-canto.org/explore?query='+encodeURIComponent(q); }
+function guideLinksByName(name){ const s=speciesByName(name)||{japanese_name:name, scientific_name:''};
+  return { guide:guideUrlFor(s), call:callUrlFor(s) }; }
 
 /* ---------- 画面遷移 ---------- */
 let STACK = [];               // {name, arg}
@@ -358,7 +365,10 @@ SCREENS.home = ()=>{
     html:`
       <button class="btn primary big" onclick="nav('surveyEdit',null)">＋ 新しい調査を作成</button>
       <div class="sp"></div>
-      <button class="btn" onclick="nav('search',null)">🔍 記録を検索</button>
+      <div class="btn-grid">
+        <button class="btn" onclick="nav('search',null)">🔍 記録を検索</button>
+        <button class="btn" onclick="nav('guide',null)">📖 図鑑・鳴き声</button>
+      </div>
       <div class="sp"></div>
       ${active.length?`<h3 class="muted small">継続中の調査</h3>${active.map(svCard).join('')}`:''}
       ${listHeader}
@@ -642,6 +652,7 @@ SCREENS.obsEdit = (argStr)=>{
             placeholder="和名で検索…" oninput="spSearch(this.value)">
           <div id="spSuggest"></div>
           <div class="chips" id="spQuick"></div>
+          <div class="chips" id="spRefLinks"></div>
         </label>
         <div class="two">
           <label class="field"><span class="lab">個体数</span>
@@ -681,7 +692,7 @@ SCREENS.obsEdit = (argStr)=>{
       <div class="note">種名が未入力なら「未同定」として保存されます。GPSが取れなくても保存できます。</div>
     `,
     onMount:()=>{ SCREENS._obs=o; SCREENS._audio=(o.audio||[]).slice(); SCREENS._media=(o.media||[]).slice();
-      renderQuickSpecies(); renderRecPanel(); renderMediaPanel();
+      renderQuickSpecies(); renderRecPanel(); renderMediaPanel(); updateSpRefLinks(o.species_name_snapshot);
       if(!o.latitude && lastFix){ /* すでに反映済み */ }
     }
   };
@@ -693,6 +704,7 @@ function segVal(field){ const on=document.querySelector(`[data-seg="${field}"] b
 function toKata(s){ return String(s||'').replace(/[ぁ-ゖ]/g,c=>String.fromCharCode(c.charCodeAt(0)+0x60)); }
 function spSearch(q){
   const box=$('#spSuggest'); q=(q||'').trim();
+  updateSpRefLinks(q);
   if(!q){ box.innerHTML=''; return; }
   const qk=toKata(q);
   const pre = SPECIES.filter(s=>toKata(s.japanese_name).startsWith(qk));
@@ -703,7 +715,7 @@ function spSearch(q){
     <div class="item" style="color:var(--muted)" onclick="chooseSpecies('','')">「${esc(q)}」は候補になし → 未同定で保存</div></div>`
     : `<div class="suggest"><div class="item" style="color:var(--muted)" onclick="chooseSpecies('','')">候補なし → 未同定で保存</div></div>`;
 }
-function chooseSpecies(id,name){ $('#spInput').value=name; $('#spSuggest').innerHTML='';
+function chooseSpecies(id,name){ $('#spInput').value=name; $('#spSuggest').innerHTML=''; updateSpRefLinks(name);
   if(!name){ document.querySelectorAll('[data-seg="identification_status"] button').forEach(b=>{
     b.classList.toggle('on', b.textContent==='未同定'); }); } SCREENS._chosenId=id; }
 function renderQuickSpecies(){
@@ -1378,6 +1390,40 @@ function purgeAll(){
   [DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.hr].forEach(k=>
     DB.deleted(k).forEach(x=>DB.hardDelete(k,x.uuid)));
   mediaGcAll(); toast('ごみ箱を空にしました'); render();
+}
+
+/* ============================================================
+   図鑑・鳴き声（種の参照リンク）
+   ============================================================ */
+SCREENS.guide = ()=>({
+  title:'図鑑・鳴き声',
+  html:`
+    <label class="field"><span class="lab">種を探す（和名・ひらがな）</span>
+      <input id="guideBox" autocomplete="off" placeholder="例）カワセミ" oninput="renderGuideList(this.value)"></label>
+    <div class="note" style="margin-bottom:12px;">📖＝解説・写真（Wikipedia）／🔊＝鳴き声（Xeno-canto）。開くにはネット接続が必要です。全 ${SPECIES.length} 種。</div>
+    <div id="guideList"></div>`,
+  onMount:()=>{ const b=$('#guideBox'); if(b) b.value=SCREENS._guideQ||''; renderGuideList(SCREENS._guideQ||''); }
+});
+function renderGuideList(q){
+  SCREENS._guideQ=q; const box=$('#guideList'); if(!box) return;
+  q=(q||'').trim(); const qk=toKata(q);
+  let list = q ? SPECIES.filter(s=>toKata(s.japanese_name).includes(qk)) : SPECIES;
+  const shown=list.slice(0,300);
+  box.innerHTML = shown.length ? shown.map(s=>`
+    <div class="card"><div class="row">
+      <div class="grow"><b>${esc(s.japanese_name)}</b>${s.scientific_name?`<div class="tiny muted"><i>${esc(s.scientific_name)}</i></div>`:''}</div>
+      <a class="btn" style="width:auto; padding:8px 12px; text-decoration:none;" href="${guideUrlFor(s)}" target="_blank" rel="noopener">📖</a>
+      <a class="btn" style="width:auto; padding:8px 12px; text-decoration:none;" href="${callUrlFor(s)}" target="_blank" rel="noopener">🔊</a>
+    </div></div>`).join('') + (list.length>shown.length?`<div class="note">絞り込むと残り ${list.length-shown.length} 種も表示されます。</div>`:'')
+    : '<div class="empty small">見つかりませんでした。</div>';
+}
+// 観察編集画面：入力中の種名に応じて図鑑・鳴き声リンクを出す
+function updateSpRefLinks(name){
+  const box=$('#spRefLinks'); if(!box) return; name=(name||'').trim();
+  if(!name){ box.innerHTML=''; return; }
+  const l=guideLinksByName(name);
+  box.innerHTML=`<a class="c" style="text-decoration:none;" href="${l.guide}" target="_blank" rel="noopener">📖 ${esc(name)}の図鑑</a>`+
+    `<a class="c" style="text-decoration:none;" href="${l.call}" target="_blank" rel="noopener">🔊 鳴き声</a>`;
 }
 
 /* ============================================================
