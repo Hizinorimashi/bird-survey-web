@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v23（2026-07-17 図鑑の切り抜き画像を種ごとに取り込み・端末内）';
+const APP_VERSION = 'v24（2026-07-17 セキュリティ修正＝XSS対策・取り込み検証）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -187,7 +187,7 @@ function dateValue(d=new Date()){
 function fmtDate(s){ if(!s) return '—'; return String(s).slice(0,10); }
 function fmtTime(s){ if(!s) return '—'; const d=new Date(s); if(isNaN(d)) return '—';
   const p=n=>String(n).padStart(2,'0'); return `${p(d.getHours())}:${p(d.getMinutes())}`; }
-function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
   clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),1800); }
 
@@ -1091,8 +1091,10 @@ function renderQuickSpecies(){
   const box=$('#spQuick'); const recent=DB.recentSpecies();
   const inSurvey=[...new Set(DB.obsOf(currentSurveyUuid).map(o=>o.species_name_snapshot).filter(Boolean))];
   const set=[...new Set([...inSurvey.slice(0,6),...recent])].slice(0,10);
-  box.innerHTML = set.map(n=>`<span class="c" onclick="chooseSpecies('','${esc(n)}');$('#spInput').value='${esc(n)}'">${esc(n)}</span>`).join('');
+  box.innerHTML = set.map(n=>`<span class="c" data-sp="${esc(n)}" onclick="pickQuickSpecies(this)">${esc(n)}</span>`).join('');
 }
+// data属性から値を読む（onclickのJS文字列にユーザー入力を埋め込まない＝XSS対策）
+function pickQuickSpecies(el){ const n=(el&&el.getAttribute('data-sp'))||''; chooseSpecies('',n); }
 function grabGps(){
   if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
   toast('位置を取得中…');
@@ -2347,11 +2349,24 @@ SCREENS.importHub = ()=>({
     <div class="note">既存データは消えません。同じ調査ID・観察IDは新しい内容で置き換えられます。</div>
   `
 });
+// 取り込むデータのID類が安全な文字だけか検証（細工バックアップによるXSS/破壊を防ぐ）
+function safeId(v){ return typeof v!=='string' || /^[\w-]*$/.test(v); }
+function importIdsOk(d){
+  const arrs=[d.surveys,d.observations,d.notes,d.hypotheses,d.hyp_results,d.myguide,d.audio,d.media];
+  for(const a of arrs){ if(!Array.isArray(a)) continue;
+    for(const x of a){ if(!x) continue;
+      if(![x.uuid,x.id,x.survey_uuid,x.hypothesis_uuid,x.ref_id].every(safeId)) return false;
+      for(const m of [].concat(x.audio||[], x.media||[])){ if(m && !safeId(m.id)) return false; }
+    }
+  }
+  return true;
+}
 function doImport(){
   const f=$('#impFile').files[0]; if(!f){ toast('ファイルを選んでください'); return; }
   const rd=new FileReader();
   rd.onload=()=>{ try{
     const d=JSON.parse(rd.result);
+    if(!importIdsOk(d)){ toast('このバックアップは形式が不正なため取り込めません'); return; }
     const merge=(key,arr)=>{ const cur=DB.load(key); const byId={}; cur.forEach(x=>byId[x.uuid]=x);
       (arr||[]).forEach(x=>{ if(x&&x.uuid) byId[x.uuid]=x; }); DB.save(key,Object.values(byId)); };
     merge(DB.key.sv,d.surveys); merge(DB.key.ob,d.observations); merge(DB.key.nt,d.notes);
