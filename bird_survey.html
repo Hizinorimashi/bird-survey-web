@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v21（2026-07-17 図鑑の重さ解消＝鳴き声は再生時のみ読込）';
+const APP_VERSION = 'v22（2026-07-17 データ保護＝永続化要求＋ホーム追加案内）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -721,6 +721,11 @@ SCREENS.home = ()=>{
   return {
     title:'鳥類調査記録',
     html:`
+      ${!isStandalone()?`<div class="note" style="border-color:var(--warn);">
+        <b>⚠ データ保護のため「ホーム画面に追加」を</b><br>
+        ブラウザのタブのまま使うと、iPhoneでは<b>約1週間使わないと記録・写真・録音が自動で消される</b>ことがあります。共有ボタンから<b>「ホーム画面に追加」</b>して、そのアイコンから使うと消えなくなります。<br>
+        さらに念のため、ときどき下の<b>「⤓ エクスポート → JSONバックアップ」</b>で保存しておくと安心です。
+      </div><div class="sp"></div>`:''}
       <button class="btn primary big" onclick="nav('surveyEdit',null)">＋ 新しい調査を作成</button>
       <div class="sp"></div>
       <div class="btn-grid">
@@ -2343,6 +2348,12 @@ function doImport(){
 /* ============================================================
    起動
    ============================================================ */
+// ホーム画面から起動しているか（iPhoneのデータ自動削除の対象外になる）
+function isStandalone(){ return (window.navigator&&window.navigator.standalone===true) ||
+  (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || false; }
+// データを消えにくくする（永続ストレージを要求。対応ブラウザで有効・非対応でも無害）
+if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().catch(()=>{}); }
+
 reset('home');
 mediaGcAll(); // 参照されなくなった録音・写真・動画を掃除
 if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{})); }
