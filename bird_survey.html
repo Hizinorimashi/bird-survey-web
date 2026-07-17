@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v22（2026-07-17 データ保護＝永続化要求＋ホーム追加案内）';
+const APP_VERSION = 'v23（2026-07-17 図鑑の切り抜き画像を種ごとに取り込み・端末内）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1150,6 +1150,31 @@ function removeFromGuide(id){
   myguideSave(myguideList().filter(g=>g.id!==id));
   toast('図鑑から外しました'); render(); mediaGcAll();
 }
+// 図鑑の切り抜き画像を取り込む（ファイル名＝和名で種に紐付け・端末内のみ）
+function importGuideImages(input){
+  const files=Array.from(input.files||[]); input.value=''; if(!files.length) return;
+  toast('図鑑画像を取り込み中…');
+  const adds=[];
+  const jobs=files.map(f=>{
+    const name=(f.name||'').replace(/\.[^.]+$/,'').replace(/[\s_]*[（(]?\d+[）)]?\s*$/,'').trim();
+    const kind=(f.type||'').startsWith('video')?'video':'photo';
+    const ext=fileExt(f.name,f.type), mid=uuid();
+    return PhotoDB.put({ id:mid, kind, mime:f.type||'', ext, size:f.size, name:f.name||'', obs_uuid:'', created_at:nowISO(), blob:f })
+      .then(()=>{ adds.push({ id:uuid(), species_name:name, kind, ref_id:mid, ext, mime:f.type||'', source:'guide', created_at:nowISO() }); });
+  });
+  Promise.all(jobs).then(()=>{
+    let l=myguideList().concat(adds);
+    // 図鑑取り込みは種ごとに最新1枚だけ残す（再取り込みで更新）
+    const seen={}; const keep=[];
+    for(let i=l.length-1;i>=0;i--){ const g=l[i];
+      if(g.source==='guide'){ if(seen[g.species_name]) continue; seen[g.species_name]=1; }
+      keep.unshift(g);
+    }
+    myguideSave(keep); mediaGcAll();
+    const matched=adds.filter(a=>speciesByName(a.species_name)).length;
+    toast(`図鑑画像 ${adds.length}枚を取り込みました（和名一致 ${matched}種）`); render();
+  }).catch(()=>toast('取り込みに失敗しました'));
+}
 
 /* ---------- まとめて記録（定点で複数種を共通の位置・時刻で一括入力） ---------- */
 SCREENS.obsBatch = (svUuid)=>{
@@ -1902,6 +1927,11 @@ SCREENS.guide = ()=>({
       <div class="sp"></div>
       <button class="btn ghost" onclick="nav('callCredits',null)">鳴き声の出典一覧</button>
     </div>
+    <div class="card">
+      <input type="file" id="guideImgInput" accept="image/*" multiple style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideImages(this)">
+      <label class="btn" for="guideImgInput">📖 図鑑の切り抜き画像を取り込む</label>
+      <div class="tiny muted" style="margin-top:6px;">ファイル名が和名（例：ハシブトガラス.png）だと、その種の図鑑に表示されます。取り込んだ画像は<b>この端末だけ</b>に保存され、公開URLには一切上がりません（市販図鑑の私的利用）。</div>
+    </div>
     <label class="field"><span class="lab">種を探す（和名・ひらがな）</span>
       <input id="guideBox" autocomplete="off" placeholder="例）カワセミ" oninput="renderGuideList(this.value)"></label>
     <div class="row" style="margin-bottom:10px;"><button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="toggleGuideMine()">${SCREENS._guideMineOnly?'← すべての種を表示':'🕮 自分の記録がある種だけ'}</button></div>
@@ -1916,7 +1946,8 @@ function myguideItemHtml(g){
     : (g.kind==='video'
         ? '<video class="myel" controls preload="metadata" style="max-width:100%; border-radius:8px; background:#000;"></video>'
         : '<img class="myel" alt="写真" style="max-width:100%; border-radius:8px; display:block;">');
-  const lab = g.kind==='audio'?'🎧 自分の録音':(g.kind==='video'?'🎬 自分の動画':'📷 自分の写真');
+  const lab = g.source==='guide' ? '📖 図鑑（取り込み）'
+    : (g.kind==='audio'?'🎧 自分の録音':(g.kind==='video'?'🎬 自分の動画':'📷 自分の写真'));
   return `<div class="myitem" data-kind="${g.kind}" data-ref="${esc(g.ref_id)}" style="margin-top:6px;">
     ${inner}
     <div class="row"><span class="tiny muted grow">${lab}</span>
