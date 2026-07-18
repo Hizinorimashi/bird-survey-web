@@ -169,7 +169,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v28（2026-07-18 Googleドライブ直接保存・会社アカウント対応）';
+const APP_VERSION = 'v29（2026-07-18 Googleドライブ：1時間はサインイン維持）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2395,7 +2395,11 @@ function saveCloudCfg(){ const url=(($('#cloudUrl')&&$('#cloudUrl').value)||'').
 // サインインしたアカウントのマイドライブに保存する。受け皿方式と違い、保存先＝サインインしたアカウント。
 const GDRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const GDRIVE_FOLDER = '鳥類調査バックアップ';
-let GTOKEN = null;                                   // {access_token, expiry}（メモリのみ・永続化しない）
+// トークンを端末内に保存し、有効期限内なら再サインイン不要にする（会社アカの2段階認証を毎回出さないため）
+function gdriveTokenLoad(){ try{ const t=JSON.parse(localStorage.getItem('bs_gdrive_token')||'null'); return (t&&t.access_token&&Date.now()<t.expiry-60000)?t:null; }catch(e){ return null; } }
+function gdriveTokenSave(t){ GTOKEN=t; try{ localStorage.setItem('bs_gdrive_token', JSON.stringify(t)); }catch(e){} }
+function gdriveTokenClear(){ GTOKEN=null; localStorage.removeItem('bs_gdrive_token'); }
+let GTOKEN = gdriveTokenLoad();                      // {access_token, expiry}（有効期限内のみ復元）
 let GUSER = localStorage.getItem('bs_gdrive_user') || ''; // 前回サインインしたアカウント（表示用）
 function gdriveCfg(){ try{ return JSON.parse(localStorage.getItem('bs_gdrive')||'{}'); }catch(e){ return {}; } }
 function gdriveSaveCfg(c){ localStorage.setItem('bs_gdrive', JSON.stringify(c||{})); }
@@ -2416,7 +2420,7 @@ function gdriveGetToken(interactive){
         prompt: 'select_account',
         callback: (resp)=>{
           if(resp && resp.access_token){
-            GTOKEN={ access_token:resp.access_token, expiry: Date.now()+((resp.expires_in||3600)*1000) };
+            gdriveTokenSave({ access_token:resp.access_token, expiry: Date.now()+((resp.expires_in||3600)*1000) });
             resolve(resp.access_token);
           } else reject(new Error('サインインに失敗しました'));
         },
@@ -2429,7 +2433,7 @@ function gdriveGetToken(interactive){
 async function gdriveFetch(path, opts, token){
   opts=opts||{}; opts.headers=Object.assign({Authorization:'Bearer '+token}, opts.headers||{});
   const res=await fetch('https://www.googleapis.com/'+path, opts);
-  if(res.status===401){ GTOKEN=null; }   // 認証切れのみトークン破棄。403(権限)はトークン自体は有効なので残す
+  if(res.status===401){ gdriveTokenClear(); }   // 認証切れのみトークン破棄。403(権限)はトークン自体は有効なので残す
   if(!res.ok){ const t=await res.text().catch(()=>''); throw new Error('Drive '+res.status+' '+t.slice(0,140)); }
   return res.json();
 }
@@ -2483,7 +2487,7 @@ async function gdriveSignIn(){
     toast('サインインしました'+(GUSER?'：'+GUSER:'')); render();
   }catch(e){ toast('サインイン失敗: '+(e.message||e)); }
 }
-function gdriveSignOut(){ GTOKEN=null; GUSER=''; localStorage.removeItem('bs_gdrive_user'); toast('サインアウトしました'); render(); }
+function gdriveSignOut(){ gdriveTokenClear(); GUSER=''; localStorage.removeItem('bs_gdrive_user'); toast('サインアウトしました'); render(); }
 async function gdriveSyncNow(){
   if(!gdriveCfg().clientId){ toast('先にクライアントIDを設定してください'); return; }
   try{ toast('Googleドライブに保存中…'); const token=await gdriveGetToken(true);
