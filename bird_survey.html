@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v25（2026-07-18 クラウド自動バックアップ＝Googleドライブ）';
+const APP_VERSION = 'v26（2026-07-18 フォルダ自動保存＝PC/AndroidでURL不要）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -236,12 +236,13 @@ function openMediaDB(){
   if(_mediaDbPromise) return _mediaDbPromise;
   _mediaDbPromise=new Promise((res,rej)=>{
     if(!window.indexedDB){ rej(new Error('no-indexeddb')); return; }
-    const r=indexedDB.open('bird_survey_audio',4);
+    const r=indexedDB.open('bird_survey_audio',5);
     r.onupgradeneeded=()=>{ const db=r.result;
       if(!db.objectStoreNames.contains('audio')) db.createObjectStore('audio',{keyPath:'id'});
       if(!db.objectStoreNames.contains('media')) db.createObjectStore('media',{keyPath:'id'});
       if(!db.objectStoreNames.contains('refdoc')) db.createObjectStore('refdoc',{keyPath:'id'});
-      if(!db.objectStoreNames.contains('call')) db.createObjectStore('call',{keyPath:'jp'}); };
+      if(!db.objectStoreNames.contains('call')) db.createObjectStore('call',{keyPath:'jp'});
+      if(!db.objectStoreNames.contains('kv')) db.createObjectStore('kv',{keyPath:'key'}); };
     r.onsuccess=()=>res(r.result);
     r.onerror=()=>rej(r.error);
   });
@@ -1664,7 +1665,7 @@ function finishSurvey(u){
   f.querySelectorAll('textarea').forEach(t=>review[t.name]=t.value);
   s.review=review;
   if(s.status!=='終了'){ s.status='終了'; s.end_datetime=nowISO(); }
-  DB.upsertSurvey(s); stopGps(); cloudBackupRecords().catch(()=>{}); toast('保存しました'); reset('home'); nav('survey',u);
+  DB.upsertSurvey(s); stopGps(); autoBackupRecords(); toast('保存しました'); reset('home'); nav('survey',u);
 }
 
 /* ============================================================
@@ -2312,6 +2313,43 @@ async function exportBackup(){
   toast('バックアップを書き出しました');
 }
 
+/* ---------- フォルダに自動保存（PC Chrome/Edge・Android Chrome。iPhoneは非対応） ---------- */
+function fsSupported(){ return typeof window!=='undefined' && 'showDirectoryPicker' in window; }
+function kvPut(key,val){ return idbDo('kv','readwrite', st=>st.put({key, val})); }
+function kvGet(key){ return idbDo('kv','readonly', st=>st.get(key)).then(r=>r&&r.val); }
+let _fsDir=null;
+function fsLoadSaved(){ if(!fsSupported()) return Promise.resolve(); return kvGet('fsdir').then(h=>{ if(h) _fsDir=h; }).catch(()=>{}); }
+async function fsPerm(mode){ if(!_fsDir) return 'no';
+  try{ if((await _fsDir.queryPermission({mode}))==='granted') return 'granted';
+    return await _fsDir.requestPermission({mode}); }catch(e){ return 'error'; } }
+async function pickBackupFolder(){
+  if(!fsSupported()){ toast('この端末では使えません（PCのChrome/Edgeで）'); return; }
+  try{ const h=await window.showDirectoryPicker({mode:'readwrite'}); _fsDir=h; await kvPut('fsdir',h);
+    toast('保存フォルダを設定しました'); await fsBackupRecords(); render();
+  }catch(e){ /* キャンセル等 */ }
+}
+async function clearBackupFolder(){ _fsDir=null; try{ await kvPut('fsdir',null); }catch(e){} toast('フォルダ設定を解除しました'); render(); }
+async function fsWrite(name, text){
+  if(!_fsDir) return false; if((await fsPerm('readwrite'))!=='granted') return false;
+  const fh=await _fsDir.getFileHandle(name,{create:true}); const w=await fh.createWritable();
+  await w.write(new Blob([text],{type:'application/json'})); await w.close(); return true;
+}
+async function fsBackupRecords(){ if(!_fsDir) return;
+  const json=JSON.stringify(buildRecordsBackup());
+  const ymd=dateValue().replace(/-/g,'');
+  const ok=await fsWrite('birdsurvey_records_latest.json', json).catch(()=>false);
+  await fsWrite('birdsurvey_records_'+ymd+'.json', json).catch(()=>{});
+  if(ok) localStorage.setItem('bs_fs_last', nowISO());
+}
+async function fsBackupFull(){ if(!_fsDir){ toast('先に保存フォルダを設定してください'); return; }
+  toast('録音・写真を含めてフォルダに保存中…'); const json=JSON.stringify(await buildFullBackup());
+  const ymd=dateValue().replace(/-/g,'');
+  const ok=await fsWrite('birdsurvey_full_latest.json', json).catch(()=>false);
+  await fsWrite('birdsurvey_full_'+ymd+'.json', json).catch(()=>{});
+  if(ok){ localStorage.setItem('bs_fs_last', nowISO()); toast('フォルダに保存しました（録音・写真含む）'); render(); }
+  else toast('保存フォルダの許可が必要です（もう一度お試しを）');
+}
+
 /* ---------- クラウド自動バックアップ（あなたのGoogleドライブ / Apps Script受け皿へ送信） ---------- */
 function cloudCfg(){ try{ return JSON.parse(localStorage.getItem('bs_cloud')||'{}'); }catch(e){ return {}; } }
 function cloudSaveCfg(c){ localStorage.setItem('bs_cloud', JSON.stringify(c||{})); }
@@ -2327,10 +2365,13 @@ function cloudBackupRecords(){ if(!cloudCfg().url) return Promise.resolve(); ret
 async function cloudBackupFull(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
   toast('録音・写真を含めてクラウド保存中…'); const data=await buildFullBackup();
   return cloudPost('full', data).then(()=>toast('クラウドに保存しました（録音・写真含む）')).catch(()=>toast('クラウド保存に失敗しました')); }
+// URL・フォルダ両方へ記録を自動保存（設定済みの方だけ動く）
+function autoBackupRecords(){ return Promise.all([ cloudBackupRecords().catch(()=>{}), fsBackupRecords().catch(()=>{}) ]); }
+function backupConfigured(){ return !!cloudCfg().url || !!_fsDir; }
 // データ変更のたびに、少し待ってから記録を自動バックアップ（まとめて1回）
 let _cloudTimer=null;
-function scheduleCloud(){ if(!cloudCfg().url) return; clearTimeout(_cloudTimer);
-  _cloudTimer=setTimeout(()=>{ cloudBackupRecords().catch(()=>{}); }, 6000); }
+function scheduleCloud(){ if(!backupConfigured()) return; clearTimeout(_cloudTimer);
+  _cloudTimer=setTimeout(()=>{ autoBackupRecords(); }, 6000); }
 function cloudSyncNow(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
   cloudBackupRecords().then(()=>{ toast('記録をクラウドに保存しました'); render(); }).catch(()=>toast('クラウド保存に失敗しました')); }
 function saveCloudCfg(){ const url=(($('#cloudUrl')&&$('#cloudUrl').value)||'').trim();
@@ -2360,10 +2401,30 @@ function doGet(){ return out('bird-survey backup OK'); }`;
 SCREENS.cloud = ()=>{
   const c=cloudCfg(); const last=cloudLast();
   const ago = last ? Math.max(0,Math.round((Date.now()-new Date(last))/60000)) : null;
-  return { title:'クラウド保存（Googleドライブ）',
+  const fsLast=localStorage.getItem('bs_fs_last')||'';
+  const fsAgo=fsLast?Math.max(0,Math.round((Date.now()-new Date(fsLast))/60000)):null;
+  return { title:'自動バックアップ',
     html:`
       <div class="card">
-        <div class="small">${c.url?`✅ 設定済み ／ 前回保存: ${ago!=null?ago+'分前':'—'}`:'⚠ まだ未設定です'}</div>
+        <div class="row"><div class="grow"><b>📁 フォルダに自動保存（かんたん）</b><div class="tiny muted">PCのChrome/Edge・Android Chrome向け（iPhoneは不可）</div></div></div>
+        <div class="sp"></div>
+        ${fsSupported()
+          ? (_fsDir
+            ? `<div class="small">✅ フォルダ設定済み：<b>${esc(_fsDir.name||'選択済み')}</b> ／ 前回保存: ${fsAgo!=null?fsAgo+'分前':'—'}</div>
+               <div class="sp"></div>
+               <div class="btn-grid">
+                 <button class="btn" onclick="fsBackupFull()">📁 録音・写真も保存</button>
+                 <button class="btn ghost danger" onclick="clearBackupFolder()">フォルダ設定を解除</button>
+               </div>`
+            : `<button class="btn primary" onclick="pickBackupFolder()">📁 保存フォルダを選ぶ</button>
+               <div class="tiny muted" style="margin-top:6px;">OneDriveやGoogleドライブの同期フォルダを選ぶと、パソコンの同期でクラウドにも上がります（URL不要）。</div>`)
+          : `<div class="tiny muted">この端末では使えません（iPhone/一部ブラウザ非対応）。下のURL方式をお使いください。</div>`}
+      </div>
+      <div class="divider"></div>
+      <div class="card">
+        <div class="row"><div class="grow"><b>☁ URLで送る（iPhone向け）</b><div class="tiny muted">Googleドライブへ・受け皿URLを1回設定</div></div></div>
+        <div class="sp"></div>
+        <div class="small">${c.url?`✅ 設定済み ／ 前回保存: ${ago!=null?ago+'分前':'—'}`:'未設定'}</div>
         <div class="sp"></div>
         <label class="field"><span class="lab">受け皿URL（Apps ScriptのウェブアプリURL）</span>
           <input id="cloudUrl" autocomplete="off" placeholder="https://script.google.com/macros/s/..../exec" value="${esc(c.url||'')}"></label>
@@ -2495,6 +2556,7 @@ if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().
 
 reset('home');
 mediaGcAll(); // 参照されなくなった録音・写真・動画を掃除
+fsLoadSaved().then(()=>{ if(STACK.length===1 && STACK[0].name==='home') render(); }); // 保存フォルダ設定を復元
 if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{})); }
 </script>
 </body>
