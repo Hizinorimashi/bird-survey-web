@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v26（2026-07-18 フォルダ自動保存＝PC/AndroidでURL不要）';
+const APP_VERSION = 'v27（2026-07-18 写真・録音もフォルダへ自動保存）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1176,7 +1176,7 @@ function importGuideImages(input){
       if(g.source==='guide'){ if(seen[g.species_name]) continue; seen[g.species_name]=1; }
       keep.unshift(g);
     }
-    myguideSave(keep); mediaGcAll();
+    myguideSave(keep); mediaGcAll(); scheduleFolderFull();
     const matched=adds.filter(a=>speciesByName(a.species_name)).length;
     toast(`図鑑画像 ${adds.length}枚を取り込みました（和名一致 ${matched}種）`); render();
   }).catch(()=>toast('取り込みに失敗しました'));
@@ -1304,13 +1304,13 @@ function recFinalize(chunks, mime, t0){
   const obsUuid=(SCREENS._obs&&SCREENS._obs.uuid)||'';
   AudioDB.put(Object.assign({}, meta, { blob, obs_uuid:obsUuid })).then(()=>{
     SCREENS._audio=SCREENS._audio||[]; SCREENS._audio.push(meta);
-    persistAudioIfSaved(); renderRecPanel(); toast('録音を保存しました');
+    persistAudioIfSaved(); renderRecPanel(); scheduleFolderFull(); toast('録音を保存しました');
   }).catch(()=>toast('録音の保存に失敗しました'));
 }
 function delAudio(id){
   AudioDB.del(id).catch(()=>{}).then(()=>{
     SCREENS._audio=(SCREENS._audio||[]).filter(a=>a.id!==id);
-    persistAudioIfSaved(); renderRecPanel(); toast('録音を削除しました');
+    persistAudioIfSaved(); renderRecPanel(); scheduleFolderFull(); toast('録音を削除しました');
   });
 }
 // 編集中の観察がすでに保存済みなら、録音の追加・削除を即座に反映（保存待ちの不整合を防ぐ）
@@ -1359,13 +1359,13 @@ function pickMedia(input){
     });
   });
   toast('取り込み中…');
-  Promise.all(jobs).then(()=>{ persistMediaIfSaved(); renderMediaPanel(); toast('写真・動画を追加しました'); })
+  Promise.all(jobs).then(()=>{ persistMediaIfSaved(); renderMediaPanel(); scheduleFolderFull(); toast('写真・動画を追加しました'); })
     .catch(()=>toast('取り込みに失敗しました'));
 }
 function delMedia(id){
   PhotoDB.del(id).catch(()=>{}).then(()=>{
     SCREENS._media=(SCREENS._media||[]).filter(m=>m.id!==id);
-    persistMediaIfSaved(); renderMediaPanel(); toast('削除しました');
+    persistMediaIfSaved(); renderMediaPanel(); scheduleFolderFull(); toast('削除しました');
   });
 }
 function persistMediaIfSaved(){
@@ -1665,7 +1665,7 @@ function finishSurvey(u){
   f.querySelectorAll('textarea').forEach(t=>review[t.name]=t.value);
   s.review=review;
   if(s.status!=='終了'){ s.status='終了'; s.end_datetime=nowISO(); }
-  DB.upsertSurvey(s); stopGps(); autoBackupRecords(); toast('保存しました'); reset('home'); nav('survey',u);
+  DB.upsertSurvey(s); stopGps(); autoBackupRecords(); scheduleFolderFull(); toast('保存しました'); reset('home'); nav('survey',u);
 }
 
 /* ============================================================
@@ -2341,14 +2341,26 @@ async function fsBackupRecords(){ if(!_fsDir) return;
   await fsWrite('birdsurvey_records_'+ymd+'.json', json).catch(()=>{});
   if(ok) localStorage.setItem('bs_fs_last', nowISO());
 }
-async function fsBackupFull(){ if(!_fsDir){ toast('先に保存フォルダを設定してください'); return; }
-  toast('録音・写真を含めてフォルダに保存中…'); const json=JSON.stringify(await buildFullBackup());
-  const ymd=dateValue().replace(/-/g,'');
-  const ok=await fsWrite('birdsurvey_full_latest.json', json).catch(()=>false);
-  await fsWrite('birdsurvey_full_'+ymd+'.json', json).catch(()=>{});
-  if(ok){ localStorage.setItem('bs_fs_last', nowISO()); toast('フォルダに保存しました（録音・写真含む）'); render(); }
-  else toast('保存フォルダの許可が必要です（もう一度お試しを）');
+let _fullRunning=false;
+async function fsBackupFullCore(){
+  if(!_fsDir || _fullRunning) return false; _fullRunning=true;
+  try{
+    const json=JSON.stringify(await buildFullBackup());
+    const ymd=dateValue().replace(/-/g,'');
+    const ok=await fsWrite('birdsurvey_full_latest.json', json).catch(()=>false);
+    await fsWrite('birdsurvey_full_'+ymd+'.json', json).catch(()=>{});
+    if(ok) localStorage.setItem('bs_fs_last', nowISO());
+    return ok;
+  } finally { _fullRunning=false; }
 }
+async function fsBackupFull(){ if(!_fsDir){ toast('先に保存フォルダを設定してください'); return; }
+  toast('録音・写真を含めてフォルダに保存中…'); const ok=await fsBackupFullCore();
+  toast(ok?'フォルダに保存しました（録音・写真含む）':'保存フォルダの許可が必要です（もう一度お試しを）'); render();
+}
+// 録音・写真が増減したら、少し待ってからフォルダへ自動でフル保存（フォルダ設定時のみ）
+let _fullTimer=null;
+function scheduleFolderFull(){ if(!_fsDir) return; clearTimeout(_fullTimer);
+  _fullTimer=setTimeout(()=>{ fsBackupFullCore().catch(()=>{}); }, 20000); }
 
 /* ---------- クラウド自動バックアップ（あなたのGoogleドライブ / Apps Script受け皿へ送信） ---------- */
 function cloudCfg(){ try{ return JSON.parse(localStorage.getItem('bs_cloud')||'{}'); }catch(e){ return {}; } }
