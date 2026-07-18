@@ -169,7 +169,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v29（2026-07-18 Googleドライブ：1時間はサインイン維持）';
+const APP_VERSION = 'v30（2026-07-18 飛翔経路の記録・地図に線を描く）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -194,7 +194,7 @@ function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('sh
 
 /* ---------- データ層（localStorage） ---------- */
 const DB = {
-  key:{sv:'bs_surveys', ob:'bs_observations', nt:'bs_notes', hy:'bs_hypotheses', hr:'bs_hyp_results', recent:'bs_recent_species', fav:'bs_fav_species'},
+  key:{sv:'bs_surveys', ob:'bs_observations', nt:'bs_notes', hy:'bs_hypotheses', hr:'bs_hyp_results', fl:'bs_flights', recent:'bs_recent_species', fav:'bs_fav_species'},
   load(k){ try{ return JSON.parse(localStorage.getItem(k)||'[]'); }catch(e){ return []; } },
   save(k,v){ localStorage.setItem(k, JSON.stringify(v)); if(typeof scheduleCloud==='function') scheduleCloud(); },
   surveys(){ return this.load(this.key.sv).filter(s=>!s.deleted_at); },
@@ -206,6 +206,11 @@ const DB = {
   obsOf(svUuid){ return this.observations().filter(o=>o.survey_uuid===svUuid); },
   notesOf(svUuid){ return this.notes().filter(n=>n.survey_uuid===svUuid); },
   hypOf(svUuid){ return this.hypotheses().filter(h=>h.survey_uuid===svUuid); },
+  flights(){ return this.load(this.key.fl).filter(f=>!f.deleted_at); },
+  flightsOf(svUuid){ return this.flights().filter(f=>f.survey_uuid===svUuid); },
+  flight(u){ return this.load(this.key.fl).find(f=>f.uuid===u); },
+  upsertFlight(rec){ const a=this.load(this.key.fl); const i=a.findIndex(x=>x.uuid===rec.uuid);
+    rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; this.save(this.key.fl,a); },
   hypothesis(u){ return this.load(this.key.hy).find(h=>h.uuid===u); },
   resultsOf(hyUuid){ return this.hypResults().filter(r=>r.hypothesis_uuid===hyUuid); },
   survey(u){ return this.allSurveys().find(s=>s.uuid===u); },
@@ -303,6 +308,8 @@ const OPT = {
   noteCat:['調査条件','生息環境','調査結果','特記事項','考察メモ','報告書用メモ','次回課題','その他'],
   hypStatus:['未検証','検証中','検証済み','保留'],
   judgment:['支持','一部支持','支持されない','判断不能'],
+  flightHeight:['低（樹冠以下）','中（樹冠〜数十m）','高（上空）','不明'],
+  flightBehavior:['旋回','直線飛行','帆翔（ソアリング）','はばたき','急降下','ディスプレイ','狩り','その他'],
 };
 
 /* ---------- 種名マスタ（日本の一般的な鳥類 和名） ---------- */
@@ -856,6 +863,7 @@ function softDeleteSurveyCascade(u){
   DB.obsOf(u).forEach(o=>DB.softDelete(DB.key.ob,o.uuid));
   DB.notesOf(u).forEach(n=>DB.softDelete(DB.key.nt,n.uuid));
   DB.hypOf(u).forEach(h=>DB.softDelete(DB.key.hy,h.uuid));
+  DB.flightsOf(u).forEach(f=>DB.softDelete(DB.key.fl,f.uuid));
 }
 function deleteSurvey(u){
   if(!confirm('この調査と、ひも付く観察記録を削除します。よろしいですか？（あとで「ごみ箱」から戻せます）')) return;
@@ -914,6 +922,7 @@ SCREENS.survey = (u)=>{
     <div class="actions">
       <div class="act primary wide" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🐦</span>観察を追加</div>
       <div class="act wide" onclick="nav('obsBatch','${u}')"><span class="ic">🐦🐦</span>まとめて記録（複数種）</div>
+      <div class="act wide" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🛩</span>飛翔経路を記録（地図に描く）</div>
       <div class="act" onclick="nav('noteEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">📝</span>メモを追加</div>
       <div class="act" onclick="nav('hypotheses','${u}')"><span class="ic">💡</span>仮説を見る</div>
       <div class="act" onclick="nav('map','${u}')"><span class="ic">🗺</span>地図を見る</div>
@@ -950,6 +959,7 @@ SCREENS.survey = (u)=>{
     : '';
 
   const notes = DB.notesOf(u);
+  const flights = DB.flightsOf(u).sort((a,b)=>(b.start_time||b.created_at||'').localeCompare(a.start_time||a.created_at||''));
 
   return {
     title: s.name||'調査', sub,
@@ -962,6 +972,7 @@ SCREENS.survey = (u)=>{
         <button class="btn" onclick="nav('hypotheses','${u}')">💡 仮説・検証</button>
         <button class="btn" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))">🐦 観察を追加</button>
         <button class="btn" onclick="nav('obsBatch','${u}')">🐦🐦 まとめて記録</button>
+        <button class="btn" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))">🛩 飛翔経路を記録</button>
         <button class="btn" onclick="nav('surveyEdit','${u}')">✎ 調査情報を編集</button>
         <button class="btn" onclick="nav('surveyEnd','${u}')">⏹ 終了・振り返り</button>
       </div>`:''}
@@ -969,6 +980,18 @@ SCREENS.survey = (u)=>{
       ${obsHeader}
       ${obsList}
       ${selBar}
+      <div class="divider"></div>
+      <div class="row" style="align-items:center;">
+        <h3 class="grow" style="margin:0;">飛翔経路 <span class="muted small">(${flights.length})</span></h3>
+        <button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))">🛩 追加</button>
+      </div>
+      ${flights.length? flights.map(f=>`<div class="card tap" onclick="nav('flightEdit', JSON.stringify({sv:'${u}',id:'${f.uuid}'}))">
+          <div class="row"><div class="grow">
+            <div style="font-weight:700;">🛩 ${esc(f.species_name_snapshot||'（未同定）')}
+              ${f.needs_review?'<span class="badge warn">要確認</span>':''}</div>
+            <div class="small muted">${fmtTime(f.start_time)} ・ ${esc((f.path||[]).length)}点 ・ ${esc(f.height_class||'')}${f.behavior?' ・ '+esc(f.behavior):''}</div>
+          </div></div></div>`).join('')
+        : '<div class="empty small">まだ飛翔経路がありません。「🛩 追加」で地図に描けます。</div>'}
       ${notes.length?`<div class="divider"></div><h3>調査メモ <span class="muted small">(${notes.length})</span></h3>
         ${notes.map(n=>`<div class="card tap" onclick="nav('noteEdit', JSON.stringify({sv:'${u}',id:'${n.uuid}'}))">
           <div class="small"><span class="badge">${esc(n.category||'')}</span> ${fmtTime(n.recorded_at)}</div>
@@ -1443,6 +1466,117 @@ function saveNote(u,svUuid,editing){
 function deleteNote(u){ if(!confirm('このメモを削除しますか？')) return; DB.softDelete(DB.key.nt,u); toast('削除しました'); goBack(); }
 
 /* ============================================================
+   飛翔経路（地図に線を描いて記録）
+   ============================================================ */
+let flightPath=[], flightLayer=null;
+SCREENS.flightEdit = (argStr)=>{
+  const arg=JSON.parse(argStr||'{}'); const svUuid=arg.sv||currentSurveyUuid; const editing=!!arg.id;
+  let f = editing ? Object.assign({}, DB.flight(arg.id)) : null;
+  if(!f) f={ uuid:uuid(), survey_uuid:svUuid, species_id:'', species_name_snapshot:'',
+    path:[], start_time:localDatetimeValue(), end_time:'', height_class:'不明', behavior:'', count:1, memo:'', needs_review:false };
+  const segH=(field,opts)=>`<div class="seg" data-seg="${field}">${opts.map(o=>
+    `<button type="button" class="${f[field]===o?'on':''}" onclick="pickObs(this,'${field}','${esc(o)}')">${esc(o)}</button>`).join('')}</div>`;
+  const bset=new Set(String(f.behavior||'').split('・').filter(Boolean));
+  const segB=`<div class="seg" data-seg="behavior">${OPT.flightBehavior.map(o=>
+    `<button type="button" class="${bset.has(o)?'on':''}" onclick="this.classList.toggle('on')">${esc(o)}</button>`).join('')}</div>`;
+  return {
+    title: editing?'飛翔経路を編集':'飛翔経路を記録',
+    html:`
+      <div class="note">地図を<b>タップ</b>すると、鳥が飛んだ順に点がつながります（緑「始」→赤「終」で向き）。間違えたら「↶ 1つ戻す」。</div>
+      <div id="fmap" style="height:calc(100vh - 440px); min-height:240px; border-radius:var(--radius); border:1px solid var(--line);"></div>
+      <div class="sp"></div>
+      <div class="btn-grid">
+        <button class="btn" onclick="flightUndo()">↶ 1つ戻す</button>
+        <button class="btn ghost danger" onclick="flightClear()">全消去</button>
+      </div>
+      <div class="tiny muted" id="fInfo" style="margin:6px 0;">—</div>
+      <form id="flForm">
+        <label class="field"><span class="lab">種名</span>
+          <input id="spInput" autocomplete="off" value="${esc(f.species_name_snapshot)}" placeholder="種名を入力（かな可）" oninput="spSearch(this.value)">
+          <div id="spSuggest"></div>
+          <div class="chips" id="spRefLinks"></div>
+        </label>
+        <div class="two">
+          <label class="field"><span class="lab">開始時刻</span>
+            <input type="datetime-local" name="start_time" value="${esc(f.start_time||'')}"></label>
+          <label class="field"><span class="lab">終了時刻</span>
+            <input type="datetime-local" name="end_time" value="${esc(f.end_time||'')}"></label>
+        </div>
+        <label class="field"><span class="lab">飛翔高度</span>${segH('height_class',OPT.flightHeight)}</label>
+        <label class="field"><span class="lab">行動（複数可）</span>${segB}</label>
+        <label class="field"><span class="lab">個体数</span>
+          <input type="number" name="count" min="1" value="${esc(f.count||1)}"></label>
+        <label class="field"><span class="lab">メモ</span>
+          <textarea name="memo" placeholder="飛翔の様子・方向など">${esc(f.memo||'')}</textarea></label>
+        <label class="field row" style="gap:12px; align-items:center;">
+          <input type="checkbox" id="flReview" style="width:auto;" ${f.needs_review?'checked':''}>
+          <span class="lab" style="margin:0;">要確認フラグ</span></label>
+      </form>
+      <button class="btn primary big" onclick="saveFlight('${f.uuid}','${svUuid}',${editing})">保存する</button>
+      ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteFlight('${f.uuid}')">この飛翔経路を削除</button>`:''}
+    `,
+    onMount:()=>{ SCREENS._chosenId=f.species_id||''; flightPath=(f.path||[]).slice();
+      updateSpRefLinks(f.species_name_snapshot||''); setTimeout(()=>initFlightMap(),50); }
+  };
+};
+function initFlightMap(){
+  const el=$('#fmap'); if(!el) return;
+  let center=[43.06,141.35], zoom=13;
+  if(flightPath.length){ center=flightPath[0]; zoom=15; }
+  else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=15; }
+  mapObj=L.map('fmap').setView(center,zoom);
+  const gsiAttr='<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>';
+  const gsi=(name,ext,mx,opt)=>L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/'+name+'/{z}/{x}/{y}.'+ext, Object.assign({maxZoom:18, maxNativeZoom:mx||18, attribution:gsiAttr}, opt||{}));
+  const bases={ '標準地図':gsi('std','png',18), '淡色地図':gsi('pale','png',18), '写真（航空・衛星）':gsi('seamlessphoto','jpg',18) };
+  let savedBase=localStorage.getItem('bs_basemap'); if(!bases[savedBase]) savedBase='標準地図';
+  bases[savedBase].addTo(mapObj);
+  L.control.layers(bases,{},{position:'topright',collapsed:true}).addTo(mapObj);
+  mapObj.on('baselayerchange', e=>{ try{ localStorage.setItem('bs_basemap', e.name); }catch(err){} });
+  mapObj.on('click', e=>{ flightPath.push([e.latlng.lat, e.latlng.lng]); redrawFlight(); });
+  redrawFlight();
+  if(flightPath.length>1){ try{ mapObj.fitBounds(flightPath,{padding:[40,40]}); }catch(e){} }
+  setTimeout(()=>{ if(mapObj) mapObj.invalidateSize(); }, 200);
+  addLocateControl();
+  if(!flightPath.length) locateOnMap([]);
+}
+function redrawFlight(){
+  if(!mapObj) return;
+  if(flightLayer){ try{ mapObj.removeLayer(flightLayer); }catch(e){} }
+  flightLayer=L.layerGroup().addTo(mapObj);
+  if(flightPath.length){
+    if(flightPath.length>1) L.polyline(flightPath,{color:'#e0a030',weight:4,opacity:.9}).addTo(flightLayer);
+    const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[24,24],iconAnchor:[12,12]});
+    L.marker(flightPath[0],{icon:badge('始','#3fb984')}).addTo(flightLayer);
+    flightPath.forEach((p,i)=>{ if(i>0 && i<flightPath.length-1) L.circleMarker(p,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(flightLayer); });
+    if(flightPath.length>1) L.marker(flightPath[flightPath.length-1],{icon:badge('終','#d05555')}).addTo(flightLayer);
+  }
+  const info=$('#fInfo');
+  if(info){ let d=0; for(let i=1;i<flightPath.length;i++){ try{ d+=mapObj.distance(flightPath[i-1],flightPath[i]); }catch(e){} }
+    info.textContent = flightPath.length? `${flightPath.length}点 ・ 全長 約${d>=1000?(d/1000).toFixed(2)+'km':Math.round(d)+'m'}` : 'まだ点がありません。地図をタップして描いてください。'; }
+}
+function flightUndo(){ flightPath.pop(); redrawFlight(); }
+function flightClear(){ if(flightPath.length && !confirm('描いた線を全部消しますか？')) return; flightPath=[]; redrawFlight(); }
+function saveFlight(u,svUuid,editing){
+  if(flightPath.length<2){ toast('地図を2点以上タップして経路を描いてください'); return; }
+  const name=(($('#spInput')&&$('#spInput').value)||'').trim();
+  const behSet=[...document.querySelectorAll('[data-seg="behavior"] button.on')].map(b=>b.textContent);
+  const prev=editing?DB.flight(u):{uuid:u};
+  const rec=Object.assign({},prev,{ uuid:u, survey_uuid:svUuid,
+    species_id:SCREENS._chosenId||'', species_name_snapshot:name,
+    path:flightPath.slice(),
+    start_time:($('#flForm [name="start_time"]').value)||'',
+    end_time:($('#flForm [name="end_time"]').value)||'',
+    height_class:segVal('height_class'),
+    behavior:behSet.join('・'),
+    count:($('#flForm [name="count"]').value)||'',
+    memo:($('#flForm [name="memo"]').value||'').trim(),
+    needs_review:$('#flReview').checked });
+  DB.upsertFlight(rec); if(name) DB.pushRecent(name);
+  toast('飛翔経路を保存しました'); goBack();
+}
+function deleteFlight(u){ if(!confirm('この飛翔経路を削除しますか？')) return; DB.softDelete(DB.key.fl,u); toast('削除しました'); goBack(); }
+
+/* ============================================================
    仮説管理（一覧・登録・詳細）
    ============================================================ */
 const HYP_BADGE={'未検証':'','検証中':'','検証済み':'ok','保留':'warn'};
@@ -1711,16 +1845,17 @@ SCREENS.summary = (u)=>{
 SCREENS.map = (u)=>{
   const obs=DB.obsOf(u).filter(o=>o.latitude&&o.longitude);
   const notes=DB.notesOf(u).filter(n=>n.latitude&&n.longitude);
+  const flights=DB.flightsOf(u).filter(f=>(f.path||[]).length>=2);
   return {
     title:'地図',
-    sub:[`<span class="pill">観察地点 ${obs.length}</span>`],
+    sub:[`<span class="pill">観察地点 ${obs.length}</span>`, flights.length?`<span class="pill">飛翔経路 ${flights.length}</span>`:''].filter(Boolean),
     html:`<div id="map"></div>
       <div class="sp"></div>
-      <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ノート＝メモ。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ。右上の重ねアイコンで、背景（標準／淡色／航空写真）を選び、さらに「陰影」「傾斜」を重ねられます（航空写真＋陰影で起伏が分かる）。選択は次回も保持。</div>`,
-    onMount:()=>{ setTimeout(()=>drawMap(obs,notes),50); }
+      <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ノート＝メモ / オレンジ線＝飛翔経路（緑「始」→赤「終」）。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ。右上の重ねアイコンで、背景（標準／淡色／航空写真）を選び、さらに「陰影」「傾斜」を重ねられます（航空写真＋陰影で起伏が分かる）。選択は次回も保持。</div>`,
+    onMount:()=>{ setTimeout(()=>drawMap(obs,notes,flights),50); }
   };
 };
-function drawMap(obs,notes){
+function drawMap(obs,notes,flights){
   const el=$('#map'); if(!el) return;
   let center=[35.68,139.77], zoom=13;
   const pts=obs.filter(o=>!isNaN(parseFloat(o.latitude)));
@@ -1766,6 +1901,16 @@ function drawMap(obs,notes){
   notes.forEach(n=>{ const lat=parseFloat(n.latitude), lon=parseFloat(n.longitude);
     const m=mk(lat,lon,'✎','#5a7de0').addTo(mapObj);
     m.bindPopup(`<b>メモ:${esc(n.category||'')}</b><br>${esc((n.content||'').slice(0,80))}`); group.push([lat,lon]); });
+  // 飛翔経路（オレンジ線＋始点/終点）
+  (flights||[]).forEach(f=>{ const path=(f.path||[]).filter(p=>Array.isArray(p)&&p.length===2);
+    if(path.length<2) return;
+    const pl=L.polyline(path,{color:'#e0a030',weight:4,opacity:.85}).addTo(mapObj);
+    pl.bindPopup(`<b>🛩 ${esc(f.species_name_snapshot||'（未同定）')}</b><br>${esc(f.count||1)}個体 ・ ${esc(f.height_class||'')}<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
+    const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
+    L.marker(path[0],{icon:badge('始','#3fb984')}).addTo(mapObj);
+    L.marker(path[path.length-1],{icon:badge('終','#d05555')}).addTo(mapObj);
+    path.forEach(p=>group.push(p));
+  });
   mapCurMarker=null; mapCurCircle=null;
   if(lastFix){ addCurrentPos(lastFix.lat,lastFix.lon,lastFix.acc); }
   if(group.length>1){ try{ mapObj.fitBounds(group,{padding:[40,40]}); }catch(e){} }
@@ -1873,6 +2018,7 @@ SCREENS.trash = ()=>{
     { k:DB.key.ob, label:'観察記録', items:DB.deleted(DB.key.ob), name:x=>x.species_name_snapshot||'（未同定）', sub:x=>fmtTime(x.observed_at) },
     { k:DB.key.nt, label:'メモ',   items:DB.deleted(DB.key.nt), name:x=>x.category||'メモ', sub:x=>String(x.content||'').slice(0,40) },
     { k:DB.key.hy, label:'仮説',   items:DB.deleted(DB.key.hy), name:x=>x.title||'(無題の仮説)', sub:x=>'' },
+    { k:DB.key.fl, label:'飛翔経路', items:DB.deleted(DB.key.fl), name:x=>'🛩 '+(x.species_name_snapshot||'（未同定）'), sub:x=>fmtTime(x.start_time) },
   ];
   const total=groups.reduce((n,g)=>n+g.items.length,0);
   return { title:'ごみ箱',
@@ -1899,6 +2045,7 @@ function restoreItem(k,u){
     DB.deleted(DB.key.ob).filter(o=>o.survey_uuid===u).forEach(o=>DB.restore(DB.key.ob,o.uuid));
     DB.deleted(DB.key.nt).filter(n=>n.survey_uuid===u).forEach(n=>DB.restore(DB.key.nt,n.uuid));
     DB.deleted(DB.key.hy).filter(h=>h.survey_uuid===u).forEach(h=>DB.restore(DB.key.hy,h.uuid));
+    DB.deleted(DB.key.fl).filter(f=>f.survey_uuid===u).forEach(f=>DB.restore(DB.key.fl,f.uuid));
   }
   toast('復元しました'); render();
 }
@@ -1910,12 +2057,13 @@ function purgeItem(k,u){
     DB.load(DB.key.hy).filter(h=>h.survey_uuid===u).forEach(h=>{
       DB.load(DB.key.hr).filter(r=>r.hypothesis_uuid===h.uuid).forEach(r=>DB.hardDelete(DB.key.hr,r.uuid));
       DB.hardDelete(DB.key.hy,h.uuid); });
+    DB.load(DB.key.fl).filter(f=>f.survey_uuid===u).forEach(f=>DB.hardDelete(DB.key.fl,f.uuid));
   }
   DB.hardDelete(k,u); mediaGcAll(); toast('完全に削除しました'); render();
 }
 function purgeAll(){
   if(!confirm('ごみ箱の中身をすべて完全に削除します。元に戻せません。よろしいですか？')) return;
-  [DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.hr].forEach(k=>
+  [DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.hr,DB.key.fl].forEach(k=>
     DB.deleted(k).forEach(x=>DB.hardDelete(k,x.uuid)));
   mediaGcAll(); toast('ごみ箱を空にしました'); render();
 }
@@ -2254,6 +2402,22 @@ function exportGeoJSON(surveys, base){
   download(`${base}_observations.geojson`, JSON.stringify(fc,null,1), 'application/geo+json');
   toast('GeoJSONを書き出しました');
 }
+// 飛翔経路を線データ（LineString）でGeoJSON出力（QGISで使える）
+function exportFlightsGeoJSON(surveys, base){
+  const feats=[];
+  surveys.forEach(s=>{ DB.flightsOf(s.uuid).forEach(f=>{
+    const path=(f.path||[]).filter(p=>Array.isArray(p)&&p.length===2);
+    if(path.length<2) return;
+    feats.push({ type:'Feature',
+      geometry:{ type:'LineString', coordinates: path.map(p=>[p[1],p[0]]) },  // [lon,lat]
+      properties:{ survey_id:s.uuid, survey_name:s.name, flight_id:f.uuid,
+        species_name:f.species_name_snapshot||'', start_time:f.start_time||'', end_time:f.end_time||'',
+        height_class:f.height_class||'', behavior:f.behavior||'', count:f.count||'', memo:f.memo||'' } });
+  });});
+  if(!feats.length){ toast('書き出す飛翔経路がありません'); return; }
+  download(`${base}_flights.geojson`, JSON.stringify({type:'FeatureCollection', features:feats}, null, 1), 'application/geo+json');
+  toast('飛翔経路GeoJSONを書き出しました');
+}
 const HYP_COLS=['survey_id','survey_name','hypothesis_id','title','hypothesis_text','expected_result',
   'rationale','required_data','target_species','target_location','status'];
 const HYPRES_COLS=['survey_id','hypothesis_id','hypothesis_title','result_id','verified_at','observed_result',
@@ -2284,10 +2448,10 @@ function b64ToBlob(b64,mime){ const bin=atob(b64||''); const u8=new Uint8Array(b
   for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i); return new Blob([u8],{type:mime||'application/octet-stream'}); }
 // 記録のみ（軽い・base64なし）。頻繁な自動バックアップ用
 function buildRecordsBackup(){
-  return { app:'bird_survey', kind:'records', version:5, exported_at:nowISO(),
+  return { app:'bird_survey', kind:'records', version:6, exported_at:nowISO(),
     surveys:DB.allSurveys(), observations:DB.load(DB.key.ob), notes:DB.load(DB.key.nt),
-    hypotheses:DB.load(DB.key.hy), hyp_results:DB.load(DB.key.hr), recent:DB.recentSpecies(),
-    myguide:myguideList() };
+    hypotheses:DB.load(DB.key.hy), hyp_results:DB.load(DB.key.hr), flights:DB.load(DB.key.fl),
+    recent:DB.recentSpecies(), myguide:myguideList() };
 }
 // 全部（録音・写真をbase64同梱）。重い
 async function buildFullBackup(){
@@ -2302,10 +2466,10 @@ async function buildFullBackup(){
       media.push({ id:m.id, kind:m.kind, mime:m.mime, ext:m.ext, size:m.size, name:m.name, obs_uuid:m.obs_uuid,
         created_at:m.created_at, b64:await blobToB64(m.blob) }); }
   }catch(e){ media=[]; }
-  return { app:'bird_survey', version:5, exported_at:nowISO(),
+  return { app:'bird_survey', version:6, exported_at:nowISO(),
     surveys:DB.allSurveys(), observations:DB.load(DB.key.ob), notes:DB.load(DB.key.nt),
-    hypotheses:DB.load(DB.key.hy), hyp_results:DB.load(DB.key.hr), recent:DB.recentSpecies(),
-    myguide:myguideList(), audio, media };
+    hypotheses:DB.load(DB.key.hy), hyp_results:DB.load(DB.key.hr), flights:DB.load(DB.key.fl),
+    recent:DB.recentSpecies(), myguide:myguideList(), audio, media };
 }
 async function exportBackup(){
   toast('バックアップを作成中…（写真・動画が多いと時間がかかります）');
@@ -2621,7 +2785,8 @@ SCREENS.exportHub = ()=>{
         <h3>全調査をまとめて書き出し</h3>
         <div class="btn-grid">
           <button class="btn" onclick="exportCSV(DB.surveys(),'BirdSurvey_all')">観察CSV</button>
-          <button class="btn" onclick="exportGeoJSON(DB.surveys(),'BirdSurvey_all')">GeoJSON</button>
+          <button class="btn" onclick="exportGeoJSON(DB.surveys(),'BirdSurvey_all')">観察GeoJSON</button>
+          <button class="btn" onclick="exportFlightsGeoJSON(DB.surveys(),'BirdSurvey_all')">🛩 飛翔経路GeoJSON</button>
           <button class="btn" onclick="exportHypCSV(DB.surveys(),'BirdSurvey_all')">仮説CSV</button>
           <button class="btn" onclick="exportMediaZip(DB.surveys(),'BirdSurvey_all')">🎤📷 録音・写真ZIP</button>
         </div>
@@ -2642,12 +2807,13 @@ SCREENS.exportSurvey = (u)=>{
     html:`
       <div class="btn-grid">
         <button class="btn primary" onclick="exportCSV([DB.survey('${u}')],'${base}')">観察CSV</button>
-        <button class="btn primary" onclick="exportGeoJSON([DB.survey('${u}')],'${base}')">GeoJSON</button>
+        <button class="btn primary" onclick="exportGeoJSON([DB.survey('${u}')],'${base}')">観察GeoJSON</button>
+        <button class="btn" onclick="exportFlightsGeoJSON([DB.survey('${u}')],'${base}')">🛩 飛翔経路GeoJSON</button>
         <button class="btn" onclick="exportHypCSV([DB.survey('${u}')],'${base}')">仮説CSV</button>
         <button class="btn" onclick="exportMediaZip([DB.survey('${u}')],'${base}')">🎤📷 録音・写真ZIP</button>
       </div>
       <div class="sp"></div>
-      <div class="note">観察 ${DB.obsOf(u).length}件（位置付き ${DB.obsOf(u).filter(o=>o.latitude).length}件・録音 ${DB.obsOf(u).reduce((n,o)=>n+((o.audio||[]).length),0)}件・写真動画 ${DB.obsOf(u).reduce((n,o)=>n+((o.media||[]).length),0)}件）・仮説 ${DB.hypOf(u).length}件を書き出します。</div>
+      <div class="note">観察 ${DB.obsOf(u).length}件（位置付き ${DB.obsOf(u).filter(o=>o.latitude).length}件・録音 ${DB.obsOf(u).reduce((n,o)=>n+((o.audio||[]).length),0)}件・写真動画 ${DB.obsOf(u).reduce((n,o)=>n+((o.media||[]).length),0)}件）・飛翔経路 ${DB.flightsOf(u).length}件・仮説 ${DB.hypOf(u).length}件を書き出します。</div>
     `};
 };
 
@@ -2667,7 +2833,7 @@ SCREENS.importHub = ()=>({
 // 取り込むデータのID類が安全な文字だけか検証（細工バックアップによるXSS/破壊を防ぐ）
 function safeId(v){ return typeof v!=='string' || /^[\w-]*$/.test(v); }
 function importIdsOk(d){
-  const arrs=[d.surveys,d.observations,d.notes,d.hypotheses,d.hyp_results,d.myguide,d.audio,d.media];
+  const arrs=[d.surveys,d.observations,d.notes,d.hypotheses,d.hyp_results,d.flights,d.myguide,d.audio,d.media];
   for(const a of arrs){ if(!Array.isArray(a)) continue;
     for(const x of a){ if(!x) continue;
       if(![x.uuid,x.id,x.survey_uuid,x.hypothesis_uuid,x.ref_id].every(safeId)) return false;
@@ -2685,7 +2851,7 @@ function doImport(){
     const merge=(key,arr)=>{ const cur=DB.load(key); const byId={}; cur.forEach(x=>byId[x.uuid]=x);
       (arr||[]).forEach(x=>{ if(x&&x.uuid) byId[x.uuid]=x; }); DB.save(key,Object.values(byId)); };
     merge(DB.key.sv,d.surveys); merge(DB.key.ob,d.observations); merge(DB.key.nt,d.notes);
-    merge(DB.key.hy,d.hypotheses); merge(DB.key.hr,d.hyp_results);
+    merge(DB.key.hy,d.hypotheses); merge(DB.key.hr,d.hyp_results); merge(DB.key.fl,d.flights);
     if(d.recent) DB.save(DB.key.recent, d.recent);
     if(Array.isArray(d.myguide) && d.myguide.length){
       const cur=myguideList(); const byId={}; cur.forEach(g=>byId[g.id]=g);
