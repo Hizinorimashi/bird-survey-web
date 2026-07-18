@@ -168,7 +168,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v24（2026-07-17 セキュリティ修正＝XSS対策・取り込み検証）';
+const APP_VERSION = 'v25（2026-07-18 クラウド自動バックアップ＝Googleドライブ）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -195,7 +195,7 @@ function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('sh
 const DB = {
   key:{sv:'bs_surveys', ob:'bs_observations', nt:'bs_notes', hy:'bs_hypotheses', hr:'bs_hyp_results', recent:'bs_recent_species', fav:'bs_fav_species'},
   load(k){ try{ return JSON.parse(localStorage.getItem(k)||'[]'); }catch(e){ return []; } },
-  save(k,v){ localStorage.setItem(k, JSON.stringify(v)); },
+  save(k,v){ localStorage.setItem(k, JSON.stringify(v)); if(typeof scheduleCloud==='function') scheduleCloud(); },
   surveys(){ return this.load(this.key.sv).filter(s=>!s.deleted_at); },
   allSurveys(){ return this.load(this.key.sv); },
   observations(){ return this.load(this.key.ob).filter(o=>!o.deleted_at); },
@@ -745,7 +745,10 @@ SCREENS.home = ()=>{
         <button class="btn" onclick="nav('importHub',null)">⤒ インポート</button>
       </div>
       <div class="sp"></div>
-      <button class="btn" onclick="nav('trash',null)">🗑 ごみ箱（削除したデータ）</button>
+      <div class="btn-grid">
+        <button class="btn" onclick="nav('trash',null)">🗑 ごみ箱</button>
+        <button class="btn" onclick="nav('cloud',null)">☁ クラウド保存</button>
+      </div>
       <div class="sp"></div>
       <div class="note">観察記録の合計個体数は延べ数です。同一個体を重複して数えている可能性があるため、生息個体数とは限りません。</div>
       <div class="sp"></div>
@@ -1661,7 +1664,7 @@ function finishSurvey(u){
   f.querySelectorAll('textarea').forEach(t=>review[t.name]=t.value);
   s.review=review;
   if(s.status!=='終了'){ s.status='終了'; s.end_datetime=nowISO(); }
-  DB.upsertSurvey(s); stopGps(); toast('保存しました'); reset('home'); nav('survey',u);
+  DB.upsertSurvey(s); stopGps(); cloudBackupRecords().catch(()=>{}); toast('保存しました'); reset('home'); nav('survey',u);
 }
 
 /* ============================================================
@@ -2277,8 +2280,15 @@ function blobToB64(blob){ return new Promise(res=>{ const r=new FileReader();
   r.onload=()=>res(String(r.result).split(',')[1]||''); r.onerror=()=>res(''); r.readAsDataURL(blob); }); }
 function b64ToBlob(b64,mime){ const bin=atob(b64||''); const u8=new Uint8Array(bin.length);
   for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i); return new Blob([u8],{type:mime||'application/octet-stream'}); }
-async function exportBackup(){
-  toast('バックアップを作成中…（写真・動画が多いと時間がかかります）');
+// 記録のみ（軽い・base64なし）。頻繁な自動バックアップ用
+function buildRecordsBackup(){
+  return { app:'bird_survey', kind:'records', version:5, exported_at:nowISO(),
+    surveys:DB.allSurveys(), observations:DB.load(DB.key.ob), notes:DB.load(DB.key.nt),
+    hypotheses:DB.load(DB.key.hy), hyp_results:DB.load(DB.key.hr), recent:DB.recentSpecies(),
+    myguide:myguideList() };
+}
+// 全部（録音・写真をbase64同梱）。重い
+async function buildFullBackup(){
   let audio=[], media=[];
   try{ const metas=await AudioDB.all();
     for(const a of metas){ if(!a||!a.blob) continue;
@@ -2290,13 +2300,96 @@ async function exportBackup(){
       media.push({ id:m.id, kind:m.kind, mime:m.mime, ext:m.ext, size:m.size, name:m.name, obs_uuid:m.obs_uuid,
         created_at:m.created_at, b64:await blobToB64(m.blob) }); }
   }catch(e){ media=[]; }
-  const data={ app:'bird_survey', version:5, exported_at:nowISO(),
+  return { app:'bird_survey', version:5, exported_at:nowISO(),
     surveys:DB.allSurveys(), observations:DB.load(DB.key.ob), notes:DB.load(DB.key.nt),
     hypotheses:DB.load(DB.key.hy), hyp_results:DB.load(DB.key.hr), recent:DB.recentSpecies(),
     myguide:myguideList(), audio, media };
+}
+async function exportBackup(){
+  toast('バックアップを作成中…（写真・動画が多いと時間がかかります）');
+  const data=await buildFullBackup();
   download(`bird_survey_backup_${dateValue().replace(/-/g,'')}.json`, JSON.stringify(data), 'application/json');
   toast('バックアップを書き出しました');
 }
+
+/* ---------- クラウド自動バックアップ（あなたのGoogleドライブ / Apps Script受け皿へ送信） ---------- */
+function cloudCfg(){ try{ return JSON.parse(localStorage.getItem('bs_cloud')||'{}'); }catch(e){ return {}; } }
+function cloudSaveCfg(c){ localStorage.setItem('bs_cloud', JSON.stringify(c||{})); }
+function cloudLast(){ return localStorage.getItem('bs_cloud_last')||''; }
+// 送信本体（iPhoneで確実に動くよう no-cors の単純POST。応答は読めないが書き込みは実行される）
+function cloudPost(kind, dataObj){
+  const c=cloudCfg(); if(!c.url) return Promise.reject(new Error('未設定'));
+  return fetch(c.url, { method:'POST', mode:'no-cors', headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body: JSON.stringify({ token:c.token||'', kind, at:nowISO(), data:dataObj }) })
+    .then(()=>{ localStorage.setItem('bs_cloud_last', nowISO()); localStorage.setItem('bs_cloud_last_kind', kind); });
+}
+function cloudBackupRecords(){ if(!cloudCfg().url) return Promise.resolve(); return cloudPost('records', buildRecordsBackup()); }
+async function cloudBackupFull(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
+  toast('録音・写真を含めてクラウド保存中…'); const data=await buildFullBackup();
+  return cloudPost('full', data).then(()=>toast('クラウドに保存しました（録音・写真含む）')).catch(()=>toast('クラウド保存に失敗しました')); }
+// データ変更のたびに、少し待ってから記録を自動バックアップ（まとめて1回）
+let _cloudTimer=null;
+function scheduleCloud(){ if(!cloudCfg().url) return; clearTimeout(_cloudTimer);
+  _cloudTimer=setTimeout(()=>{ cloudBackupRecords().catch(()=>{}); }, 6000); }
+function cloudSyncNow(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
+  cloudBackupRecords().then(()=>{ toast('記録をクラウドに保存しました'); render(); }).catch(()=>toast('クラウド保存に失敗しました')); }
+function saveCloudCfg(){ const url=(($('#cloudUrl')&&$('#cloudUrl').value)||'').trim();
+  const token=(($('#cloudToken')&&$('#cloudToken').value)||'').trim();
+  if(url && !/^https:\/\/script\.google\.com\//.test(url)){ if(!confirm('URLがGoogle Apps Scriptの形式ではありません。このまま保存しますか？')) return; }
+  cloudSaveCfg({url, token}); toast(url?'クラウド保存先を設定しました':'クラウド保存先を解除しました'); render(); }
+const APPS_SCRIPT_CODE = `// 鳥類調査記録アプリ バックアップ受け皿（Google Apps Script）
+// TOKEN を好きな合言葉に変え、デプロイ→ウェブアプリ（実行:自分／アクセス:全員）→URLをアプリに貼る
+var TOKEN  = 'あいことば';            // ← アプリにも同じ合言葉を入れる
+var FOLDER = '鳥類調査バックアップ';   // Myドライブ直下に自動作成
+function doPost(e){
+  try{
+    var b = JSON.parse(e.postData.contents);
+    if(!b || b.token !== TOKEN) return out('bad token');
+    var kind = (b.kind||'records').replace(/[^a-z]/gi,'') || 'records';
+    var f = folder(), json = JSON.stringify(b.data);
+    var ymd = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd');
+    put(f, 'birdsurvey_'+kind+'_latest.json', json);
+    put(f, 'birdsurvey_'+kind+'_'+ymd+'.json', json);
+    return out('ok');
+  }catch(err){ return out('error: '+err); }
+}
+function folder(){ var it=DriveApp.getFoldersByName(FOLDER); return it.hasNext()?it.next():DriveApp.createFolder(FOLDER); }
+function put(f,name,c){ var it=f.getFilesByName(name); if(it.hasNext()) it.next().setContent(c); else f.createFile(name,c,'application/json'); }
+function out(m){ return ContentService.createTextOutput(m).setMimeType(ContentService.MimeType.TEXT); }
+function doGet(){ return out('bird-survey backup OK'); }`;
+SCREENS.cloud = ()=>{
+  const c=cloudCfg(); const last=cloudLast();
+  const ago = last ? Math.max(0,Math.round((Date.now()-new Date(last))/60000)) : null;
+  return { title:'クラウド保存（Googleドライブ）',
+    html:`
+      <div class="card">
+        <div class="small">${c.url?`✅ 設定済み ／ 前回保存: ${ago!=null?ago+'分前':'—'}`:'⚠ まだ未設定です'}</div>
+        <div class="sp"></div>
+        <label class="field"><span class="lab">受け皿URL（Apps ScriptのウェブアプリURL）</span>
+          <input id="cloudUrl" autocomplete="off" placeholder="https://script.google.com/macros/s/..../exec" value="${esc(c.url||'')}"></label>
+        <label class="field"><span class="lab">合言葉（スクリプトのTOKENと同じ）</span>
+          <input id="cloudToken" autocomplete="off" placeholder="あいことば" value="${esc(c.token||'')}"></label>
+        <button class="btn primary" onclick="saveCloudCfg()">保存</button>
+        ${c.url?`<div class="sp"></div><div class="btn-grid">
+          <button class="btn" onclick="cloudSyncNow()">☁ 今すぐ記録を保存</button>
+          <button class="btn" onclick="cloudBackupFull()">☁ 録音・写真も保存</button>
+        </div>`:''}
+      </div>
+      <div class="note">記録（調査・観察・メモ・仮説）は<b>変更のたび自動</b>でドライブに保存されます。録音・写真は重いので「録音・写真も保存」を時々押してください。データは<b>あなたのGoogleドライブ</b>の「${esc('鳥類調査バックアップ')}」フォルダに入ります。</div>
+      <div class="divider"></div>
+      <h3 class="muted small">初期設定（一度だけ・約5分）</h3>
+      <ol class="small" style="padding-left:20px; line-height:1.9;">
+        <li><a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com で新規プロジェクト</a>を作る</li>
+        <li>下のコードを全部貼り付け、<code>TOKEN</code> を好きな合言葉に変更</li>
+        <li>右上「デプロイ」→「新しいデプロイ」→種類「ウェブアプリ」→<b>実行するユーザー:自分／アクセスできるユーザー:全員</b>→デプロイ（初回はGoogleの許可画面。自分のアプリなので許可）</li>
+        <li>表示された<b>ウェブアプリURL</b>をコピーし、上の「受け皿URL」に貼る。「合言葉」も同じものを入れて保存</li>
+      </ol>
+      <div class="note">下のコードを長押し/選択でコピーできます。</div>
+      <pre style="white-space:pre-wrap; word-break:break-all; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:10px; font-size:12px; overflow:auto;">${esc(APPS_SCRIPT_CODE)}</pre>
+      <div class="divider"></div>
+      <div class="note"><b>復元のしかた</b>：機種変や紛失のときは、Googleドライブの「鳥類調査バックアップ」フォルダから <code>birdsurvey_full_latest.json</code>（または records）をダウンロードし、ホーム「⤒ インポート」で取り込みます。</div>
+    `};
+};
 
 SCREENS.exportHub = ()=>{
   const surveys=DB.surveys();
