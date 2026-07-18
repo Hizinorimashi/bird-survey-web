@@ -160,6 +160,7 @@
 <div id="toast"></div>
 
 <script src="./leaflet.js"></script>
+<script src="https://accounts.google.com/gsi/client" async></script>
 <script>
 /* ============================================================
    鳥類調査員育成用フィールド記録アプリ — Web/PWA 試作版 v1
@@ -2377,9 +2378,9 @@ function cloudBackupRecords(){ if(!cloudCfg().url) return Promise.resolve(); ret
 async function cloudBackupFull(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
   toast('録音・写真を含めてクラウド保存中…'); const data=await buildFullBackup();
   return cloudPost('full', data).then(()=>toast('クラウドに保存しました（録音・写真含む）')).catch(()=>toast('クラウド保存に失敗しました')); }
-// URL・フォルダ両方へ記録を自動保存（設定済みの方だけ動く）
-function autoBackupRecords(){ return Promise.all([ cloudBackupRecords().catch(()=>{}), fsBackupRecords().catch(()=>{}) ]); }
-function backupConfigured(){ return !!cloudCfg().url || !!_fsDir; }
+// URL・フォルダ・Googleドライブへ記録を自動保存（設定済みの方だけ動く）
+function autoBackupRecords(){ return Promise.all([ cloudBackupRecords().catch(()=>{}), fsBackupRecords().catch(()=>{}), gdriveBackupRecords().catch(()=>{}) ]); }
+function backupConfigured(){ return !!cloudCfg().url || !!_fsDir || !!gdriveCfg().clientId; }
 // データ変更のたびに、少し待ってから記録を自動バックアップ（まとめて1回）
 let _cloudTimer=null;
 function scheduleCloud(){ if(!backupConfigured()) return; clearTimeout(_cloudTimer);
@@ -2390,6 +2391,114 @@ function saveCloudCfg(){ const url=(($('#cloudUrl')&&$('#cloudUrl').value)||'').
   const token=(($('#cloudToken')&&$('#cloudToken').value)||'').trim();
   if(url && !/^https:\/\/script\.google\.com\//.test(url)){ if(!confirm('URLがGoogle Apps Scriptの形式ではありません。このまま保存しますか？')) return; }
   cloudSaveCfg({url, token}); toast(url?'クラウド保存先を設定しました':'クラウド保存先を解除しました'); render(); }
+/* ---------- Googleドライブに直接保存（OAuth / drive.file・iPhone/会社アカウント対応） ---------- */
+// サインインしたアカウントのマイドライブに保存する。受け皿方式と違い、保存先＝サインインしたアカウント。
+const GDRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const GDRIVE_FOLDER = '鳥類調査バックアップ';
+let GTOKEN = null;                                   // {access_token, expiry}（メモリのみ・永続化しない）
+let GUSER = localStorage.getItem('bs_gdrive_user') || ''; // 前回サインインしたアカウント（表示用）
+function gdriveCfg(){ try{ return JSON.parse(localStorage.getItem('bs_gdrive')||'{}'); }catch(e){ return {}; } }
+function gdriveSaveCfg(c){ localStorage.setItem('bs_gdrive', JSON.stringify(c||{})); }
+function gdriveLast(){ return localStorage.getItem('bs_gdrive_last')||''; }
+function gisReady(){ return !!(window.google && google.accounts && google.accounts.oauth2); }
+function gdriveSignedIn(){ return !!(GTOKEN && GTOKEN.access_token && Date.now() < GTOKEN.expiry-60000); }
+// アクセストークン取得。interactive=trueならアカウント選択画面を出す。falseはキャッシュ済みのみ（自動保存用・勝手にポップアップさせない）
+function gdriveGetToken(interactive){
+  return new Promise((resolve,reject)=>{
+    const cfg=gdriveCfg();
+    if(!cfg.clientId) return reject(new Error('クライアントID未設定'));
+    if(gdriveSignedIn()) return resolve(GTOKEN.access_token);
+    if(!interactive) return reject(new Error('未サインイン'));
+    if(!gisReady()) return reject(new Error('Googleの読み込み待ち。少し待って再試行してください'));
+    try{
+      const tc = google.accounts.oauth2.initTokenClient({
+        client_id: cfg.clientId, scope: GDRIVE_SCOPE,
+        prompt: 'select_account',
+        callback: (resp)=>{
+          if(resp && resp.access_token){
+            GTOKEN={ access_token:resp.access_token, expiry: Date.now()+((resp.expires_in||3600)*1000) };
+            resolve(resp.access_token);
+          } else reject(new Error('サインインに失敗しました'));
+        },
+        error_callback: (err)=>reject(new Error((err&&err.type)||'サインインが中断されました'))
+      });
+      tc.requestAccessToken();
+    }catch(e){ reject(e); }
+  });
+}
+async function gdriveFetch(path, opts, token){
+  opts=opts||{}; opts.headers=Object.assign({Authorization:'Bearer '+token}, opts.headers||{});
+  const res=await fetch('https://www.googleapis.com/'+path, opts);
+  if(res.status===401){ GTOKEN=null; }   // 認証切れのみトークン破棄。403(権限)はトークン自体は有効なので残す
+  if(!res.ok){ const t=await res.text().catch(()=>''); throw new Error('Drive '+res.status+' '+t.slice(0,140)); }
+  return res.json();
+}
+async function gdriveEnsureFolder(token){
+  const q=encodeURIComponent("mimeType='application/vnd.google-apps.folder' and name='"+GDRIVE_FOLDER+"' and trashed=false");
+  const list=await gdriveFetch('drive/v3/files?spaces=drive&fields=files(id)&q='+q, {}, token);
+  if(list.files && list.files.length) return list.files[0].id;
+  const created=await gdriveFetch('drive/v3/files?fields=id', { method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ name:GDRIVE_FOLDER, mimeType:'application/vnd.google-apps.folder' }) }, token);
+  return created.id;
+}
+async function gdriveUpsertFile(folderId, name, contentStr, token){
+  const q=encodeURIComponent("name='"+name.replace(/'/g,"\\'")+"' and '"+folderId+"' in parents and trashed=false");
+  const list=await gdriveFetch('drive/v3/files?spaces=drive&fields=files(id)&q='+q, {}, token);
+  let id;
+  if(list.files && list.files.length){ id=list.files[0].id; }
+  else{
+    const created=await gdriveFetch('drive/v3/files?fields=id', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ name, parents:[folderId] }) }, token);
+    id=created.id;
+  }
+  await gdriveFetch('upload/drive/v3/files/'+id+'?uploadType=media', { method:'PATCH',
+    headers:{'Content-Type':'application/json'}, body:contentStr }, token);
+  return id;
+}
+async function gdrivePush(kind, dataObj, token){
+  const folderId=await gdriveEnsureFolder(token);
+  const json=JSON.stringify(dataObj);
+  const ymd=dateValue().replace(/-/g,'');
+  await gdriveUpsertFile(folderId, 'birdsurvey_'+kind+'_latest.json', json, token);
+  await gdriveUpsertFile(folderId, 'birdsurvey_'+kind+'_'+ymd+'.json', json, token);
+  localStorage.setItem('bs_gdrive_last', nowISO());
+}
+// 自動保存：サインイン済み（有効トークンあり）のときだけ動く。切れていたら黙ってスキップ
+async function gdriveBackupRecords(){
+  if(!gdriveCfg().clientId || !gdriveSignedIn()) return;
+  const token=await gdriveGetToken(false);
+  await gdrivePush('records', buildRecordsBackup(), token);
+}
+async function gdriveSignIn(){
+  const cid=(($('#gdriveClientId')&&$('#gdriveClientId').value)||'').trim();
+  if(cid) gdriveSaveCfg({ clientId:cid });
+  if(!gdriveCfg().clientId){ toast('先にクライアントIDを入力してください'); return; }
+  try{
+    const token=await gdriveGetToken(true);
+    try{ const about=await gdriveFetch('drive/v3/about?fields=user(emailAddress)', {}, token);
+      GUSER=(about.user&&about.user.emailAddress)||''; }catch(e){ GUSER=''; }
+    if(GUSER) localStorage.setItem('bs_gdrive_user', GUSER);
+    toast('サインインしました'+(GUSER?'：'+GUSER:'')); render();
+  }catch(e){ toast('サインイン失敗: '+(e.message||e)); }
+}
+function gdriveSignOut(){ GTOKEN=null; GUSER=''; localStorage.removeItem('bs_gdrive_user'); toast('サインアウトしました'); render(); }
+async function gdriveSyncNow(){
+  if(!gdriveCfg().clientId){ toast('先にクライアントIDを設定してください'); return; }
+  try{ toast('Googleドライブに保存中…'); const token=await gdriveGetToken(true);
+    await gdrivePush('records', buildRecordsBackup(), token);
+    toast('Googleドライブに保存しました'); render();
+  }catch(e){ toast('保存に失敗: '+(e.message||e)); }
+}
+async function gdriveBackupFull(){
+  if(!gdriveCfg().clientId){ toast('先にクライアントIDを設定してください'); return; }
+  try{ toast('録音・写真を含めて保存中…'); const token=await gdriveGetToken(true);
+    const data=await buildFullBackup(); await gdrivePush('full', data, token);
+    toast('Googleドライブに保存しました（録音・写真含む）'); render();
+  }catch(e){ toast('保存に失敗: '+(e.message||e)); }
+}
+
 const APPS_SCRIPT_CODE = `// 鳥類調査記録アプリ バックアップ受け皿（Google Apps Script）
 // TOKEN を好きな合言葉に変え、デプロイ→ウェブアプリ（実行:自分／アクセス:全員）→URLをアプリに貼る
 var TOKEN  = 'あいことば';            // ← アプリにも同じ合言葉を入れる
@@ -2415,8 +2524,32 @@ SCREENS.cloud = ()=>{
   const ago = last ? Math.max(0,Math.round((Date.now()-new Date(last))/60000)) : null;
   const fsLast=localStorage.getItem('bs_fs_last')||'';
   const fsAgo=fsLast?Math.max(0,Math.round((Date.now()-new Date(fsLast))/60000)):null;
+  const g=gdriveCfg(); const gLast=gdriveLast();
+  const gAgo=gLast?Math.max(0,Math.round((Date.now()-new Date(gLast))/60000)):null;
+  const gStatus = gdriveSignedIn()
+    ? `✅ サインイン中：<b>${esc(GUSER||'アカウント')}</b> ／ 前回保存: ${gAgo!=null?gAgo+'分前':'—'}`
+    : (GUSER ? `前回：${esc(GUSER)}（保存するには再サインイン） ／ 前回保存: ${gAgo!=null?gAgo+'分前':'—'}`
+             : '未サインイン');
   return { title:'自動バックアップ',
     html:`
+      <div class="card">
+        <div class="row"><div class="grow"><b>☁ Googleドライブに直接保存（iPhone・会社アカウント対応）<span class="badge status-調査中" style="margin-left:6px;">おすすめ</span></b><div class="tiny muted">サインインしたアカウントのマイドライブに保存されます</div></div></div>
+        <div class="sp"></div>
+        <div class="small">${gStatus}</div>
+        <div class="sp"></div>
+        <label class="field"><span class="lab">クライアントID（下の「初期設定」で作る）</span>
+          <input id="gdriveClientId" autocomplete="off" placeholder="xxxx.apps.googleusercontent.com" value="${esc(g.clientId||'')}"></label>
+        <div class="btn-grid${gdriveSignedIn()?'':' one'}">
+          <button class="btn primary" onclick="gdriveSignIn()">${gdriveSignedIn()?'アカウントを切り替える':'Googleでサインイン'}</button>
+          ${gdriveSignedIn()?'<button class="btn ghost" onclick="gdriveSignOut()">サインアウト</button>':''}
+        </div>
+        ${g.clientId?`<div class="sp"></div><div class="btn-grid">
+          <button class="btn" onclick="gdriveSyncNow()">☁ 今すぐ記録を保存</button>
+          <button class="btn" onclick="gdriveBackupFull()">☁ 録音・写真も保存</button>
+        </div>`:''}
+        <div class="tiny muted" style="margin-top:8px;">会社アカウントで保存したいときは、サインインの画面で<b>会社アカウントを選択</b>してください。弾かれる場合は共有・個人アカウントに切り替えられます。</div>
+      </div>
+      <div class="divider"></div>
       <div class="card">
         <div class="row"><div class="grow"><b>📁 フォルダに自動保存（かんたん）</b><div class="tiny muted">PCのChrome/Edge・Android Chrome向け（iPhoneは不可）</div></div></div>
         <div class="sp"></div>
@@ -2434,7 +2567,7 @@ SCREENS.cloud = ()=>{
       </div>
       <div class="divider"></div>
       <div class="card">
-        <div class="row"><div class="grow"><b>☁ URLで送る（iPhone向け）</b><div class="tiny muted">Googleドライブへ・受け皿URLを1回設定</div></div></div>
+        <div class="row"><div class="grow"><b>☁ URLで送る（受け皿方式・従来）</b><div class="tiny muted">固定アカウントのドライブへ。会社アカウントには不向き</div></div></div>
         <div class="sp"></div>
         <div class="small">${c.url?`✅ 設定済み ／ 前回保存: ${ago!=null?ago+'分前':'—'}`:'未設定'}</div>
         <div class="sp"></div>
@@ -2448,9 +2581,21 @@ SCREENS.cloud = ()=>{
           <button class="btn" onclick="cloudBackupFull()">☁ 録音・写真も保存</button>
         </div>`:''}
       </div>
-      <div class="note">記録（調査・観察・メモ・仮説）は<b>変更のたび自動</b>でドライブに保存されます。録音・写真は重いので「録音・写真も保存」を時々押してください。データは<b>あなたのGoogleドライブ</b>の「${esc('鳥類調査バックアップ')}」フォルダに入ります。</div>
+      <div class="note">記録（調査・観察・メモ・仮説）は<b>変更のたび自動</b>でドライブに保存されます。録音・写真は重いので「録音・写真も保存」を時々押してください。データは「${esc(GDRIVE_FOLDER)}」フォルダに入ります。</div>
       <div class="divider"></div>
-      <h3 class="muted small">初期設定（一度だけ・約5分）</h3>
+      <h3 class="muted small">初期設定A：Googleドライブ直接保存（おすすめ・一度だけ・約10分）</h3>
+      <div class="note" style="margin-bottom:8px;">このアプリのアドレス（手順4で貼る「JavaScript生成元」）：<br><b style="word-break:break-all;">${esc(location.origin)}</b></div>
+      <ol class="small" style="padding-left:20px; line-height:1.9;">
+        <li><a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">Google Cloud Console で新規プロジェクト</a>を作る（<b>個人Googleアカウント</b>でログイン推奨）</li>
+        <li><a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noopener">Google Drive API</a> を「有効にする」</li>
+        <li>「APIとサービス」→「OAuth同意画面」→ User Type「<b>外部</b>」→ アプリ名・メールを入力。スコープに <code>.../auth/drive.file</code> を追加。<b>テストユーザーに保存したいアカウント（会社・共有・個人）のメールを追加</b></li>
+        <li>「認証情報」→「認証情報を作成」→「OAuthクライアントID」→ 種類「<b>ウェブアプリケーション</b>」。「承認済みのJavaScript生成元」に上の<b>${esc(location.origin)}</b>を追加</li>
+        <li>作成すると出る<b>クライアントID</b>（<code>xxxx.apps.googleusercontent.com</code>）を上の欄に貼る</li>
+        <li>「Googleでサインイン」→ 保存したい<b>アカウントを選択</b>。初回は「確認されていないアプリ」の警告が出るが、自分のアプリなので「詳細」→「続行」</li>
+      </ol>
+      <div class="note">会社アカウントで警告のあと進めない・エラーになる場合は、会社の管理者が外部アプリを制限しています。その時は手順6で<b>共有または個人アカウント</b>を選んでください。</div>
+      <div class="divider"></div>
+      <h3 class="muted small">初期設定B：URL受け皿方式（従来・一度だけ・約5分）</h3>
       <ol class="small" style="padding-left:20px; line-height:1.9;">
         <li><a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com で新規プロジェクト</a>を作る</li>
         <li>下のコードを全部貼り付け、<code>TOKEN</code> を好きな合言葉に変更</li>
