@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v34（2026-07-19 図鑑ZIP一括取り込み・全体監査対応）';
+const APP_VERSION = 'v34b（2026-07-20 図鑑ZIP＋種4件追加・和名修正）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -347,6 +347,7 @@ const SPECIES = `
 コジュケイ,Bambusicola thoracicus
 ヤマドリ,Syrmaticus soemmerringii
 キジ,Phasianus colchicus
+コウライキジ,Phasianus colchicus
 ヒシクイ,Anser fabalis
 マガン,Anser albifrons
 カリガネ,Anser erythropus
@@ -533,6 +534,8 @@ const SPECIES = `
 リュウキュウコノハズク,Otus elegans
 シマフクロウ,Ketupa blakistoni
 フクロウ,Strix uralensis
+エゾフクロウ,Strix uralensis
+シロフクロウ,Bubo scandiacus
 アオバズク,Ninox scutulata
 トラフズク,Asio otus
 コミミズク,Asio flammeus
@@ -554,6 +557,7 @@ const SPECIES = `
 コチョウゲンボウ,Falco columbarius
 チゴハヤブサ,Falco subbuteo
 ハヤブサ,Falco peregrinus
+シロハヤブサ,Falco rusticolus
 ワカケホンセイインコ,Psittacula krameri
 ヤイロチョウ,Pitta nympha
 サンショウクイ,Pericrocotus divaricatus
