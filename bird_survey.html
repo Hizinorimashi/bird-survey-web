@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v33（2026-07-19 再監査対応：保存成否確認・インポート整合・SW内容検査ほか）';
+const APP_VERSION = 'v34（2026-07-19 図鑑ZIP一括取り込み・全体監査対応）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1249,6 +1249,52 @@ function importGuideImages(input){
     toast(`図鑑画像 ${adds.length}枚を取り込みました（和名一致 ${matched}種）`); render();
   }).catch(()=>toast('取り込みに失敗しました'));
 }
+// 無圧縮(格納)ZIPを解く。ローカルファイルヘッダを順に読む（このアプリで配る図鑑ZIPは無圧縮・UTF-8名で作る）
+function parseStoredZip(buf){
+  const dv=new DataView(buf), u8=new Uint8Array(buf); const dec=new TextDecoder('utf-8');
+  const entries=[]; let i=0;
+  while(i+30<=u8.length){
+    if(dv.getUint32(i,true)!==0x04034b50) break;   // ローカルヘッダ以外（中央ディレクトリ等）に来たら終了
+    const method=dv.getUint16(i+8,true);
+    const compSize=dv.getUint32(i+18,true);
+    const nameLen=dv.getUint16(i+26,true), extraLen=dv.getUint16(i+28,true);
+    const name=dec.decode(u8.subarray(i+30, i+30+nameLen));
+    const dataStart=i+30+nameLen+extraLen;
+    if(method===0 && !name.endsWith('/')) entries.push({ name, data:u8.subarray(dataStart, dataStart+compSize) });
+    i=dataStart+compSize;
+  }
+  return entries;
+}
+// 種図鑑ZIP（和名.png を多数まとめたもの）を1ファイルで一括取り込み。端末内のみ保存・公開URLには出さない
+async function importGuideZip(input){
+  const f=(input.files||[])[0]; input.value=''; if(!f) return;
+  if(!/\.zip$/i.test(f.name||'')){ toast('ZIPファイルを選んでください'); return; }
+  toast('図鑑ZIPを読み込み中…（初回は少し時間がかかります）');
+  let buf; try{ buf=await f.arrayBuffer(); }catch(e){ toast('ファイルを読めませんでした'); return; }
+  let entries=[]; try{ entries=parseStoredZip(buf); }catch(e){ entries=[]; }
+  const imgs=entries.filter(e=>/\.(png|jpe?g|webp|gif)$/i.test(e.name));
+  if(!imgs.length){ toast('ZIP内に画像が見つかりません（無圧縮ZIPをお使いください）'); return; }
+  const adds=[]; let done=0;
+  for(const e of imgs){
+    const base=e.name.replace(/^.*\//,'');
+    const name=base.replace(/\.[^.]+$/,'').replace(/[\s_]*[（(]?\d+[）)]?\s*$/,'').trim();
+    const ext=((base.match(/\.([a-z0-9]+)$/i)||[])[1]||'png').toLowerCase();
+    const mime=ext==='png'?'image/png':(/^jpe?g$/.test(ext)?'image/jpeg':(ext==='webp'?'image/webp':'image/'+ext));
+    const blob=new Blob([e.data],{type:mime}); const mid=uuid();
+    try{ await PhotoDB.put({ id:mid, kind:'photo', mime, ext, size:blob.size, name:base, obs_uuid:'', created_at:nowISO(), blob });
+      adds.push({ id:uuid(), species_name:name, kind:'photo', ref_id:mid, ext, mime, source:'guide', created_at:nowISO() });
+    }catch(err){}
+    if(++done%20===0) toast(`取り込み中… ${done}/${imgs.length}`);
+  }
+  // 種ごとに最新1枚だけ残す（再取り込みで更新）
+  let l=myguideList().concat(adds); const seen={}; const keep=[];
+  for(let i=l.length-1;i>=0;i--){ const g=l[i];
+    if(g.source==='guide'){ if(seen[g.species_name]) continue; seen[g.species_name]=1; }
+    keep.unshift(g); }
+  myguideSave(keep); scheduleFolderFull();
+  const matched=adds.filter(a=>speciesByName(a.species_name)).length;
+  toast(`図鑑ZIP：${adds.length}種を取り込みました（和名一致 ${matched}種）`); render();
+}
 
 /* ---------- まとめて記録（定点で複数種を共通の位置・時刻で一括入力） ---------- */
 SCREENS.obsBatch = (svUuid)=>{
@@ -2312,8 +2358,14 @@ SCREENS.guide = ()=>({
       <button class="btn ghost" onclick="nav('callCredits',null)">鳴き声の出典一覧</button>
     </div>
     <div class="card">
+      <div class="small">📖 図鑑の切り抜き画像 <b>${myguideList().filter(g=>g.source==='guide').length}種</b>取り込み済み</div>
+      <div class="sp"></div>
+      <input type="file" id="guideZipInput" accept=".zip,application/zip" style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideZip(this)">
+      <label class="btn primary" for="guideZipInput">📦 図鑑ZIPを一括取り込み（ファイル1個でOK）</label>
+      <div class="tiny muted" style="margin-top:6px;">配布された <b>種図鑑.zip</b> を選ぶだけで、たくさんの種の図版をまとめて取り込めます。iPhoneでは「ファイル」から Googleドライブ／OneDrive／iCloud のどこに置いた1ファイルでも選べます。</div>
+      <div class="sp"></div>
       <input type="file" id="guideImgInput" accept="image/*" multiple style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideImages(this)">
-      <label class="btn" for="guideImgInput">📖 図鑑の切り抜き画像を取り込む</label>
+      <label class="btn ghost" for="guideImgInput">画像を個別に取り込む（1枚ずつ）</label>
       <div class="tiny muted" style="margin-top:6px;">ファイル名が和名（例：ハシブトガラス.png）だと、その種の図鑑に表示されます。取り込んだ画像は<b>この端末だけ</b>に保存され、公開URLには一切上がりません（市販図鑑の私的利用）。</div>
     </div>
     <label class="field"><span class="lab">種を探す（和名・ひらがな）</span>
