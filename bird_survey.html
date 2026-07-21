@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v37（2026-07-21 北海道の鳴き声51種を発声入り・長めに差し替え）';
+const APP_VERSION = 'v38（2026-07-21 鳴き声：差し替え分の再保存を可能に修正）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -318,8 +318,15 @@ const CallDB = {
   put(rec){ return idbDo('call','readwrite', st=>st.put(rec)); },
   get(jp){ return idbDo('call','readonly', st=>st.get(jp)); },
   keys(){ return idbDo('call','readonly', st=>st.getAllKeys()).then(r=>r||[]); },
+  all(){ return idbDo('call','readonly', st=>st.getAll()).then(r=>r||[]); },
   clear(){ return idbDo('call','readwrite', st=>st.clear()); },
 };
+// 端末に保存済みの鳴き声が「今の録音(ファイル)と一致」している種数を数える。
+// 差し替え(ファイル変更)された種は未一致＝再保存対象として扱う。
+function countUpToDateCalls(){
+  return CallDB.all().then(list=>{ const byJp={}; list.forEach(r=>{ if(r&&r.blob) byJp[r.jp]=r; });
+    let n=0; for(const jp in CALLS){ const r=byJp[jp]; if(r && r.f===CALLS[jp].f) n++; } return n; }).catch(()=>0);
+}
 
 /* ---------- 選択肢マスタ（指示書準拠） ---------- */
 const OPT = {
@@ -2398,8 +2405,8 @@ function myguideItemHtml(g){
 function updateCallSaved(){
   const el=$('#callSaved'), btn0=$('#dlCallsBtn'); if(!el&&!btn0) return;
   const total=Object.keys(CALLS).length;
-  CallDB.keys().then(ks=>{
-    const n=ks.length, rest=Math.max(0,total-n);
+  countUpToDateCalls().then(n=>{
+    const rest=Math.max(0,total-n);   // 未保存＋差し替えで古くなった種
     const sv=$('#callSaved');
     if(sv) sv.textContent = n>=total ? `✅ 全${total}種を端末に保存済み（圏外でも再生できます）` : `端末に保存済み: ${n} / ${total} 種`;
     const b=$('#dlCallsBtn');
@@ -2465,9 +2472,10 @@ async function downloadCalls(){
   let done=0, failn=0;
   for(const jp of entries){
     try{
-      const ex=await CallDB.get(jp); if(ex&&ex.blob){ done++; continue; }
-      const res=await fetch('./assets/calls/'+CALLS[jp].f); if(!res.ok) throw 0;
-      const blob=await res.blob(); await CallDB.put({jp, blob}); done++;
+      const f=CALLS[jp].f;
+      const ex=await CallDB.get(jp); if(ex&&ex.blob&&ex.f===f){ done++; continue; }  // 今の録音と一致していれば再DLしない（差し替え分だけ更新）
+      const res=await fetch('./assets/calls/'+f); if(!res.ok) throw 0;
+      const blob=await res.blob(); await CallDB.put({jp, f, blob}); done++;
     }catch(e){ failn++; }
     if((done+failn)%10===0){ toast(`ダウンロード中… ${done+failn}/${entries.length}`); updateCallSaved(); }
   }
