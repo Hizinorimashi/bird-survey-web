@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v39（2026-07-22 生息環境を複数選択できるように）';
+const APP_VERSION = 'v40（2026-07-22 行動も複数選択できるように）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1086,10 +1086,10 @@ SCREENS.obsEdit = (argStr)=>{
   const seg=(field,opts,allowEmpty)=>`<div class="seg" data-seg="${field}">
     ${allowEmpty?`<button type="button" class="${!o[field]?'on':''}" onclick="pickObs(this,'${field}','')">なし</button>`:''}
     ${opts.map(x=>`<button type="button" class="${o[field]===x?'on':''}" onclick="pickObs(this,'${field}','${esc(x)}')">${esc(x)}</button>`).join('')}</div>`;
-  // 生息環境は複数選択（「・」区切りで保存。タップでON/OFF切替）
-  const hset=new Set(String(o.habitat||'').split('・').filter(Boolean));
-  const segHab=`<div class="seg" data-seg="habitat">${OPT.habitat.map(x=>
-    `<button type="button" class="${hset.has(x)?'on':''}" onclick="this.classList.toggle('on')">${esc(x)}</button>`).join('')}</div>`;
+  // 行動・生息環境は複数選択（「・」区切りで保存。タップでON/OFF切替）
+  const segMulti=(field,opts)=>{ const set=new Set(String(o[field]||'').split('・').filter(Boolean));
+    return `<div class="seg" data-seg="${field}">${opts.map(x=>
+      `<button type="button" class="${set.has(x)?'on':''}" onclick="this.classList.toggle('on')">${esc(x)}</button>`).join('')}</div>`; };
 
   return {
     title: editing?'観察を編集':'観察を追加',
@@ -1109,8 +1109,8 @@ SCREENS.obsEdit = (argStr)=>{
             <input type="datetime-local" name="observed_at" value="${esc(o.observed_at)}"></label>
         </div>
         <label class="field"><span class="lab">確認方法</span>${seg('detection_method',OPT.detection)}</label>
-        <label class="field"><span class="lab">行動</span>${seg('behavior',OPT.behavior,true)}</label>
-        <label class="field"><span class="lab">生息環境（複数選択可）</span>${segHab}</label>
+        <label class="field"><span class="lab">行動（複数選択可）</span>${segMulti('behavior',OPT.behavior)}</label>
+        <label class="field"><span class="lab">生息環境（複数選択可）</span>${segMulti('habitat',OPT.habitat)}</label>
         <label class="field"><span class="lab">同定状態</span>${seg('identification_status',OPT.idStatus)}</label>
         <label class="field"><span class="lab">信頼度</span>${seg('confidence',OPT.confidence)}</label>
         <label class="field"><span class="lab">観察メモ</span>
@@ -1203,7 +1203,7 @@ function saveObs(u, svUuid, editing, cont){
     gps_accuracy: SCREENS._acc || (DB.observations().find(x=>x.uuid===u)||{}).gps_accuracy || '',
     species_id: (speciesByName(name)||{}).species_id || SCREENS._chosenId || '', species_name_snapshot: name,
     count: parseInt(g('count'),10)||0, detection_method: segVal('detection_method'),
-    behavior: segVal('behavior'), habitat: segVals('habitat'),
+    behavior: segVals('behavior'), habitat: segVals('habitat'),
     identification_status: name? idStatus : '未同定',
     confidence: segVal('confidence'), needs_review: $('#needsReview').checked,
     note: g('note'), external_photo_reference: g('external_photo_reference'),
