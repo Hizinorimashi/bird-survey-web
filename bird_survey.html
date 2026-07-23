@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v41（2026-07-23 飛翔経路をまとめて表示する画面を追加）';
+const APP_VERSION = 'v42（2026-07-23 行動の選択肢を追加、年齢・性別欄を新設）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -334,8 +334,11 @@ const OPT = {
   weather:['快晴','晴','曇','雨','雪','霧'],
   wind:['無風','弱い','やや強い','強い'],
   detection:['目視','鳴き声','目視および鳴き声','飛翔','痕跡','不明'],
-  behavior:['さえずり','地鳴き','採餌','飛翔','休息','警戒','繁殖行動','巣材運搬','巣立ち雛','その他'],
+  behavior:['さえずり','地鳴き','採餌','飛翔','休息','警戒','繁殖行動','巣材運搬','巣立ち雛',
+    '餌運び','餌渡し','威嚇','給餌','P(止まり)','dF(ディスプレイ飛翔)','Ht(狩り)','fe(羽繕い)','その他'],
   habitat:['河畔林','森林','草地','農耕地','開放地','水域','市街地','その他'],
+  obsAge:['成','若','幼','不明'],
+  sex:['♀','♂','不明'],
   idStatus:['確定','仮同定','未同定'],
   confidence:['高','中','低'],
   noteCat:['調査条件','生息環境','調査結果','特記事項','考察メモ','報告書用メモ','次回課題','その他'],
@@ -984,7 +987,7 @@ SCREENS.survey = (u)=>{
         ${o.needs_review?'<span class="badge warn">要確認</span>':''}
         ${o.identification_status&&o.identification_status!=='確定'?`<span class="badge">${esc(o.identification_status)}</span>`:''}
       </div>
-      <div class="small muted">${fmtTime(o.observed_at)} ・ ${esc(o.count==null||o.count===''?1:o.count)}個体 ・ ${esc(o.detection_method||'')}${o.habitat?' ・ '+esc(o.habitat):''}</div>
+      <div class="small muted">${fmtTime(o.observed_at)} ・ ${esc(o.count==null||o.count===''?1:o.count)}個体 ・ ${esc(o.detection_method||'')}${o.habitat?' ・ '+esc(o.habitat):''}${o.age_class&&o.age_class!=='不明'?' ・ '+esc(o.age_class):''}${o.sex&&o.sex!=='不明'?' ・ '+esc(o.sex):''}</div>
     </div>
     <span class="tiny muted">${(o.audio&&o.audio.length)?'🎤':''}${(o.media&&o.media.length)?'📷':''}${o.latitude?'📍':''}</span>`;
   const obsCard = o=> selMode
@@ -1071,7 +1074,7 @@ SCREENS.obsEdit = (argStr)=>{
   if(!o){
     o = { uuid:uuid(), survey_uuid:svUuid, observed_at:localDatetimeValue(), latitude:'', longitude:'',
       gps_accuracy:'', species_id:'', species_name_snapshot:'', count:1, detection_method:'目視',
-      behavior:'', habitat:'', note:'', identification_status:'確定', confidence:'中',
+      behavior:'', habitat:'', age_class:'不明', sex:'不明', note:'', identification_status:'確定', confidence:'中',
       needs_review:false, external_photo_reference:'' };
     // 現在のGPSを初期値に
     if(lastFix){ o.latitude=lastFix.lat.toFixed(6); o.longitude=lastFix.lon.toFixed(6); o.gps_accuracy=Math.round(lastFix.acc); }
@@ -1105,6 +1108,8 @@ SCREENS.obsEdit = (argStr)=>{
         <label class="field"><span class="lab">確認方法</span>${seg('detection_method',OPT.detection)}</label>
         <label class="field"><span class="lab">行動（複数選択可）</span>${segMulti('behavior',OPT.behavior)}</label>
         <label class="field"><span class="lab">生息環境（複数選択可）</span>${segMulti('habitat',OPT.habitat)}</label>
+        <label class="field"><span class="lab">年齢</span>${seg('age_class',OPT.obsAge)}</label>
+        <label class="field"><span class="lab">性別</span>${seg('sex',OPT.sex)}</label>
         <label class="field"><span class="lab">同定状態</span>${seg('identification_status',OPT.idStatus)}</label>
         <label class="field"><span class="lab">信頼度</span>${seg('confidence',OPT.confidence)}</label>
         <label class="field"><span class="lab">観察メモ</span>
@@ -1198,6 +1203,7 @@ function saveObs(u, svUuid, editing, cont){
     species_id: (speciesByName(name)||{}).species_id || SCREENS._chosenId || '', species_name_snapshot: name,
     count: parseInt(g('count'),10)||0, detection_method: segVal('detection_method'),
     behavior: segVals('behavior'), habitat: segVals('habitat'),
+    age_class: segVal('age_class'), sex: segVal('sex'),
     identification_status: name? idStatus : '未同定',
     confidence: segVal('confidence'), needs_review: $('#needsReview').checked,
     note: g('note'), external_photo_reference: g('external_photo_reference'),
@@ -2740,7 +2746,7 @@ async function exportMediaZip(surveys, base){
   toast('録音・写真・動画ZIPを書き出しました');
 }
 const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','observation_id','observed_at',
-  'latitude','longitude','species_name','count','detection_method','behavior','habitat',
+  'latitude','longitude','species_name','count','detection_method','behavior','habitat','age_class','sex',
   'identification_status','confidence','needs_review','note','audio_file','media_file','external_photo_reference'];
 function csvCell(v){ v=v==null?'':String(v);
   // 数式インジェクション対策は「数値でない」文字列にだけ適用する。
@@ -2753,7 +2759,7 @@ function buildRows(surveys){
     rows.push({ survey_id:s.uuid, survey_name:s.name, survey_date:fmtDate(s.survey_date), survey_method:s.survey_method,
       observation_id:o.uuid, observed_at:o.observed_at, latitude:o.latitude, longitude:o.longitude,
       species_name:o.species_name_snapshot, count:o.count, detection_method:o.detection_method,
-      behavior:o.behavior, habitat:o.habitat, identification_status:o.identification_status,
+      behavior:o.behavior, habitat:o.habitat, age_class:o.age_class||'', sex:o.sex||'', identification_status:o.identification_status,
       confidence:o.confidence, needs_review:o.needs_review?1:0, note:o.note,
       audio_file:(o.audio||[]).map((a,i)=>audioFilename(o,i,a)).join(';'),
       media_file:(o.media||[]).map((m,i)=>mediaFilename(o,i,m)).join(';'),
