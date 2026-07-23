@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v47（2026-07-24 対象位置のピンが「？？」になる不具合を修正）';
+const APP_VERSION = 'v48（2026-07-24 調査ルート記録（描く/歩いて）・密度算出・ルート再利用・季節/回次を追加）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -344,6 +344,7 @@ const OPT = {
   nestState:['造巣中','抱卵','育雛','巣立ち後','不明'],
   windDir:['不定','北','北東','東','南東','南','南西','西','北西'],
   visibility:['良好','やや不良','不良（霧・靄）'],
+  season:['繁殖期','越冬期','渡り期','その他'],
   idStatus:['確定','仮同定','未同定'],
   confidence:['高','中','低'],
   noteCat:['調査条件','生息環境','調査結果','特記事項','考察メモ','報告書用メモ','次回課題','その他'],
@@ -819,6 +820,7 @@ function render(){
   if(PDFCTX){ try{ PDFCTX.doc.destroy(); }catch(e){} PDFCTX=null; } // PDF閲覧の後始末
   if(_mapTimer){ clearTimeout(_mapTimer); _mapTimer=null; }   // 前画面の地図初期化予約を取り消す
   if(mapObj){ try{ mapObj.remove(); }catch(e){} mapObj=null; }
+  if(typeof stopWalk==='function') stopWalk(true);   // ルートの自動記録（GPS監視）を確実に止める
   const cur = STACK[STACK.length-1] || {name:'home'};
   const scr = SCREENS[cur.name] || SCREENS.home;
   const out = scr(cur.arg) || {};
@@ -941,7 +943,7 @@ SCREENS.surveyEdit = (svUuid)=>{
     let draft=null; try{ draft=JSON.parse(localStorage.getItem(DRAFT_KEY)||'null'); }catch(e){}
     s = draft || { uuid:uuid(), name:'', survey_date:dateValue(), location_name:'',
       survey_method:'ラインセンサス', investigator_name:'', weather:'晴', wind:'弱い',
-      wind_direction:'不定', visibility:'良好',
+      wind_direction:'不定', visibility:'良好', season:'繁殖期', round_no:'',
       temperature:'', purpose:'', pre_survey_notes:'', pre_hypothesis:'', status:'未開始' };
   }
   const seg=(field,opts)=>`<div class="seg" data-seg="${field}">${opts.map(o=>
@@ -972,6 +974,11 @@ SCREENS.surveyEdit = (svUuid)=>{
           <label class="field"><span class="lab">風向</span>${seg('wind_direction',OPT.windDir)}</label>
           <label class="field"><span class="lab">視程</span>${seg('visibility',OPT.visibility)}</label>
         </div>
+        <div class="two">
+          <label class="field"><span class="lab">季節</span>${seg('season',OPT.season)}</label>
+          <label class="field"><span class="lab">回次（第○回・任意）</span>
+            <input name="round_no" inputmode="numeric" value="${esc(s.round_no||'')}" placeholder="例：1"></label>
+        </div>
         <label class="field"><span class="lab">調査目的</span>
           <textarea name="purpose" placeholder="何を確かめる調査か">${esc(s.purpose)}</textarea></label>
         <label class="field"><span class="lab">調査前の確認事項</span>
@@ -998,6 +1005,7 @@ function collectSurveyForm(){
     location_name:g('location_name'), survey_method:seg('survey_method'),
     investigator_name:g('investigator_name'), weather:seg('weather'), wind:seg('wind'),
     wind_direction:seg('wind_direction'), visibility:seg('visibility'),
+    season:seg('season'), round_no:g('round_no'),
     purpose:g('purpose'), pre_survey_notes:g('pre_survey_notes'), pre_hypothesis:g('pre_hypothesis') };
 }
 function draftSave(){ if(SCREENS._editing) return; // 新規のみ下書き
@@ -1079,6 +1087,7 @@ SCREENS.survey = (u)=>{
       <div class="act primary wide" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🐦</span>観察を追加</div>
       <div class="act wide" onclick="nav('obsBatch','${u}')"><span class="ic">🐦🐦</span>まとめて記録（複数種）</div>
       <div class="act wide" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🛩</span>飛翔経路を記録（地図に描く）</div>
+      <div class="act wide" onclick="nav('routeEdit','${u}')"><span class="ic">🧭</span>調査ルートを記録（描く／歩いて記録）</div>
       <div class="act" onclick="nav('noteEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">📝</span>メモを追加</div>
       <div class="act" onclick="nav('hypotheses','${u}')"><span class="ic">💡</span>仮説を見る</div>
       <div class="act" onclick="nav('map','${u}')"><span class="ic">🗺</span>地図を見る</div>
@@ -1131,6 +1140,8 @@ SCREENS.survey = (u)=>{
         <button class="btn" onclick="nav('obsBatch','${u}')">🐦🐦 まとめて記録</button>
         <button class="btn" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))">🛩 飛翔経路を記録</button>
         <button class="btn" onclick="nav('flightList','${u}')">🛩 飛翔経路まとめ</button>
+        <button class="btn" onclick="nav('routeEdit','${u}')">🧭 調査ルート</button>
+        ${(s.route&&s.route.length)?`<button class="btn" onclick="newSurveyFromRoute('${u}')">🧭 このルートで新規調査</button>`:''}
         <button class="btn" onclick="nav('surveyEdit','${u}')">✎ 調査情報を編集</button>
         <button class="btn" onclick="nav('surveyEnd','${u}')">⏹ 終了・振り返り</button>
       </div>`:''}
@@ -1797,6 +1808,126 @@ function saveNote(u,svUuid,editing){
 function deleteNote(u){ if(!confirm('このメモを削除しますか？')) return; DB.softDelete(DB.key.nt,u); toast('削除しました'); goBack(); }
 
 /* ============================================================
+   調査ルート（ラインセンサスの経路）：描く／歩いて自動記録
+   ============================================================ */
+let routePath=[], routeLayer=null, routeMode='draw', routeWatchId=null, routeWakeLock=null;
+SCREENS.routeEdit = (svUuid)=>{
+  const s=DB.survey(svUuid); if(!s) return SCREENS.home();
+  return { title:'調査ルート', sub:[`<span class="pill">${esc(s.name)}</span>`],
+    html:`
+      <div class="note">この調査の移動ルート（ラインセンサスの経路）を記録します。<b>✏描く</b>＝地図をタップして線を引く。<b>🚶歩いて記録</b>＝歩きながら現在地を自動で点にする（<b>画面を開いたまま</b>にしてください。閉じると止まります）。距離が自動計算され、密度（種数/km・個体数/km）に使えます。</div>
+      <div class="seg" data-seg="routeMode" style="margin-bottom:8px;">
+        <button type="button" class="on" onclick="setRouteMode('draw',this)">✏ 描く</button>
+        <button type="button" onclick="setRouteMode('walk',this)">🚶 歩いて記録</button>
+      </div>
+      <div id="rmap" style="height:calc(100vh - 500px); min-height:240px; border-radius:var(--radius); border:1px solid var(--line);"></div>
+      <div class="sp"></div>
+      <div id="routeCtrls" class="btn-grid"></div>
+      <div class="tiny muted" id="rInfo" style="margin:6px 0;">—</div>
+      <button class="btn primary big" onclick="saveRoute('${svUuid}')">保存する</button>
+      ${(s.route&&s.route.length)?`<div class="sp"></div><button class="btn danger" onclick="clearRouteConfirm()">この調査のルートを消す</button>`:''}
+    `,
+    onMount:()=>{ routePath=(s.route||[]).slice(); routeMode='draw'; renderRouteCtrls();
+      _mapTimer=setTimeout(()=>initRouteMap(),50); }
+  };
+};
+function setRouteMode(mode,btn){
+  if(mode!=='walk') stopWalk(true);   // 描くモードに戻ったら記録停止
+  routeMode=mode;
+  if(btn){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); }
+  renderRouteCtrls();
+}
+function renderRouteCtrls(){
+  const el=$('#routeCtrls'); if(!el) return;
+  if(routeMode==='walk'){
+    el.innerHTML = routeWatchId
+      ? `<button class="btn danger" onclick="stopWalk()">⏹ 記録停止</button><button class="btn ghost" onclick="routeUndo()">↶ 1つ戻す</button>`
+      : `<button class="btn primary" onclick="startWalk()">▶ 記録開始</button><button class="btn ghost danger" onclick="routeClearAll()">全消去</button>`;
+  } else {
+    el.innerHTML = `<button class="btn" onclick="routeUndo()">↶ 1つ戻す</button><button class="btn ghost danger" onclick="routeClearAll()">全消去</button>`;
+  }
+}
+function initRouteMap(){
+  const el=$('#rmap'); if(!el) return;
+  let center=[43.06,141.35], zoom=13;
+  if(routePath.length){ center=routePath[routePath.length-1]; zoom=15; }
+  else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=15; }
+  mapObj=L.map('rmap').setView(center,zoom);
+  const gsiAttr='<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>';
+  const gsi=(name,ext,mx,opt)=>L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/'+name+'/{z}/{x}/{y}.'+ext, Object.assign({maxZoom:18,maxNativeZoom:mx||18,attribution:gsiAttr},opt||{}));
+  const bases={ '標準地図':gsi('std','png',18),'淡色地図':gsi('pale','png',18),'写真（航空・衛星）':gsi('seamlessphoto','jpg',18) };
+  let savedBase=localStorage.getItem('bs_basemap'); if(!bases[savedBase]) savedBase='標準地図';
+  bases[savedBase].addTo(mapObj);
+  L.control.layers(bases,{},{position:'topright',collapsed:true}).addTo(mapObj);
+  mapObj.on('baselayerchange', e=>{ try{ localStorage.setItem('bs_basemap',e.name); }catch(err){} });
+  mapObj.on('click', e=>{ if(routeMode==='draw'){ routePath.push([e.latlng.lat, e.latlng.lng]); redrawRoute(); } });
+  redrawRoute();
+  if(routePath.length>1){ try{ mapObj.fitBounds(routePath,{padding:[40,40]}); }catch(e){} }
+  setTimeout(()=>{ if(mapObj) mapObj.invalidateSize(); },200);
+  addLocateControl();
+  if(!routePath.length) locateOnMap([]);
+}
+function redrawRoute(){
+  if(!mapObj) return;
+  if(routeLayer){ try{ mapObj.removeLayer(routeLayer); }catch(e){} }
+  routeLayer=L.layerGroup().addTo(mapObj);
+  const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
+  if(routePath.length){
+    if(routePath.length>1) L.polyline(routePath,{color:'#2f6fd0',weight:4,opacity:.9}).addTo(routeLayer);
+    L.marker(routePath[0],{icon:badge('始','#3fb984')}).addTo(routeLayer);
+    if(routePath.length>1) L.marker(routePath[routePath.length-1],{icon:badge('終','#d05555')}).addTo(routeLayer);
+  }
+  const info=$('#rInfo'); if(info){ const d=pathLength(routePath);
+    info.textContent = routePath.length? `${routePath.length}点 ・ 全長 約${fmtDist(d)}` : 'まだ点がありません。地図タップ（描く）か記録開始（歩いて）で作成します。'; }
+}
+function routeUndo(){ routePath.pop(); redrawRoute(); }
+function routeClearAll(){ if(routePath.length && !confirm('描いたルートを全部消しますか？')) return; routePath=[]; redrawRoute(); }
+async function startWalk(){
+  if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
+  // 画面が消えると記録が止まるため、可能なら画面を点けたままにする
+  try{ if('wakeLock' in navigator) routeWakeLock=await navigator.wakeLock.request('screen'); }catch(e){}
+  routeWatchId=navigator.geolocation.watchPosition(p=>{
+    const pt=[p.coords.latitude, p.coords.longitude];
+    lastFix={lat:pt[0],lon:pt[1],acc:p.coords.accuracy,t:Date.now()};
+    const last=routePath[routePath.length-1];
+    // 直前から約5m以上動いたときだけ点を足す（GPSのゆらぎで点が溜まるのを防ぐ）
+    if(!last || distMeters(last,pt)>=5){ routePath.push(pt); redrawRoute();
+      if(mapObj){ try{ mapObj.panTo(pt); }catch(e){} } }
+  }, e=>{ toast('位置を取得できませんでした'); }, {enableHighAccuracy:true, maximumAge:1000, timeout:20000});
+  toast('記録を開始しました。画面を開いたまま歩いてください');
+  renderRouteCtrls();
+}
+function stopWalk(silent){
+  if(routeWatchId!=null){ try{ navigator.geolocation.clearWatch(routeWatchId); }catch(e){} routeWatchId=null;
+    if(!silent) toast('記録を停止しました'); }
+  if(routeWakeLock){ try{ routeWakeLock.release(); }catch(e){} routeWakeLock=null; }
+  if(!silent) renderRouteCtrls();
+}
+function saveRoute(svUuid){
+  stopWalk(true);
+  const s=DB.survey(svUuid); if(!s){ toast('調査が見つかりません'); return; }
+  s.route=routePath.slice(); s.route_length_m=Math.round(pathLength(routePath));
+  if(!DB.upsertSurvey(s)) return;
+  toast(`ルートを保存しました（約${fmtDist(pathLength(routePath))}）`);
+  goBack();
+}
+function clearRouteConfirm(){ if(!confirm('この調査のルートを消しますか？')) return;
+  routePath=[]; redrawRoute(); }
+/* 同じルートで次の調査を作る（季節・回次を変えて束ねる） */
+function newSurveyFromRoute(u){ const s=DB.survey(u); if(!s) return;
+  const nextRound=(String(s.round_no||'').match(/^\d+$/))? String(parseInt(s.round_no,10)+1):'';
+  const rec={ uuid:uuid(), name:(s.name||'調査'), survey_date:dateValue(),
+    location_name:s.location_name||'', survey_method:s.survey_method||'ラインセンサス',
+    investigator_name:s.investigator_name||'', weather:'晴', wind:'弱い',
+    wind_direction:'不定', visibility:'良好', season:s.season||'繁殖期', round_no:nextRound,
+    temperature:'', purpose:s.purpose||'', pre_survey_notes:'', pre_hypothesis:'',
+    route:(s.route||[]).slice(), route_length_m:s.route_length_m||0, status:'未開始' };
+  if(!DB.upsertSurvey(rec)) return;
+  toast('同じルートで新しい調査を作成しました。日付・回次を確認してください');
+  nav('surveyEdit', rec.uuid);
+}
+
+/* ============================================================
    飛翔経路（地図に線を描いて記録）
    ============================================================ */
 let flightPath=[], flightLayer=null;
@@ -2289,6 +2420,18 @@ SCREENS.summary = (u)=>{
   });
   const rows=Object.values(map).sort((a,b)=>b.total-a.total);
   const totalInd=rows.reduce((a,r)=>a+r.total,0);
+  const spCount=rows.filter(r=>r.name!=='（未同定）').length;
+  // 調査ルートの長さから密度（種数/km・個体数/km）を算出
+  const routeLen=pathLength((s.route||[]).filter(validPathPt));
+  const km=routeLen/1000;
+  const densHtml = km>0 ? `<div class="sp"></div>
+      <h3 style="margin:0 0 6px;">ルート密度</h3>
+      <div class="row" style="gap:8px;flex-wrap:wrap;">
+        <span class="pill">ルート長 約${fmtDist(routeLen)}</span>
+        <span class="pill">種数 ${(spCount/km).toFixed(1)}/km</span>
+        <span class="pill">個体 ${(totalInd/km).toFixed(1)}/km</span>
+      </div>
+      <div class="note">ルート長で割った相対値です（ラインセンサスの目安）。</div>` : '';
   return {
     title:'種別集計',
     sub:[`<span class="pill">確認種数 ${rows.filter(r=>r.name!=='（未同定）').length}</span>`,`<span class="pill">延べ ${totalInd}個体</span>`,
@@ -2304,6 +2447,7 @@ SCREENS.summary = (u)=>{
       </table></div>` : '<div class="empty">観察記録がありません。</div>'}
       <div class="sp"></div>
       <div class="note">合計個体数は延べ数です。同一個体の重複記録を含むため、生息個体数とは限りません。飛翔経路の個体数も延べに含みます。</div>
+      ${densHtml}
       ${flightRoutes?`<div class="sp"></div>
       <h3 style="margin:0 0 6px;">飛翔経路のまとめ</h3>
       <div class="row" style="gap:8px;flex-wrap:wrap;">
@@ -2325,16 +2469,17 @@ SCREENS.map = (u)=>{
   const notes=DB.notesOf(u).filter(n=>validLatLon(n.latitude,n.longitude));
   const flights=DB.flightsOf(u).filter(f=>(f.path||[]).filter(validPathPt).length>=2);
   const targets=DB.obsOf(u).filter(o=>validLatLon(o.target_latitude,o.target_longitude));
+  const route=(DB.survey(u)&&DB.survey(u).route||[]).filter(validPathPt);
   return {
     title:'地図',
-    sub:[`<span class="pill">観察地点 ${obs.length}</span>`, targets.length?`<span class="pill">止まり/巣 ${targets.length}</span>`:'', flights.length?`<span class="pill">飛翔経路 ${flights.length}</span>`:''].filter(Boolean),
+    sub:[`<span class="pill">観察地点 ${obs.length}</span>`, targets.length?`<span class="pill">止まり/巣 ${targets.length}</span>`:'', route.length>1?`<span class="pill">ルート 約${fmtDist(pathLength(route))}</span>`:'', flights.length?`<span class="pill">飛翔経路 ${flights.length}</span>`:''].filter(Boolean),
     html:`<div id="map"></div>
       <div class="sp"></div>
       <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ◆赤＝止まり・巣の位置 / ノート＝メモ / 色つき曲線＝飛翔経路（緑「始」→赤「終」）。左下の凡例で線の色分けを 種／齢／個体 に切り替えられます。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ。右上の重ねアイコンで、背景（標準／淡色／航空写真）を選び、さらに「陰影」「傾斜」を重ねられます。選択は次回も保持。</div>`,
-    onMount:()=>{ _mapTimer=setTimeout(()=>drawMap(obs,notes,flights,targets),50); }
+    onMount:()=>{ _mapTimer=setTimeout(()=>drawMap(obs,notes,flights,targets,route),50); }
   };
 };
-function drawMap(obs,notes,flights,targets){
+function drawMap(obs,notes,flights,targets,route){
   const el=$('#map'); if(!el) return;
   let center=[35.68,139.77], zoom=13;
   const pts=obs.filter(o=>validLatLon(o.latitude,o.longitude));
@@ -2385,6 +2530,10 @@ function drawMap(obs,notes,flights,targets){
     const m=mk(lat,lon,'◆','#b03030').addTo(mapObj);
     m.bindPopup(`<b>${esc(o.species_name_snapshot||'（未同定）')}</b> 止まり/巣の位置<br>${esc(o.nest_state||'')}${o.nest_tree_species?'<br>営巣木:'+esc(o.nest_tree_species)+(o.nest_tree_height?'（'+esc(o.nest_tree_height)+'m）':''):''}`);
     group.push([lat,lon]); });
+  // 調査ルート（青い線）
+  const rp=(route||[]).filter(validPathPt);
+  if(rp.length>1){ L.polyline(rp,{color:'#2f6fd0',weight:4,opacity:.8}).addTo(mapObj).bindPopup('調査ルート 約'+fmtDist(pathLength(rp)));
+    rp.forEach(p=>group.push(p)); }
   // 飛翔経路（滑らかな曲線＋始点/終点。色は種／齢／個体で切替）
   const fMode=flightColorMode();
   // 値ごとに固定の色番号（初回登場順・保存）を使う。別種が同色になったり、分類追加で色がずれるのを防ぐ
@@ -2939,7 +3088,7 @@ async function exportMediaZip(surveys, base){
   downloadBlob(`${base}_media.zip`, buildZip(files));
   toast('録音・写真・動画ZIPを書き出しました');
 }
-const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','observation_id','observed_at',
+const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','survey_season','survey_round','observation_id','observed_at',
   'latitude','longitude','species_name','count','detection_method','distance_band','direction','behavior','habitat','age_class','sex',
   'env_redlist','hokkaido_redlist','species_protection_act','natural_monument','breeding_rank',
   'target_latitude','target_longitude','nest_tree_species','nest_tree_height','nest_state',
@@ -2953,6 +3102,7 @@ function buildRows(surveys){
   const rows=[];
   surveys.forEach(s=>{ DB.obsOf(s.uuid).forEach(o=>{
     rows.push({ survey_id:s.uuid, survey_name:s.name, survey_date:fmtDate(s.survey_date), survey_method:s.survey_method,
+      survey_season:s.season||'', survey_round:s.round_no||'',
       observation_id:o.uuid, observed_at:o.observed_at, latitude:o.latitude, longitude:o.longitude,
       species_name:o.species_name_snapshot, count:o.count, detection_method:o.detection_method,
       distance_band:o.distance_band||'', direction:o.direction||'',
