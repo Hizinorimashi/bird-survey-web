@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v48（2026-07-24 調査ルート記録（描く/歩いて）・密度算出・ルート再利用・季節/回次を追加）';
+const APP_VERSION = 'v49（2026-07-24 監査で見つけた不具合を修正：非同期GPS混入・ルート記録の停止漏れ/消失・報告書の飛翔種欠落と同名調査合算ほか）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1324,11 +1324,14 @@ function renderQuickSpecies(){
 function pickQuickSpecies(el){ const n=(el&&el.getAttribute('data-sp'))||''; chooseSpecies('',n); }
 function grabGps(){
   if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
-  toast('位置を取得中…');
+  const own=(SCREENS._obs&&SCREENS._obs.uuid); toast('位置を取得中…');
   navigator.geolocation.getCurrentPosition(p=>{
+    lastFix={lat:p.coords.latitude,lon:p.coords.longitude,acc:p.coords.accuracy,t:Date.now()};
+    // 取得完了前に別の記録へ移っていたら、その画面に書き込まない（非同期結果の混入防止）
+    if(!$('#latIn') || (SCREENS._obs&&SCREENS._obs.uuid)!==own) return;
     $('#latIn').value=p.coords.latitude.toFixed(6); $('#lonIn').value=p.coords.longitude.toFixed(6);
     $('#posLabel').textContent=`${p.coords.latitude.toFixed(6)}, ${p.coords.longitude.toFixed(6)} (±${Math.round(p.coords.accuracy)}m)`;
-    SCREENS._acc=Math.round(p.coords.accuracy); lastFix={lat:p.coords.latitude,lon:p.coords.longitude,acc:p.coords.accuracy,t:Date.now()};
+    SCREENS._acc=Math.round(p.coords.accuracy);
     toast('位置を取得しました');
   }, e=>toast('位置を取得できませんでした'), {enableHighAccuracy:true, timeout:15000});
 }
@@ -1336,7 +1339,8 @@ function grabGps(){
 let obsTargetMarker=null;
 function toggleObsTargetMap(){ const el=$('#otMap'); if(!el) return;
   if(el.style.display==='none'){ el.style.display='block'; initObsTargetMap(); }
-  else { el.style.display='none'; }
+  else { el.style.display='none';
+    if(mapObj){ try{ mapObj.remove(); }catch(e){} mapObj=null; obsTargetMarker=null; } }
 }
 function initObsTargetMap(){
   const el=$('#otMap'); if(!el) return;
@@ -1373,8 +1377,10 @@ function setObsTarget(lat,lon){
 function obsTargetFromGps(){
   if(lastFix){ setObsTarget(lastFix.lat,lastFix.lon); if(mapObj && $('#otMap').style.display!=='none') mapObj.setView([lastFix.lat,lastFix.lon],16); toast('現在地を対象位置にしました'); return; }
   if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
-  toast('位置を取得中…');
+  const own=(SCREENS._obs&&SCREENS._obs.uuid); toast('位置を取得中…');
   navigator.geolocation.getCurrentPosition(p=>{ lastFix={lat:p.coords.latitude,lon:p.coords.longitude,acc:p.coords.accuracy,t:Date.now()};
+    // 取得完了前に別の記録へ移っていたら書き込まない（非同期結果の混入防止）
+    if(!$('#otLat') || (SCREENS._obs&&SCREENS._obs.uuid)!==own) return;
     setObsTarget(p.coords.latitude,p.coords.longitude); toast('現在地を対象位置にしました'); },
     e=>toast('位置を取得できませんでした'), {enableHighAccuracy:true,timeout:15000});
 }
@@ -1810,7 +1816,7 @@ function deleteNote(u){ if(!confirm('このメモを削除しますか？')) ret
 /* ============================================================
    調査ルート（ラインセンサスの経路）：描く／歩いて自動記録
    ============================================================ */
-let routePath=[], routeLayer=null, routeMode='draw', routeWatchId=null, routeWakeLock=null;
+let routePath=[], routeLayer=null, routeMode='draw', routeWatchId=null, routeWakeLock=null, routeLine=null, routeEndMarker=null, _walkStarting=false;
 SCREENS.routeEdit = (svUuid)=>{
   const s=DB.survey(svUuid); if(!s) return SCREENS.home();
   return { title:'調査ルート', sub:[`<span class="pill">${esc(s.name)}</span>`],
@@ -1827,7 +1833,7 @@ SCREENS.routeEdit = (svUuid)=>{
       <button class="btn primary big" onclick="saveRoute('${svUuid}')">保存する</button>
       ${(s.route&&s.route.length)?`<div class="sp"></div><button class="btn danger" onclick="clearRouteConfirm()">この調査のルートを消す</button>`:''}
     `,
-    onMount:()=>{ routePath=(s.route||[]).slice(); routeMode='draw'; renderRouteCtrls();
+    onMount:()=>{ routePath=(s.route||[]).slice(); routeMode='draw'; SCREENS._routeSv=svUuid; renderRouteCtrls();
       _mapTimer=setTimeout(()=>initRouteMap(),50); }
   };
 };
@@ -1867,40 +1873,62 @@ function initRouteMap(){
   addLocateControl();
   if(!routePath.length) locateOnMap([]);
 }
+const _routeBadge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
+function routeInfo(){ const info=$('#rInfo'); if(info){ const d=pathLength(routePath);
+  info.textContent = routePath.length? `${routePath.length}点 ・ 全長 約${fmtDist(d)}` : 'まだ点がありません。地図タップ（描く）か記録開始（歩いて）で作成します。'; } }
 function redrawRoute(){
-  if(!mapObj) return;
+  if(!mapObj){ routeInfo(); return; }
   if(routeLayer){ try{ mapObj.removeLayer(routeLayer); }catch(e){} }
-  routeLayer=L.layerGroup().addTo(mapObj);
-  const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
+  routeLayer=L.layerGroup().addTo(mapObj); routeLine=null; routeEndMarker=null;
   if(routePath.length){
-    if(routePath.length>1) L.polyline(routePath,{color:'#2f6fd0',weight:4,opacity:.9}).addTo(routeLayer);
-    L.marker(routePath[0],{icon:badge('始','#3fb984')}).addTo(routeLayer);
-    if(routePath.length>1) L.marker(routePath[routePath.length-1],{icon:badge('終','#d05555')}).addTo(routeLayer);
+    if(routePath.length>1) routeLine=L.polyline(routePath,{color:'#2f6fd0',weight:4,opacity:.9}).addTo(routeLayer);
+    L.marker(routePath[0],{icon:_routeBadge('始','#3fb984')}).addTo(routeLayer);
+    if(routePath.length>1) routeEndMarker=L.marker(routePath[routePath.length-1],{icon:_routeBadge('終','#d05555')}).addTo(routeLayer);
   }
-  const info=$('#rInfo'); if(info){ const d=pathLength(routePath);
-    info.textContent = routePath.length? `${routePath.length}点 ・ 全長 約${fmtDist(d)}` : 'まだ点がありません。地図タップ（描く）か記録開始（歩いて）で作成します。'; }
+  routeInfo();
+}
+// 歩いて記録の1点追加を軽量に反映（全再描画=O(n^2)を避ける）
+function routeAppend(pt){
+  routePath.push(pt);
+  if(!mapObj || !routeLayer){ routeInfo(); return; }
+  if(routePath.length===1){ L.marker(pt,{icon:_routeBadge('始','#3fb984')}).addTo(routeLayer); }
+  else {
+    if(routeLine) routeLine.addLatLng(pt);
+    else routeLine=L.polyline(routePath,{color:'#2f6fd0',weight:4,opacity:.9}).addTo(routeLayer);
+    if(routeEndMarker) routeEndMarker.setLatLng(pt);
+    else routeEndMarker=L.marker(pt,{icon:_routeBadge('終','#d05555')}).addTo(routeLayer);
+  }
+  routeInfo();
 }
 function routeUndo(){ routePath.pop(); redrawRoute(); }
 function routeClearAll(){ if(routePath.length && !confirm('描いたルートを全部消しますか？')) return; routePath=[]; redrawRoute(); }
-async function startWalk(){
+function startWalk(){
+  if(routeWatchId!=null || _walkStarting) return;   // 二重起動防止（watch/WakeLockのリークと孤児watchを防ぐ）
   if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
-  // 画面が消えると記録が止まるため、可能なら画面を点けたままにする
-  try{ if('wakeLock' in navigator) routeWakeLock=await navigator.wakeLock.request('screen'); }catch(e){}
+  _walkStarting=true;
+  // 先にwatchを張ってIDを確定（WakeLock取得のawait中に二度押しされてもリークしない）
   routeWatchId=navigator.geolocation.watchPosition(p=>{
     const pt=[p.coords.latitude, p.coords.longitude];
     lastFix={lat:pt[0],lon:pt[1],acc:p.coords.accuracy,t:Date.now()};
     const last=routePath[routePath.length-1];
     // 直前から約5m以上動いたときだけ点を足す（GPSのゆらぎで点が溜まるのを防ぐ）
-    if(!last || distMeters(last,pt)>=5){ routePath.push(pt); redrawRoute();
+    if(!last || distMeters(last,pt)>=5){ routeAppend(pt);
       if(mapObj){ try{ mapObj.panTo(pt); }catch(e){} } }
-  }, e=>{ toast('位置を取得できませんでした'); }, {enableHighAccuracy:true, maximumAge:1000, timeout:20000});
+  }, e=>{ stopWalk(); toast('位置を取得できず記録を停止しました'); }, {enableHighAccuracy:true, maximumAge:1000, timeout:20000});
+  _walkStarting=false;
   toast('記録を開始しました。画面を開いたまま歩いてください');
   renderRouteCtrls();
+  // 画面が消えると記録が止まるため、可能なら画面を点けたままにする（取得はwatch確定後・非ブロッキング）
+  if('wakeLock' in navigator){ navigator.wakeLock.request('screen').then(w=>{ if(routeWatchId!=null) routeWakeLock=w; else { try{ w.release(); }catch(e){} } }).catch(()=>{}); }
 }
 function stopWalk(silent){
+  const wasWalking = routeWatchId!=null;
   if(routeWatchId!=null){ try{ navigator.geolocation.clearWatch(routeWatchId); }catch(e){} routeWatchId=null;
     if(!silent) toast('記録を停止しました'); }
   if(routeWakeLock){ try{ routeWakeLock.release(); }catch(e){} routeWakeLock=null; }
+  // 歩いて溜めた点は、停止時（画面離脱含む）に自動保存して消失を防ぐ
+  if(wasWalking && routePath.length>=2 && SCREENS._routeSv){ const s=DB.survey(SCREENS._routeSv);
+    if(s){ s.route=routePath.slice(); s.route_length_m=Math.round(pathLength(routePath)); DB.upsertSurvey(s); } }
   if(!silent) renderRouteCtrls();
 }
 function saveRoute(svUuid){
@@ -2421,17 +2449,20 @@ SCREENS.summary = (u)=>{
   const rows=Object.values(map).sort((a,b)=>b.total-a.total);
   const totalInd=rows.reduce((a,r)=>a+r.total,0);
   const spCount=rows.filter(r=>r.name!=='（未同定）').length;
-  // 調査ルートの長さから密度（種数/km・個体数/km）を算出
+  // 調査ルートの長さから密度（種数/km・個体数/km）を算出。
+  // 分子はラインセンサスに合わせ「観察のみ・未同定を除く」（飛翔経路は含めない）
   const routeLen=pathLength((s.route||[]).filter(validPathPt));
   const km=routeLen/1000;
+  const obsInd=obs.reduce((a,o)=>a+(parseInt(o.count,10)||0),0);
+  const obsSp=new Set(obs.map(o=>o.species_name_snapshot).filter(n=>n&&n!=='（未同定）')).size;
   const densHtml = km>0 ? `<div class="sp"></div>
       <h3 style="margin:0 0 6px;">ルート密度</h3>
       <div class="row" style="gap:8px;flex-wrap:wrap;">
         <span class="pill">ルート長 約${fmtDist(routeLen)}</span>
-        <span class="pill">種数 ${(spCount/km).toFixed(1)}/km</span>
-        <span class="pill">個体 ${(totalInd/km).toFixed(1)}/km</span>
+        <span class="pill">種数 ${(obsSp/km).toFixed(1)}/km</span>
+        <span class="pill">個体 ${(obsInd/km).toFixed(1)}/km</span>
       </div>
-      <div class="note">ルート長で割った相対値です（ラインセンサスの目安）。</div>` : '';
+      <div class="note">観察記録のみをルート長で割った相対値です（飛翔経路・未同定は除く。ラインセンサスの目安）。</div>` : '';
   return {
     title:'種別集計',
     sub:[`<span class="pill">確認種数 ${rows.filter(r=>r.name!=='（未同定）').length}</span>`,`<span class="pill">延べ ${totalInd}個体</span>`,
@@ -3130,19 +3161,25 @@ function exportCSV(surveys, base){
 /* ---------- 報告書向け出力（種一覧表・地点×種マトリクス） #9 ---------- */
 const BREED_ORDER={A:3,B:2,C:1,'':0};
 function exportReport(surveys, base){
-  // 種ごとに集計（延べ個体数・記録件数・確認方法・繁殖ランク最高・保全指定）
-  const bySp={}; const svNames=[];
-  surveys.forEach(s=>{ svNames.push(s.name||'（無題）');
-    DB.obsOf(s.uuid).forEach(o=>{
-      const nm=o.species_name_snapshot||'（未同定）';
-      const m=bySp[nm]||(bySp[nm]={name:nm, total:0, records:0, methods:new Set(), rank:'', bySurvey:{}});
-      const c=(o.count==null||o.count==='')?1:(parseInt(o.count,10)||0);
-      m.total+=c; m.records++;
-      if(o.detection_method) m.methods.add(o.detection_method);
-      const r=breedingRank(o.behavior, !!o.species_name_snapshot);
-      if(BREED_ORDER[r]>BREED_ORDER[m.rank]) m.rank=r;
-      m.bySurvey[s.name||'（無題）']=(m.bySurvey[s.name||'（無題）']||0)+c;
-    });
+  // 種ごとに集計（延べ個体数・記録件数・確認方法・繁殖ランク最高・保全指定）。観察＋飛翔経路を合流
+  const bySp={}; const svCols=[];   // svCols: {uuid,label} 調査ごとに一意の列
+  const svLabel=s=>`${s.name||'（無題）'}${s.round_no?` 第${s.round_no}回`:''}${s.survey_date?' '+fmtDate(s.survey_date):''}`;
+  const addRec=(s,nm,c,method,behavior,hasName)=>{
+    const key=nm||'（未同定）';
+    const m=bySp[key]||(bySp[key]={name:key, total:0, records:0, methods:new Set(), rank:'', bySurvey:{}});
+    m.total+=c; m.records++;
+    if(method) m.methods.add(method);
+    const r=breedingRank(behavior, hasName);
+    if(BREED_ORDER[r]>BREED_ORDER[m.rank]) m.rank=r;
+    m.bySurvey[s.uuid]=(m.bySurvey[s.uuid]||0)+c;
+  };
+  surveys.forEach(s=>{ svCols.push({uuid:s.uuid, label:svLabel(s)});
+    DB.obsOf(s.uuid).forEach(o=>{ const c=(o.count==null||o.count==='')?1:(parseInt(o.count,10)||0);
+      addRec(s, o.species_name_snapshot, c, o.detection_method, o.behavior, !!o.species_name_snapshot); });
+    // 飛翔経路も種一覧に合流（集計画面と同じく2点以上の経路のみ）
+    DB.flightsOf(s.uuid).forEach(f=>{ if((f.path||[]).filter(validPathPt).length<2) return;
+      const c=(f.count==null||f.count==='')?1:(parseInt(f.count,10)||0);
+      addRec(s, f.species_name_snapshot, c, '飛翔', f.behavior, !!f.species_name_snapshot); });
   });
   const names=Object.keys(bySp);
   if(!names.length){ toast('書き出す観察記録がありません'); return; }
@@ -3158,12 +3195,11 @@ function exportReport(surveys, base){
   const listCsv='﻿'+[listCols.join(',')].concat(listRows.map(r=>r.map(csvCell).join(','))).join('\r\n');
   download(`${base}_species_list.csv`, listCsv, 'text/csv;charset=utf-8');
 
-  // 2) 地点×種マトリクス（行=種, 列=調査名, 値=延べ個体数）
-  const uniqSv=[...new Set(svNames)];
-  const matCols=['和名'].concat(uniqSv);
+  // 2) 地点×種マトリクス（行=種, 列=調査（一意）, 値=延べ個体数）。同名の別回次でも列を分ける
+  const matCols=['和名'].concat(svCols.map(c=>c.label));
   const matRows=names.map(nm=>{ const m=bySp[nm];
-    return [nm].concat(uniqSv.map(sv=>m.bySurvey[sv]||0)); });
-  const matCsv='﻿'+[matCols.join(',')].concat(matRows.map(r=>r.map(csvCell).join(','))).join('\r\n');
+    return [nm].concat(svCols.map(c=>m.bySurvey[c.uuid]||0)); });
+  const matCsv='﻿'+[matCols.map(csvCell).join(',')].concat(matRows.map(r=>r.map(csvCell).join(','))).join('\r\n');
   download(`${base}_site_species_matrix.csv`, matCsv, 'text/csv;charset=utf-8');
   toast('報告書用（種一覧・地点×種）を書き出しました');
 }
