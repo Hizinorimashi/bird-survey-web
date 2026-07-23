@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v45（2026-07-24 保全区分の小バッジ（環/北/天）をカードに表示）';
+const APP_VERSION = 'v46（2026-07-24 止まり/巣の位置を地図で記録・営巣木・距離帯・確認方向・風向・視程を追加）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -339,6 +339,11 @@ const OPT = {
   habitat:['河畔林','森林','草地','農耕地','開放地','水域','市街地','その他'],
   obsAge:['成','若','幼','不明'],
   sex:['♀','♂','不明'],
+  distBand:['〜25m','〜50m','50m超','不明'],
+  direction:['北','北東','東','南東','南','南西','西','北西'],
+  nestState:['造巣中','抱卵','育雛','巣立ち後','不明'],
+  windDir:['不定','北','北東','東','南東','南','南西','西','北西'],
+  visibility:['良好','やや不良','不良（霧・靄）'],
   idStatus:['確定','仮同定','未同定'],
   confidence:['高','中','低'],
   noteCat:['調査条件','生息環境','調査結果','特記事項','考察メモ','報告書用メモ','次回課題','その他'],
@@ -936,6 +941,7 @@ SCREENS.surveyEdit = (svUuid)=>{
     let draft=null; try{ draft=JSON.parse(localStorage.getItem(DRAFT_KEY)||'null'); }catch(e){}
     s = draft || { uuid:uuid(), name:'', survey_date:dateValue(), location_name:'',
       survey_method:'ラインセンサス', investigator_name:'', weather:'晴', wind:'弱い',
+      wind_direction:'不定', visibility:'良好',
       temperature:'', purpose:'', pre_survey_notes:'', pre_hypothesis:'', status:'未開始' };
   }
   const seg=(field,opts)=>`<div class="seg" data-seg="${field}">${opts.map(o=>
@@ -962,6 +968,10 @@ SCREENS.surveyEdit = (svUuid)=>{
           <label class="field"><span class="lab">天候</span>${seg('weather',OPT.weather)}</label>
           <label class="field"><span class="lab">風</span>${seg('wind',OPT.wind)}</label>
         </div>
+        <div class="two">
+          <label class="field"><span class="lab">風向</span>${seg('wind_direction',OPT.windDir)}</label>
+          <label class="field"><span class="lab">視程</span>${seg('visibility',OPT.visibility)}</label>
+        </div>
         <label class="field"><span class="lab">調査目的</span>
           <textarea name="purpose" placeholder="何を確かめる調査か">${esc(s.purpose)}</textarea></label>
         <label class="field"><span class="lab">調査前の確認事項</span>
@@ -987,6 +997,7 @@ function collectSurveyForm(){
   return { name:g('name'), survey_date:g('survey_date'), temperature:g('temperature'),
     location_name:g('location_name'), survey_method:seg('survey_method'),
     investigator_name:g('investigator_name'), weather:seg('weather'), wind:seg('wind'),
+    wind_direction:seg('wind_direction'), visibility:seg('visibility'),
     purpose:g('purpose'), pre_survey_notes:g('pre_survey_notes'), pre_hypothesis:g('pre_hypothesis') };
 }
 function draftSave(){ if(SCREENS._editing) return; // 新規のみ下書き
@@ -1171,7 +1182,9 @@ SCREENS.obsEdit = (argStr)=>{
   if(!o){
     o = { uuid:uuid(), survey_uuid:svUuid, observed_at:localDatetimeValue(), latitude:'', longitude:'',
       gps_accuracy:'', species_id:'', species_name_snapshot:'', count:1, detection_method:'目視',
-      behavior:'', habitat:'', age_class:'不明', sex:'不明', note:'', identification_status:'確定', confidence:'中',
+      behavior:'', habitat:'', age_class:'不明', sex:'不明', distance_band:'', direction:'',
+      target_latitude:'', target_longitude:'', nest_tree_species:'', nest_tree_height:'', nest_state:'',
+      note:'', identification_status:'確定', confidence:'中',
       needs_review:false, external_photo_reference:'' };
     // 現在のGPSを初期値に
     if(lastFix){ o.latitude=lastFix.lat.toFixed(6); o.longitude=lastFix.lon.toFixed(6); o.gps_accuracy=Math.round(lastFix.acc); }
@@ -1203,6 +1216,10 @@ SCREENS.obsEdit = (argStr)=>{
             <input type="datetime-local" name="observed_at" value="${esc(o.observed_at)}"></label>
         </div>
         <label class="field"><span class="lab">確認方法</span>${seg('detection_method',OPT.detection)}</label>
+        <div class="two">
+          <label class="field"><span class="lab">距離帯（ルート/定点から・任意）</span>${seg('distance_band',OPT.distBand,true)}</label>
+          <label class="field"><span class="lab">確認方向（任意）</span>${seg('direction',OPT.direction,true)}</label>
+        </div>
         <label class="field"><span class="lab">行動（複数選択可）</span>${segMulti('behavior',OPT.behavior)}</label>
         <label class="field"><span class="lab">生息環境（複数選択可）</span>${segMulti('habitat',OPT.habitat)}</label>
         <label class="field"><span class="lab">年齢</span>${seg('age_class',OPT.obsAge)}</label>
@@ -1228,6 +1245,25 @@ SCREENS.obsEdit = (argStr)=>{
             <input id="latIn" inputmode="decimal" placeholder="緯度" value="${esc(o.latitude)}">
             <input id="lonIn" inputmode="decimal" placeholder="経度" value="${esc(o.longitude)}">
           </div>
+        </div>
+        <div class="card" style="background:var(--panel2);">
+          <div class="row"><div class="grow small muted">対象の位置（止まり木・巣など・任意）：<span id="otLabel">${o.target_latitude?esc(o.target_latitude)+', '+esc(o.target_longitude):'未指定'}</span></div></div>
+          <div class="tiny muted" style="margin:4px 0 8px;">観察者の位置（上）とは別に、鳥が止まっている木や巣の場所を地図で指定できます。</div>
+          <div class="btn-grid">
+            <button type="button" class="btn ghost" onclick="toggleObsTargetMap()">🗺 地図で指定</button>
+            <button type="button" class="btn ghost" onclick="obsTargetFromGps()">📍 現在地を対象に</button>
+            <button type="button" class="btn ghost" onclick="clearObsTarget()">クリア</button>
+          </div>
+          <div id="otMap" style="height:240px; margin-top:8px; border-radius:var(--radius); border:1px solid var(--line); display:none;"></div>
+          <input type="hidden" id="otLat" value="${esc(o.target_latitude||'')}">
+          <input type="hidden" id="otLon" value="${esc(o.target_longitude||'')}">
+          <div class="two" style="margin-top:10px;">
+            <label class="field"><span class="lab">営巣木の樹種</span>
+              <input name="nest_tree_species" value="${esc(o.nest_tree_species||'')}" placeholder="例：ミズナラ（任意）"></label>
+            <label class="field"><span class="lab">樹高(m)</span>
+              <input name="nest_tree_height" inputmode="decimal" value="${esc(o.nest_tree_height||'')}" placeholder="任意"></label>
+          </div>
+          <label class="field"><span class="lab">巣の状態（営巣段階・任意）</span>${seg('nest_state',OPT.nestState,true)}</label>
         </div>
       </form>
       <div class="sp"></div>
@@ -1285,6 +1321,52 @@ function grabGps(){
     toast('位置を取得しました');
   }, e=>toast('位置を取得できませんでした'), {enableHighAccuracy:true, timeout:15000});
 }
+/* 観察の対象位置（止まり木・巣など）を地図タップで指定 */
+let obsTargetMarker=null;
+function toggleObsTargetMap(){ const el=$('#otMap'); if(!el) return;
+  if(el.style.display==='none'){ el.style.display='block'; initObsTargetMap(); }
+  else { el.style.display='none'; }
+}
+function initObsTargetMap(){
+  const el=$('#otMap'); if(!el) return;
+  if(mapObj){ try{ mapObj.remove(); }catch(e){} mapObj=null; } obsTargetMarker=null;
+  let lat=parseFloat($('#otLat').value), lon=parseFloat($('#otLon').value);
+  const ola=parseFloat($('#latIn').value), olo=parseFloat($('#lonIn').value);
+  let center=[43.06,141.35], zoom=13;
+  if(!isNaN(lat)&&!isNaN(lon)){ center=[lat,lon]; zoom=16; }
+  else if(!isNaN(ola)&&!isNaN(olo)){ center=[ola,olo]; zoom=16; }
+  else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=16; }
+  mapObj=L.map('otMap').setView(center,zoom);
+  const gsiAttr='<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>';
+  const gsi=(name,ext,mx,opt)=>L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/'+name+'/{z}/{x}/{y}.'+ext, Object.assign({maxZoom:18,maxNativeZoom:mx||18,attribution:gsiAttr},opt||{}));
+  const bases={ '標準地図':gsi('std','png',18),'淡色地図':gsi('pale','png',18),'写真（航空・衛星）':gsi('seamlessphoto','jpg',18) };
+  let savedBase=localStorage.getItem('bs_basemap'); if(!bases[savedBase]) savedBase='標準地図';
+  bases[savedBase].addTo(mapObj);
+  L.control.layers(bases,{},{position:'topright',collapsed:true}).addTo(mapObj);
+  mapObj.on('baselayerchange', e=>{ try{ localStorage.setItem('bs_basemap',e.name); }catch(err){} });
+  // 観察者の位置を緑丸で薄く表示（対象位置の目安）
+  if(!isNaN(ola)&&!isNaN(olo)) L.circleMarker([ola,olo],{radius:5,color:'#fff',weight:1,fillColor:'#3fb984',fillOpacity:.9}).addTo(mapObj).bindPopup('観察者の位置');
+  if(!isNaN(lat)&&!isNaN(lon)) setObsTarget(lat,lon);
+  mapObj.on('click', e=>setObsTarget(e.latlng.lat, e.latlng.lng));
+  setTimeout(()=>{ if(mapObj) mapObj.invalidateSize(); },200);
+}
+function setObsTarget(lat,lon){
+  $('#otLat').value=lat.toFixed(6); $('#otLon').value=lon.toFixed(6);
+  $('#otLabel').textContent=lat.toFixed(6)+', '+lon.toFixed(6);
+  const mapShown=$('#otMap') && $('#otMap').style.display!=='none';
+  if(mapObj && mapShown){ if(obsTargetMarker){ try{ mapObj.removeLayer(obsTargetMarker); }catch(e){} }
+    obsTargetMarker=L.marker([lat,lon]).addTo(mapObj); }
+}
+function obsTargetFromGps(){
+  if(lastFix){ setObsTarget(lastFix.lat,lastFix.lon); if(mapObj && $('#otMap').style.display!=='none') mapObj.setView([lastFix.lat,lastFix.lon],16); toast('現在地を対象位置にしました'); return; }
+  if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
+  toast('位置を取得中…');
+  navigator.geolocation.getCurrentPosition(p=>{ lastFix={lat:p.coords.latitude,lon:p.coords.longitude,acc:p.coords.accuracy,t:Date.now()};
+    setObsTarget(p.coords.latitude,p.coords.longitude); toast('現在地を対象位置にしました'); },
+    e=>toast('位置を取得できませんでした'), {enableHighAccuracy:true,timeout:15000});
+}
+function clearObsTarget(){ $('#otLat').value=''; $('#otLon').value=''; $('#otLabel').textContent='未指定';
+  if(mapObj&&obsTargetMarker){ try{ mapObj.removeLayer(obsTargetMarker); }catch(e){} obsTargetMarker=null; } }
 function saveObs(u, svUuid, editing, cont){
   const f=$('#obForm'); const g=n=>{const el=f.querySelector(`[name="${n}"]`); return el?el.value:'';};
   const name=$('#spInput').value.trim();
@@ -1292,6 +1374,9 @@ function saveObs(u, svUuid, editing, cont){
   // 座標が不正な文字なら位置だけ空にして記録は守る（不正座標で地図が壊れるのを防ぐ）
   let lat=$('#latIn').value.trim(), lon=$('#lonIn').value.trim();
   if((lat||lon) && !validLatLon(lat,lon)){ toast('⚠ 位置の数値が正しくないため、位置なしで保存します'); lat=''; lon=''; }
+  // 対象位置（止まり木・巣など）。不正なら位置なしで保存
+  let tlat=(($('#otLat')&&$('#otLat').value)||'').trim(), tlon=(($('#otLon')&&$('#otLon').value)||'').trim();
+  if((tlat||tlon) && !validLatLon(tlat,tlon)){ tlat=''; tlon=''; }
   const rec = Object.assign({}, editing?DB.observations().find(x=>x.uuid===u):{uuid:u}, {
     uuid:u, survey_uuid:svUuid,
     observed_at: g('observed_at')? new Date(g('observed_at')).toISOString() : nowISO(),
@@ -1301,6 +1386,9 @@ function saveObs(u, svUuid, editing, cont){
     count: parseInt(g('count'),10)||0, detection_method: segVal('detection_method'),
     behavior: segVals('behavior'), habitat: segVals('habitat'),
     age_class: segVal('age_class'), sex: segVal('sex'),
+    distance_band: segVal('distance_band'), direction: segVal('direction'),
+    target_latitude: tlat, target_longitude: tlon,
+    nest_tree_species: g('nest_tree_species'), nest_tree_height: g('nest_tree_height'), nest_state: segVal('nest_state'),
     identification_status: name? idStatus : '未同定',
     confidence: segVal('confidence'), needs_review: $('#needsReview').checked,
     note: g('note'), external_photo_reference: g('external_photo_reference'),
@@ -2234,16 +2322,17 @@ SCREENS.map = (u)=>{
   const obs=DB.obsOf(u).filter(o=>validLatLon(o.latitude,o.longitude));
   const notes=DB.notesOf(u).filter(n=>validLatLon(n.latitude,n.longitude));
   const flights=DB.flightsOf(u).filter(f=>(f.path||[]).filter(validPathPt).length>=2);
+  const targets=DB.obsOf(u).filter(o=>validLatLon(o.target_latitude,o.target_longitude));
   return {
     title:'地図',
-    sub:[`<span class="pill">観察地点 ${obs.length}</span>`, flights.length?`<span class="pill">飛翔経路 ${flights.length}</span>`:''].filter(Boolean),
+    sub:[`<span class="pill">観察地点 ${obs.length}</span>`, targets.length?`<span class="pill">止まり/巣 ${targets.length}</span>`:'', flights.length?`<span class="pill">飛翔経路 ${flights.length}</span>`:''].filter(Boolean),
     html:`<div id="map"></div>
       <div class="sp"></div>
-      <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ノート＝メモ / 色つき曲線＝飛翔経路（緑「始」→赤「終」）。左下の凡例で線の色分けを 種／齢／個体 に切り替えられます。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ。右上の重ねアイコンで、背景（標準／淡色／航空写真）を選び、さらに「陰影」「傾斜」を重ねられます。選択は次回も保持。</div>`,
-    onMount:()=>{ _mapTimer=setTimeout(()=>drawMap(obs,notes,flights),50); }
+      <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ◆赤＝止まり・巣の位置 / ノート＝メモ / 色つき曲線＝飛翔経路（緑「始」→赤「終」）。左下の凡例で線の色分けを 種／齢／個体 に切り替えられます。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ。右上の重ねアイコンで、背景（標準／淡色／航空写真）を選び、さらに「陰影」「傾斜」を重ねられます。選択は次回も保持。</div>`,
+    onMount:()=>{ _mapTimer=setTimeout(()=>drawMap(obs,notes,flights,targets),50); }
   };
 };
-function drawMap(obs,notes,flights){
+function drawMap(obs,notes,flights,targets){
   const el=$('#map'); if(!el) return;
   let center=[35.68,139.77], zoom=13;
   const pts=obs.filter(o=>validLatLon(o.latitude,o.longitude));
@@ -2289,6 +2378,11 @@ function drawMap(obs,notes,flights){
   notes.forEach(n=>{ const lat=parseFloat(n.latitude), lon=parseFloat(n.longitude);
     const m=mk(lat,lon,'✎','#5a7de0').addTo(mapObj);
     m.bindPopup(`<b>メモ:${esc(n.category||'')}</b><br>${esc((n.content||'').slice(0,80))}`); group.push([lat,lon]); });
+  // 対象位置（止まり木・巣など）を赤の◆で表示
+  (targets||[]).forEach(o=>{ const lat=parseFloat(o.target_latitude), lon=parseFloat(o.target_longitude);
+    const m=mk(lat,lon,'◆','#b03030').addTo(mapObj);
+    m.bindPopup(`<b>${esc(o.species_name_snapshot||'（未同定）')}</b> 止まり/巣の位置<br>${esc(o.nest_state||'')}${o.nest_tree_species?'<br>営巣木:'+esc(o.nest_tree_species)+(o.nest_tree_height?'（'+esc(o.nest_tree_height)+'m）':''):''}`);
+    group.push([lat,lon]); });
   // 飛翔経路（滑らかな曲線＋始点/終点。色は種／齢／個体で切替）
   const fMode=flightColorMode();
   // 値ごとに固定の色番号（初回登場順・保存）を使う。別種が同色になったり、分類追加で色がずれるのを防ぐ
@@ -2844,8 +2938,9 @@ async function exportMediaZip(surveys, base){
   toast('録音・写真・動画ZIPを書き出しました');
 }
 const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','observation_id','observed_at',
-  'latitude','longitude','species_name','count','detection_method','behavior','habitat','age_class','sex',
+  'latitude','longitude','species_name','count','detection_method','distance_band','direction','behavior','habitat','age_class','sex',
   'env_redlist','hokkaido_redlist','species_protection_act','natural_monument','breeding_rank',
+  'target_latitude','target_longitude','nest_tree_species','nest_tree_height','nest_state',
   'identification_status','confidence','needs_review','note','audio_file','media_file','external_photo_reference'];
 function csvCell(v){ v=v==null?'':String(v);
   // 数式インジェクション対策は「数値でない」文字列にだけ適用する。
@@ -2858,6 +2953,9 @@ function buildRows(surveys){
     rows.push({ survey_id:s.uuid, survey_name:s.name, survey_date:fmtDate(s.survey_date), survey_method:s.survey_method,
       observation_id:o.uuid, observed_at:o.observed_at, latitude:o.latitude, longitude:o.longitude,
       species_name:o.species_name_snapshot, count:o.count, detection_method:o.detection_method,
+      distance_band:o.distance_band||'', direction:o.direction||'',
+      target_latitude:o.target_latitude||'', target_longitude:o.target_longitude||'',
+      nest_tree_species:o.nest_tree_species||'', nest_tree_height:o.nest_tree_height||'', nest_state:o.nest_state||'',
       behavior:o.behavior, habitat:o.habitat, age_class:o.age_class||'', sex:o.sex||'',
       env_redlist:csvConserv(o.species_name_snapshot,'e'), hokkaido_redlist:csvConserv(o.species_name_snapshot,'k'),
       species_protection_act:csvConserv(o.species_name_snapshot,'h'), natural_monument:csvConserv(o.species_name_snapshot,'t'),
