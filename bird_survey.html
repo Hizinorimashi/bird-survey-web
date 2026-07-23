@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v40（2026-07-22 行動も複数選択できるように）';
+const APP_VERSION = 'v41（2026-07-23 飛翔経路をまとめて表示する画面を追加）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1019,6 +1019,7 @@ SCREENS.survey = (u)=>{
         <button class="btn" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))">🐦 観察を追加</button>
         <button class="btn" onclick="nav('obsBatch','${u}')">🐦🐦 まとめて記録</button>
         <button class="btn" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))">🛩 飛翔経路を記録</button>
+        <button class="btn" onclick="nav('flightList','${u}')">🛩 飛翔経路まとめ</button>
         <button class="btn" onclick="nav('surveyEdit','${u}')">✎ 調査情報を編集</button>
         <button class="btn" onclick="nav('surveyEnd','${u}')">⏹ 終了・振り返り</button>
       </div>`:''}
@@ -1029,17 +1030,10 @@ SCREENS.survey = (u)=>{
       <div class="divider"></div>
       <div class="row" style="align-items:center;">
         <h3 class="grow" style="margin:0;">飛翔経路 <span class="muted small">(${flights.length})</span></h3>
+        ${flights.length?`<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="nav('flightList','${u}')">🗺 まとめて表示</button>`:''}
         <button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))">🛩 追加</button>
       </div>
-      ${flights.length? flights.map(f=>`<div class="card tap" onclick="nav('flightEdit', JSON.stringify({sv:'${u}',id:'${f.uuid}'}))">
-          <div class="row"><div class="grow">
-            <div style="font-weight:700;">🛩 ${esc(f.species_name_snapshot||'（未同定）')}
-              ${f.age_class&&f.age_class!=='不明'?`<span class="pill">${esc(f.age_class)}</span>`:''}
-              ${f.individual_label?`<span class="pill">${esc(f.individual_label)}</span>`:''}
-              ${f.needs_review?'<span class="badge warn">要確認</span>':''}</div>
-            <div class="small muted">${fmtTime(f.start_time)} ・ ${esc((f.path||[]).length)}点 ・ ${esc(f.height_class||'')}${f.behavior?' ・ '+esc(f.behavior):''}
-              <span class="tiny muted">${(f.audio&&f.audio.length)?' 🎤':''}${(f.media&&f.media.length)?' 📷':''}</span></div>
-          </div></div></div>`).join('')
+      ${flights.length? flights.map(f=>flightCard(u,f)).join('')
         : '<div class="empty small">まだ飛翔経路がありません。「🛩 追加」で地図に描けます。</div>'}
       ${notes.length?`<div class="divider"></div><h3>調査メモ <span class="muted small">(${notes.length})</span></h3>
         ${notes.map(n=>`<div class="card tap" onclick="nav('noteEdit', JSON.stringify({sv:'${u}',id:'${n.uuid}'}))">
@@ -1805,6 +1799,42 @@ function saveFlight(u,svUuid,editing,cont){
   else goBack();
 }
 function deleteFlight(u){ if(!confirm('この飛翔経路を削除しますか？')) return; DB.softDelete(DB.key.fl,u); toast('削除しました'); goBack(); }
+
+/* 飛翔経路のカード（調査画面・まとめ画面で共用） */
+function flightCard(u,f){ return `<div class="card tap" onclick="nav('flightEdit', JSON.stringify({sv:'${u}',id:'${f.uuid}'}))">
+    <div class="row"><div class="grow">
+      <div style="font-weight:700;">🛩 ${esc(f.species_name_snapshot||'（未同定）')}
+        ${f.age_class&&f.age_class!=='不明'?`<span class="pill">${esc(f.age_class)}</span>`:''}
+        ${f.individual_label?`<span class="pill">${esc(f.individual_label)}</span>`:''}
+        ${f.needs_review?'<span class="badge warn">要確認</span>':''}</div>
+      <div class="small muted">${fmtTime(f.start_time)} ・ ${esc((f.path||[]).length)}点 ・ ${esc(f.height_class||'')}${f.behavior?' ・ '+esc(f.behavior):''}
+        <span class="tiny muted">${(f.audio&&f.audio.length)?' 🎤':''}${(f.media&&f.media.length)?' 📷':''}</span></div>
+    </div></div></div>`; }
+
+/* 飛翔経路まとめ（全経路を1枚の地図に重ねて表示＋一覧） */
+SCREENS.flightList = (u)=>{
+  const s=DB.survey(u); if(!s) return SCREENS.home();
+  const flights=DB.flightsOf(u).sort((a,b)=>(b.start_time||b.created_at||'').localeCompare(a.start_time||a.created_at||''));
+  const drawable=flights.filter(f=>(f.path||[]).filter(validPathPt).length>=2);
+  return {
+    title:'飛翔経路まとめ',
+    sub:[`<span class="pill">${esc(s.name||'調査')}</span>`, `<span class="pill">経路 ${flights.length}</span>`],
+    html:`
+      ${drawable.length?`<div id="map"></div>
+        <div class="sp"></div>
+        <div class="note">この調査の飛翔経路を全部まとめて表示しています（緑「始」→赤「終」）。左下の凡例で線の色分けを 種／齢／個体 に切り替えられます。線をタップすると内容、下のカードをタップすると編集画面が開きます。</div>`
+        :''}
+      <div class="sp"></div>
+      <div class="row" style="align-items:center;">
+        <h3 class="grow" style="margin:0;">経路一覧 <span class="muted small">(${flights.length})</span></h3>
+        <button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))">🛩 追加</button>
+      </div>
+      ${flights.length? flights.map(f=>flightCard(u,f)).join('')
+        : '<div class="empty small">まだ飛翔経路がありません。「🛩 追加」で地図に描けます。</div>'}
+    `,
+    onMount:()=>{ if(drawable.length) _mapTimer=setTimeout(()=>drawMap([],[],drawable),50); }
+  };
+};
 
 /* ============================================================
    仮説管理（一覧・登録・詳細）
