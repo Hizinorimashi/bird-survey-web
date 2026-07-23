@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v43（2026-07-24 保全指定＝注目種を自動表示、CSVに保全区分を追加、種7追加）';
+const APP_VERSION = 'v44（2026-07-24 繁殖ランクを自動算出、報告書用の種一覧・地点×種を書き出し）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -758,6 +758,20 @@ function csvConserv(name,field){ const c=conservOf(name); if(!c) return '';
   if(field==='h') return c.h? '国内希少種':'';
   if(field==='t') return c.t? TEN_LABEL[c.t]:'';
   return '';
+}
+
+/* ---------- 繁殖ランク（観察コード）の自動判定 ----------
+   全国鳥類繁殖分布調査に準拠。行動タグから A:繁殖確認 > B:繁殖の可能性 > C:生息を確認 を推定。
+   あくまで自動推定のため、報告書では要確認（画面には出さず出力時のみ算出） */
+const BREED_A=['巣立ち雛','給餌','餌運び'];                                   // 繁殖を確認
+const BREED_B=['さえずり','繁殖行動','巣材運搬','威嚇','警戒','餌渡し','dF(ディスプレイ飛翔)']; // 繁殖の可能性
+const BREED_LABEL={A:'A 繁殖を確認',B:'B 繁殖の可能性',C:'C 生息を確認'};
+/* 行動文字列（「・」区切り）から繁殖ランクを返す。種名があれば最低でもC */
+function breedingRank(behaviorStr, hasSpecies){
+  const set=String(behaviorStr||'').split('・').filter(Boolean);
+  if(set.some(b=>BREED_A.includes(b))) return 'A';
+  if(set.some(b=>BREED_B.includes(b))) return 'B';
+  return hasSpecies? 'C':'';
 }
 
 /* 図鑑・鳴き声の参照リンク（📖=Wikipedia日本語 / 🔊=Xeno-canto。学名があれば鳴き声検索が正確） */
@@ -2818,7 +2832,7 @@ async function exportMediaZip(surveys, base){
 }
 const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','observation_id','observed_at',
   'latitude','longitude','species_name','count','detection_method','behavior','habitat','age_class','sex',
-  'env_redlist','hokkaido_redlist','species_protection_act','natural_monument',
+  'env_redlist','hokkaido_redlist','species_protection_act','natural_monument','breeding_rank',
   'identification_status','confidence','needs_review','note','audio_file','media_file','external_photo_reference'];
 function csvCell(v){ v=v==null?'':String(v);
   // 数式インジェクション対策は「数値でない」文字列にだけ適用する。
@@ -2834,6 +2848,7 @@ function buildRows(surveys){
       behavior:o.behavior, habitat:o.habitat, age_class:o.age_class||'', sex:o.sex||'',
       env_redlist:csvConserv(o.species_name_snapshot,'e'), hokkaido_redlist:csvConserv(o.species_name_snapshot,'k'),
       species_protection_act:csvConserv(o.species_name_snapshot,'h'), natural_monument:csvConserv(o.species_name_snapshot,'t'),
+      breeding_rank:(BREED_LABEL[breedingRank(o.behavior, !!o.species_name_snapshot)]||''),
       identification_status:o.identification_status,
       confidence:o.confidence, needs_review:o.needs_review?1:0, note:o.note,
       audio_file:(o.audio||[]).map((a,i)=>audioFilename(o,i,a)).join(';'),
@@ -2848,6 +2863,46 @@ function exportCSV(surveys, base){
   const body=[CSV_COLS.join(',')].concat(rows.map(r=>CSV_COLS.map(c=>csvCell(r[c])).join(','))).join('\r\n');
   download(`${base}_observations.csv`, '﻿'+body, 'text/csv;charset=utf-8');
   toast('CSVを書き出しました');
+}
+/* ---------- 報告書向け出力（種一覧表・地点×種マトリクス） #9 ---------- */
+const BREED_ORDER={A:3,B:2,C:1,'':0};
+function exportReport(surveys, base){
+  // 種ごとに集計（延べ個体数・記録件数・確認方法・繁殖ランク最高・保全指定）
+  const bySp={}; const svNames=[];
+  surveys.forEach(s=>{ svNames.push(s.name||'（無題）');
+    DB.obsOf(s.uuid).forEach(o=>{
+      const nm=o.species_name_snapshot||'（未同定）';
+      const m=bySp[nm]||(bySp[nm]={name:nm, total:0, records:0, methods:new Set(), rank:'', bySurvey:{}});
+      const c=(o.count==null||o.count==='')?1:(parseInt(o.count,10)||0);
+      m.total+=c; m.records++;
+      if(o.detection_method) m.methods.add(o.detection_method);
+      const r=breedingRank(o.behavior, !!o.species_name_snapshot);
+      if(BREED_ORDER[r]>BREED_ORDER[m.rank]) m.rank=r;
+      m.bySurvey[s.name||'（無題）']=(m.bySurvey[s.name||'（無題）']||0)+c;
+    });
+  });
+  const names=Object.keys(bySp);
+  if(!names.length){ toast('書き出す観察記録がありません'); return; }
+  // 種の分類順（種名マスタの並び）でソート。未同定・マスタ外は末尾
+  const ord=nm=>{ const sp=speciesByName(nm); return sp? sp.species_id : 99999; };
+  names.sort((a,b)=>ord(a)-ord(b)||a.localeCompare(b));
+
+  // 1) 種一覧表
+  const listCols=['和名','学名','延べ個体数','記録件数','確認方法','繁殖ランク','環境省RL','北海道RL','種の保存法','天然記念物'];
+  const listRows=names.map(nm=>{ const m=bySp[nm]; const sp=speciesByName(nm);
+    return [nm, sp?sp.scientific_name:'', m.total, m.records, [...m.methods].join('・'),
+      (BREED_LABEL[m.rank]||''), csvConserv(nm,'e'), csvConserv(nm,'k'), csvConserv(nm,'h'), csvConserv(nm,'t')]; });
+  const listCsv='﻿'+[listCols.join(',')].concat(listRows.map(r=>r.map(csvCell).join(','))).join('\r\n');
+  download(`${base}_species_list.csv`, listCsv, 'text/csv;charset=utf-8');
+
+  // 2) 地点×種マトリクス（行=種, 列=調査名, 値=延べ個体数）
+  const uniqSv=[...new Set(svNames)];
+  const matCols=['和名'].concat(uniqSv);
+  const matRows=names.map(nm=>{ const m=bySp[nm];
+    return [nm].concat(uniqSv.map(sv=>m.bySurvey[sv]||0)); });
+  const matCsv='﻿'+[matCols.join(',')].concat(matRows.map(r=>r.map(csvCell).join(','))).join('\r\n');
+  download(`${base}_site_species_matrix.csv`, matCsv, 'text/csv;charset=utf-8');
+  toast('報告書用（種一覧・地点×種）を書き出しました');
 }
 function exportGeoJSON(surveys, base){
   const rows=buildRows(surveys).filter(r=>r.latitude&&r.longitude&&!isNaN(parseFloat(r.latitude)));
@@ -3273,6 +3328,7 @@ SCREENS.exportHub = ()=>{
       <div class="card">
         <h3>全調査をまとめて書き出し</h3>
         <div class="btn-grid">
+          <button class="btn primary" onclick="exportReport(DB.surveys(),'BirdSurvey_all')">📋 報告書用（種一覧・地点×種）</button>
           <button class="btn" onclick="exportCSV(DB.surveys(),'BirdSurvey_all')">観察CSV</button>
           <button class="btn" onclick="exportGeoJSON(DB.surveys(),'BirdSurvey_all')">観察GeoJSON</button>
           <button class="btn" onclick="exportFlightsGeoJSON(DB.surveys(),'BirdSurvey_all')">🛩 飛翔経路GeoJSON</button>
@@ -3295,6 +3351,7 @@ SCREENS.exportSurvey = (u)=>{
   return { title:'書き出し', sub:[`<span class="pill">${esc(s.name)}</span>`],
     html:`
       <div class="btn-grid">
+        <button class="btn primary" onclick="exportReport([DB.survey('${u}')],'${base}')">📋 報告書用（種一覧・地点×種）</button>
         <button class="btn primary" onclick="exportCSV([DB.survey('${u}')],'${base}')">観察CSV</button>
         <button class="btn primary" onclick="exportGeoJSON([DB.survey('${u}')],'${base}')">観察GeoJSON</button>
         <button class="btn" onclick="exportFlightsGeoJSON([DB.survey('${u}')],'${base}')">🛩 飛翔経路GeoJSON</button>
