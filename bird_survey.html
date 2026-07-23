@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v42（2026-07-23 行動の選択肢を追加、年齢・性別欄を新設）';
+const APP_VERSION = 'v43（2026-07-24 保全指定＝注目種を自動表示、CSVに保全区分を追加、種7追加）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -688,7 +688,77 @@ const SPECIES = `
 コジュリン,Emberiza yessoensis
 オオジュリン,Emberiza schoeniclus
 ユキホオジロ,Plectrophenax nivalis
+ワシミミズク,Bubo bubo
+ミユビゲラ,Picoides tridactylus
+チシマウガラス,Urile urile
+シマクイナ,Coturnicops exquisitus
+キンメフクロウ,Aegolius funereus
+コシャクシギ,Numenius minutus
+オオヒシクイ,Anser fabalis
 `.trim().split(/\n/).map((line,i)=>{ const c=line.indexOf(","); const ja=(c<0?line:line.slice(0,c)).trim(); const sci=(c<0?"":line.slice(c+1)).trim(); return { species_id:i+1, japanese_name:ja, scientific_name:sci, search_text:ja }; }).filter(s=>s.japanese_name).filter((s,i,a)=>a.findIndex(x=>x.japanese_name===s.japanese_name)===i);
+
+/* ---------- 保全指定データ（注目種の自動判定・報告書用） ----------
+   出典（すべて最新版）: 環境省 第5次レッドリスト（鳥類）2026 / 種の保存法 国内希少野生動植物種 R7.2
+   / 北海道レッドリスト【鳥類編】2017 / 天然記念物（文化庁 国指定文化財等DB）
+   h=種の保存法(国内希少種) t=天然記念物(特/天) e=環境省RLカテゴリ k=北海道RLカテゴリ
+   ヤマセミ・オオアカゲラの北海道欄は道内亜種(エゾヤマセミ・エゾオオアカゲラ)の指定 */
+const CONSERV = {
+  "エゾライチョウ":{e:"NT",k:"Nt"},"ライチョウ":{h:1,t:"特",e:"EN"},"ウズラ":{e:"VU",k:"Nt"},
+  "ヒシクイ":{t:"天",e:"NT",k:"N"},"マガン":{t:"天",k:"N"},"カリガネ":{e:"EN",k:"Nt"},
+  "ハクガン":{e:"VU",k:"N"},"シジュウカラガン":{h:1,e:"VU",k:"Vu"},"コクガン":{t:"天",e:"VU",k:"N"},
+  "ツクシガモ":{e:"DD",k:"Dd"},"オシドリ":{k:"Nt"},"トモエガモ":{e:"DD",k:"N"},"ホシハジロ":{e:"NT"},
+  "キンクロハジロ":{e:"VU"},"スズガモ":{e:"NT"},"カラスバト":{t:"天",e:"NT"},"アホウドリ":{h:1,t:"特",e:"VU"},
+  "コアホウドリ":{e:"EN"},"クロアシアホウドリ":{e:"NT"},"オオミズナギドリ":{k:"Cr"},
+  "コウノトリ":{h:1,t:"特",e:"EN",k:"Cr"},"ヒメウ":{e:"EN",k:"En"},"サンカノゴイ":{e:"CR",k:"En"},
+  "ヨシゴイ":{e:"DD"},"ミゾゴイ":{e:"NT",k:"Dd"},"ゴイサギ":{e:"VU"},"ササゴイ":{e:"VU"},"アマサギ":{e:"EN"},
+  "チュウサギ":{e:"NT"},"コサギ":{e:"VU"},"トキ":{h:1,t:"特",e:"EN",k:"Ex"},"ヘラサギ":{e:"EN"},
+  "クロツラヘラサギ":{h:1,e:"VU",k:"Dd"},"タンチョウ":{h:1,t:"特",e:"NT",k:"Vu"},"マナヅル":{e:"VU",k:"Dd"},
+  "ナベヅル":{e:"VU"},"ヤンバルクイナ":{h:1,t:"天",e:"CR"},"ヒクイナ":{e:"NT",k:"Dd"},"バン":{e:"VU"},
+  "ヨタカ":{e:"NT",k:"Nt"},"ハリオアマツバメ":{e:"VU"},"アマツバメ":{e:"VU"},"ケリ":{e:"DD"},"ムナグロ":{e:"VU"},
+  "イカルチドリ":{k:"Dd"},"シロチドリ":{e:"VU",k:"Nt"},"セイタカシギ":{e:"DD",k:"Nt"},"ヤマシギ":{k:"N"},
+  "オオジシギ":{e:"NT",k:"Nt"},"オオソリハシシギ":{e:"VU",k:"Dd"},"ホウロクシギ":{e:"VU",k:"Vu"},
+  "ツルシギ":{e:"EN",k:"Vu"},"アカアシシギ":{e:"CR",k:"Vu"},"タカブシギ":{e:"VU",k:"Vu"},"キョウジョシギ":{e:"NT"},
+  "トウネン":{e:"NT"},"ハマシギ":{e:"VU",k:"Nt"},"タマシギ":{e:"DD"},"ツバメチドリ":{e:"VU",k:"Dd"},
+  "ズグロカモメ":{e:"VU"},"ウミネコ":{e:"VU",k:"Nt"},"オオセグロカモメ":{e:"EN",k:"Nt"},"コアジサシ":{e:"EN"},
+  "ベニアジサシ":{e:"VU"},"エリグロアジサシ":{e:"VU"},"ウミガラス":{h:1,e:"CR",k:"Cr"},"ケイマフリ":{e:"EN",k:"Vu"},
+  "ウミスズメ":{e:"CR",k:"Vu"},"カンムリウミスズメ":{t:"天",e:"VU"},"エトピリカ":{h:1,e:"CR",k:"Cr"},"ミサゴ":{k:"Nt"},
+  "ハチクマ":{e:"DD",k:"Nt"},"オジロワシ":{h:1,t:"天",e:"VU",k:"Vu"},"オオワシ":{h:1,t:"天",e:"VU",k:"Vu"},
+  "カンムリワシ":{h:1,t:"特",e:"CR"},"チュウヒ":{h:1,e:"EN",k:"En"},"ツミ":{k:"Dd"},"ハイタカ":{e:"NT",k:"Nt"},
+  "オオタカ":{e:"NT",k:"Nt"},"サシバ":{e:"VU"},"イヌワシ":{h:1,t:"天",e:"EN",k:"Dd"},"クマタカ":{h:1,e:"EN",k:"En"},
+  "オオコノハズク":{k:"Nt"},"シマフクロウ":{h:1,t:"天",e:"EN",k:"Cr"},"シロフクロウ":{k:"Dd"},"アオバズク":{k:"Dd"},
+  "トラフズク":{k:"Nt"},"アカショウビン":{k:"Vu"},"ヤマセミ":{e:"VU",k:"N"},"ブッポウソウ":{e:"EN"},"コアカゲラ":{k:"Dd"},
+  "オオアカゲラ":{k:"Dd"},"クマゲラ":{t:"天",e:"NT",k:"Vu"},"ノグチゲラ":{h:1,t:"特",e:"EN"},"ハヤブサ":{h:1,e:"NT",k:"Vu"},
+  "シロハヤブサ":{k:"Dd"},"ヤイロチョウ":{h:1,e:"DD"},"サンショウクイ":{k:"Dd"},"チゴモズ":{e:"EN"},
+  "アカモズ":{h:1,e:"CR",k:"En"},"ルリカケス":{t:"天"},"オナガ":{e:"NT"},"オオムシクイ":{e:"EN",k:"Lp"},
+  "マキノセンニュウ":{e:"VU",k:"Nt"},"コヨシキリ":{e:"NT"},"アカコッコ":{h:1,t:"天",e:"EN"},"アカヒゲ":{h:1,t:"天",e:"DD"},
+  "ツメナガセキレイ":{k:"Nt"},"ビンズイ":{e:"NT"},"ギンザンマシコ":{e:"DD",k:"Nt"},"ホオアカ":{k:"Nt"},
+  "カシラダカ":{e:"EN"},"シマアオジ":{h:1,e:"CR",k:"Cr"},"ノジコ":{e:"NT"},"コジュリン":{e:"EN",k:"Dd"},
+  "ワシミミズク":{h:1,e:"CR",k:"Cr"},"ミユビゲラ":{h:1,e:"DD",k:"Cr"},"チシマウガラス":{h:1,e:"CR",k:"Cr"},
+  "シマクイナ":{h:1,e:"EN",k:"En"},"キンメフクロウ":{e:"DD",k:"Cr"},"コシャクシギ":{e:"EN",k:"En"},"オオヒシクイ":{e:"NT",k:"N"},
+};
+/* 環境省RL・北海道RLカテゴリの表示名 */
+const RL_LABEL={CR:'絶滅危惧ⅠA類',EN:'絶滅危惧ⅠB類',VU:'絶滅危惧Ⅱ類',NT:'準絶滅危惧',DD:'情報不足',EX:'絶滅',EW:'野生絶滅'};
+const HRL_LABEL={Cr:'絶滅危惧ⅠA類',En:'絶滅危惧ⅠB類',Vu:'絶滅危惧Ⅱ類',Nt:'準絶滅危惧',Dd:'情報不足',N:'留意',Lp:'地域個体群',Ex:'絶滅'};
+const TEN_LABEL={'特':'特別天然記念物','天':'天然記念物'};
+/* 種名から保全指定を取得（なければnull）。注目種判定にも使う */
+function conservOf(name){ return (name && CONSERV[name]) || null; }
+/* 保全指定を短いラベル配列で返す（バッジ・出力用） */
+function conservTags(name){ const c=conservOf(name); if(!c) return [];
+  const t=[];
+  if(c.e) t.push('環境省RL '+RL_LABEL[c.e]+'（'+c.e+'）');
+  if(c.k) t.push('北海道RL '+HRL_LABEL[c.k]+'（'+c.k+'）');
+  if(c.h) t.push('種の保存法（国内希少種）');
+  if(c.t) t.push(TEN_LABEL[c.t]);
+  return t;
+}
+/* CSV/報告書の1列用に、指定を短い文字列で返す（該当なしは空） */
+function csvConserv(name,field){ const c=conservOf(name); if(!c) return '';
+  if(field==='e') return c.e? RL_LABEL[c.e]+'（'+c.e+'）':'';
+  if(field==='k') return c.k? HRL_LABEL[c.k]+'（'+c.k+'）':'';
+  if(field==='h') return c.h? '国内希少種':'';
+  if(field==='t') return c.t? TEN_LABEL[c.t]:'';
+  return '';
+}
 
 /* 図鑑・鳴き声の参照リンク（📖=Wikipedia日本語 / 🔊=Xeno-canto。学名があれば鳴き声検索が正確） */
 function speciesByName(name){ return SPECIES.find(s=>s.japanese_name===name); }
@@ -984,6 +1054,7 @@ SCREENS.survey = (u)=>{
   const obsInner = o=>`
     <div class="grow">
       <div style="font-weight:700;">${esc(o.species_name_snapshot||'（未同定）')}
+        ${conservOf(o.species_name_snapshot)?`<span class="badge" style="background:#8a5a00;color:#fff;" title="${esc(conservTags(o.species_name_snapshot).join(' / '))}">注目種</span>`:''}
         ${o.needs_review?'<span class="badge warn">要確認</span>':''}
         ${o.identification_status&&o.identification_status!=='確定'?`<span class="badge">${esc(o.identification_status)}</span>`:''}
       </div>
@@ -2747,6 +2818,7 @@ async function exportMediaZip(surveys, base){
 }
 const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','observation_id','observed_at',
   'latitude','longitude','species_name','count','detection_method','behavior','habitat','age_class','sex',
+  'env_redlist','hokkaido_redlist','species_protection_act','natural_monument',
   'identification_status','confidence','needs_review','note','audio_file','media_file','external_photo_reference'];
 function csvCell(v){ v=v==null?'':String(v);
   // 数式インジェクション対策は「数値でない」文字列にだけ適用する。
@@ -2759,7 +2831,10 @@ function buildRows(surveys){
     rows.push({ survey_id:s.uuid, survey_name:s.name, survey_date:fmtDate(s.survey_date), survey_method:s.survey_method,
       observation_id:o.uuid, observed_at:o.observed_at, latitude:o.latitude, longitude:o.longitude,
       species_name:o.species_name_snapshot, count:o.count, detection_method:o.detection_method,
-      behavior:o.behavior, habitat:o.habitat, age_class:o.age_class||'', sex:o.sex||'', identification_status:o.identification_status,
+      behavior:o.behavior, habitat:o.habitat, age_class:o.age_class||'', sex:o.sex||'',
+      env_redlist:csvConserv(o.species_name_snapshot,'e'), hokkaido_redlist:csvConserv(o.species_name_snapshot,'k'),
+      species_protection_act:csvConserv(o.species_name_snapshot,'h'), natural_monument:csvConserv(o.species_name_snapshot,'t'),
+      identification_status:o.identification_status,
       confidence:o.confidence, needs_review:o.needs_review?1:0, note:o.note,
       audio_file:(o.audio||[]).map((a,i)=>audioFilename(o,i,a)).join(';'),
       media_file:(o.media||[]).map((m,i)=>mediaFilename(o,i,m)).join(';'),
