@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v46（2026-07-24 止まり/巣の位置を地図で記録・営巣木・距離帯・確認方向・風向・視程を追加）';
+const APP_VERSION = 'v47（2026-07-24 対象位置のピンが「？？」になる不具合を修正）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1355,7 +1355,9 @@ function setObsTarget(lat,lon){
   $('#otLabel').textContent=lat.toFixed(6)+', '+lon.toFixed(6);
   const mapShown=$('#otMap') && $('#otMap').style.display!=='none';
   if(mapObj && mapShown){ if(obsTargetMarker){ try{ mapObj.removeLayer(obsTargetMarker); }catch(e){} }
-    obsTargetMarker=L.marker([lat,lon]).addTo(mapObj); }
+    // 標準ピン画像はオフライン非同梱のため自作アイコン（divIcon）を使う
+    const icon=L.divIcon({className:'',html:`<div style="background:#b03030;border:2px solid #fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">◆</div>`,iconSize:[24,24],iconAnchor:[12,12]});
+    obsTargetMarker=L.marker([lat,lon],{icon}).addTo(mapObj); }
 }
 function obsTargetFromGps(){
   if(lastFix){ setObsTarget(lastFix.lat,lastFix.lon); if(mapObj && $('#otMap').style.display!=='none') mapObj.setView([lastFix.lat,lastFix.lon],16); toast('現在地を対象位置にしました'); return; }
