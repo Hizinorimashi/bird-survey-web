@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v49（2026-07-24 監査で見つけた不具合を修正：非同期GPS混入・ルート記録の停止漏れ/消失・報告書の飛翔種欠落と同名調査合算ほか）';
+const APP_VERSION = 'v50（2026-07-24 「その他」に記入欄を追加＋とまり木の種類（階層・分類・樹種名）を記録できるように）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -353,6 +353,8 @@ const OPT = {
   flightHeight:['低（樹冠以下）','中（樹冠〜数十m）','高（上空）','不明'],
   flightBehavior:['旋回','直線飛行','帆翔（ソアリング）','はばたき','急降下','ディスプレイ','狩り','その他'],
   flightAge:['成鳥','亜成鳥','幼鳥','幼綿羽','不明'],
+  perchSize:['高木','亜高木','低木','その他'],
+  perchClass:['針葉樹','広葉樹','枯木','その他'],
 };
 
 /* ---------- 種名マスタ（日本の一般的な鳥類 和名） ---------- */
@@ -946,8 +948,11 @@ SCREENS.surveyEdit = (svUuid)=>{
       wind_direction:'不定', visibility:'良好', season:'繁殖期', round_no:'',
       temperature:'', purpose:'', pre_survey_notes:'', pre_hypothesis:'', status:'未開始' };
   }
+  // 「その他（記入内容）」をボタン一致用の値と記入欄の初期値に分解
+  const sOther={}; ['survey_method','season'].forEach(f=>{ const p=otherParse(s[f]); s[f]=p.v; sOther[f]=p.other; });
   const seg=(field,opts)=>`<div class="seg" data-seg="${field}">${opts.map(o=>
-    `<button type="button" class="${s[field]===o?'on':''}" onclick="pickSeg(this,'${field}','${esc(o)}')">${esc(o)}</button>`).join('')}</div>`;
+    `<button type="button" class="${s[field]===o?'on':''}" onclick="pickSeg(this,'${field}','${esc(o)}')">${esc(o)}</button>`).join('')}</div>${
+    opts.includes('その他')?otherBox(field,sOther[field],s[field]==='その他'):''}`;
 
   return {
     title: editing?'調査を編集':'調査を作成',
@@ -996,16 +1001,16 @@ SCREENS.surveyEdit = (svUuid)=>{
 };
 function pickSeg(btn,field,val){
   btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on'));
-  btn.classList.add('on'); btn.parentElement.dataset.value=val; draftSave();
+  btn.classList.add('on'); btn.parentElement.dataset.value=val; syncOther(field); draftSave();
 }
 function collectSurveyForm(){
   const f=$('#svForm'); const g=n=>{const el=f.querySelector(`[name="${n}"]`); return el?el.value:'';};
   const seg=field=>{ const on=f.querySelector(`[data-seg="${field}"] button.on`); return on?on.textContent:''; };
   return { name:g('name'), survey_date:g('survey_date'), temperature:g('temperature'),
-    location_name:g('location_name'), survey_method:seg('survey_method'),
+    location_name:g('location_name'), survey_method:otherMerge(seg('survey_method'),'survey_method'),
     investigator_name:g('investigator_name'), weather:seg('weather'), wind:seg('wind'),
     wind_direction:seg('wind_direction'), visibility:seg('visibility'),
-    season:seg('season'), round_no:g('round_no'),
+    season:otherMerge(seg('season'),'season'), round_no:g('round_no'),
     purpose:g('purpose'), pre_survey_notes:g('pre_survey_notes'), pre_hypothesis:g('pre_hypothesis') };
 }
 function draftSave(){ if(SCREENS._editing) return; // 新規のみ下書き
@@ -1194,20 +1199,24 @@ SCREENS.obsEdit = (argStr)=>{
     o = { uuid:uuid(), survey_uuid:svUuid, observed_at:localDatetimeValue(), latitude:'', longitude:'',
       gps_accuracy:'', species_id:'', species_name_snapshot:'', count:1, detection_method:'目視',
       behavior:'', habitat:'', age_class:'不明', sex:'不明', distance_band:'', direction:'',
-      target_latitude:'', target_longitude:'', nest_tree_species:'', nest_tree_height:'', nest_state:'',
+      target_latitude:'', target_longitude:'', perch_size:'', perch_class:'',
+      nest_tree_species:'', nest_tree_height:'', nest_state:'',
       note:'', identification_status:'確定', confidence:'中',
       needs_review:false, external_photo_reference:'' };
     // 現在のGPSを初期値に
     if(lastFix){ o.latitude=lastFix.lat.toFixed(6); o.longitude=lastFix.lon.toFixed(6); o.gps_accuracy=Math.round(lastFix.acc); }
   } else if(o.observed_at && o.observed_at.length>16){ o.observed_at=localDatetimeValue(new Date(o.observed_at)); }
 
+  // 「その他（記入内容）」をボタン一致用の値と記入欄の初期値に分解
+  const oOther={}; ['behavior','habitat','perch_size','perch_class'].forEach(f=>{ const p=otherParse(o[f]); o[f]=p.v; oOther[f]=p.other; });
   const seg=(field,opts,allowEmpty)=>`<div class="seg" data-seg="${field}">
     ${allowEmpty?`<button type="button" class="${!o[field]?'on':''}" onclick="pickObs(this,'${field}','')">なし</button>`:''}
     ${opts.map(x=>`<button type="button" class="${o[field]===x?'on':''}" onclick="pickObs(this,'${field}','${esc(x)}')">${esc(x)}</button>`).join('')}</div>`;
-  // 行動・生息環境は複数選択（「・」区切りで保存。タップでON/OFF切替）
+  // 行動・生息環境などは複数選択（「・」区切りで保存。タップでON/OFF切替）
   const segMulti=(field,opts)=>{ const set=new Set(String(o[field]||'').split('・').filter(Boolean));
     return `<div class="seg" data-seg="${field}">${opts.map(x=>
-      `<button type="button" class="${set.has(x)?'on':''}" onclick="this.classList.toggle('on')">${esc(x)}</button>`).join('')}</div>`; };
+      `<button type="button" class="${set.has(x)?'on':''}" onclick="toggleMulti(this)">${esc(x)}</button>`).join('')}</div>${
+      opts.includes('その他')?otherBox(field,oOther[field],set.has('その他')):''}`; };
 
   return {
     title: editing?'観察を編集':'観察を追加',
@@ -1268,9 +1277,11 @@ SCREENS.obsEdit = (argStr)=>{
           <div id="otMap" style="height:240px; margin-top:8px; border-radius:var(--radius); border:1px solid var(--line); display:none;"></div>
           <input type="hidden" id="otLat" value="${esc(o.target_latitude||'')}">
           <input type="hidden" id="otLon" value="${esc(o.target_longitude||'')}">
-          <div class="two" style="margin-top:10px;">
-            <label class="field"><span class="lab">営巣木の樹種</span>
-              <input name="nest_tree_species" value="${esc(o.nest_tree_species||'')}" placeholder="例：ミズナラ（任意）"></label>
+          <label class="field" style="margin-top:10px;"><span class="lab">とまり木の階層・サイズ（複数選択可・任意）</span>${segMulti('perch_size',OPT.perchSize)}</label>
+          <label class="field"><span class="lab">とまり木の分類（複数選択可・任意）</span>${segMulti('perch_class',OPT.perchClass)}</label>
+          <div class="two">
+            <label class="field"><span class="lab">樹種名（とまり木・営巣木）</span>
+              <input name="nest_tree_species" value="${esc(o.nest_tree_species||'')}" placeholder="例：アカエゾマツ、シラカンバ"></label>
             <label class="field"><span class="lab">樹高(m)</span>
               <input name="nest_tree_height" inputmode="decimal" value="${esc(o.nest_tree_height||'')}" placeholder="任意"></label>
           </div>
@@ -1291,9 +1302,29 @@ SCREENS.obsEdit = (argStr)=>{
     }
   };
 };
-function pickObs(btn,field,val){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); }
+function pickObs(btn,field,val){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); syncOther(field); }
 function segVal(field){ const on=document.querySelector(`[data-seg="${field}"] button.on`); return on? (on.textContent==='なし'?'':on.textContent):''; }
 function segVals(field){ return [...document.querySelectorAll(`[data-seg="${field}"] button.on`)].map(b=>b.textContent).filter(t=>t!=='なし').join('・'); }
+
+/* ---------- 「その他」の記入欄 ----------
+   「その他」ボタンを選ぶと記入欄が現れ、保存時は値の「その他」を「その他（記入内容）」に
+   置き換えて同じ項目に格納する（列を増やさずCSV・検索・表示にそのまま出る）。
+   編集時は otherParse で「その他」と記入内容に分解して、ボタン一致と記入欄の初期値に使う */
+function otherParse(v){ v=String(v||''); const m=v.match(/その他（([^）]*)）/);
+  return m? {v:v.replace(m[0],'その他'), other:m[1]} : {v, other:''}; }
+function otherBox(field, other, show){
+  return `<input data-other="${field}" value="${esc(other||'')}" placeholder="「その他」の内容を記入（任意）"
+    style="margin-top:6px;${show?'':'display:none;'}">`; }
+function otherMerge(val, field){
+  const inp=document.querySelector(`[data-other="${field}"]`);
+  const t=inp?inp.value.trim():''; if(!t) return val;
+  return String(val||'').split('・').map(x=>x==='その他'?`その他（${t}）`:x).join('・'); }
+function syncOther(field){
+  const inp=document.querySelector(`[data-other="${field}"]`); if(!inp) return;
+  const on=[...document.querySelectorAll(`[data-seg="${field}"] button.on`)].some(b=>b.textContent==='その他');
+  inp.style.display=on?'':'none'; }
+function toggleMulti(btn){ btn.classList.toggle('on');
+  const seg=btn.closest('[data-seg]'); if(seg) syncOther(seg.dataset.seg); }
 
 /* 種名検索（ひらがな・カタカナどちらの入力でもヒット） */
 function toKata(s){ return String(s||'').replace(/[ぁ-ゖ]/g,c=>String.fromCharCode(c.charCodeAt(0)+0x60)); }
@@ -1403,10 +1434,11 @@ function saveObs(u, svUuid, editing, cont){
     gps_accuracy: SCREENS._acc || (DB.observations().find(x=>x.uuid===u)||{}).gps_accuracy || '',
     species_id: (speciesByName(name)||{}).species_id || SCREENS._chosenId || '', species_name_snapshot: name,
     count: parseInt(g('count'),10)||0, detection_method: segVal('detection_method'),
-    behavior: segVals('behavior'), habitat: segVals('habitat'),
+    behavior: otherMerge(segVals('behavior'),'behavior'), habitat: otherMerge(segVals('habitat'),'habitat'),
     age_class: segVal('age_class'), sex: segVal('sex'),
     distance_band: segVal('distance_band'), direction: segVal('direction'),
     target_latitude: tlat, target_longitude: tlon,
+    perch_size: otherMerge(segVals('perch_size'),'perch_size'), perch_class: otherMerge(segVals('perch_class'),'perch_class'),
     nest_tree_species: g('nest_tree_species'), nest_tree_height: g('nest_tree_height'), nest_state: segVal('nest_state'),
     identification_status: name? idStatus : '未同定',
     confidence: segVal('confidence'), needs_review: $('#needsReview').checked,
@@ -1537,7 +1569,7 @@ SCREENS.obsBatch = (svUuid)=>{
       </div>
       <label class="field"><span class="lab">確認方法（共通）</span>${seg('detection_method',OPT.detection,false,'目視')}</label>
       <label class="field"><span class="lab">生息環境（共通・任意・複数選択可）</span><div class="seg" data-seg="habitat">${OPT.habitat.map(x=>
-        `<button type="button" onclick="this.classList.toggle('on')">${esc(x)}</button>`).join('')}</div></label>
+        `<button type="button" onclick="toggleMulti(this)">${esc(x)}</button>`).join('')}</div>${otherBox('habitat','',false)}</label>
       <div class="divider"></div>
       <div class="two">
         <input id="batchSp" list="spDatalist" autocomplete="off" placeholder="種名（和名）">
@@ -1585,7 +1617,7 @@ function batchSave(svUuid){
   const items=SCREENS._batchItems||[]; if(!items.length) return;
   let lat=(($('#batchLat')&&$('#batchLat').value)||'').trim(), lon=(($('#batchLon')&&$('#batchLon').value)||'').trim();
   if((lat||lon) && !validLatLon(lat,lon)){ toast('⚠ 位置の数値が正しくないため、位置なしで保存します'); lat=''; lon=''; }
-  const method=segVal('detection_method')||'目視'; const habitat=segVals('habitat'); const when=nowISO();
+  const method=segVal('detection_method')||'目視'; const habitat=otherMerge(segVals('habitat'),'habitat'); const when=nowISO();
   // 配列を一度だけ更新して一括保存する（途中まで保存＝部分保存を避け、全件成功か中止かにする）
   const arr=DB.load(DB.key.ob);
   items.forEach(it=>{ const sp=speciesByName(it.name);
@@ -1783,8 +1815,9 @@ SCREENS.noteEdit = (argStr)=>{
   if(!n) n={ uuid:uuid(), survey_uuid:svUuid, recorded_at:nowISO(), latitude:'', longitude:'',
     category:'特記事項', content:'', needs_review:false };
   if(lastFix && !n.latitude){ n.latitude=lastFix.lat.toFixed(6); n.longitude=lastFix.lon.toFixed(6); }
+  const co=otherParse(n.category); n.category=co.v;
   const seg=`<div class="seg" data-seg="category">${OPT.noteCat.map(c=>
-    `<button type="button" class="${n.category===c?'on':''}" onclick="pickObs(this,'category','${esc(c)}')">${esc(c)}</button>`).join('')}</div>`;
+    `<button type="button" class="${n.category===c?'on':''}" onclick="pickObs(this,'category','${esc(c)}')">${esc(c)}</button>`).join('')}</div>${otherBox('category',co.other,n.category==='その他')}`;
   return {
     title: editing?'メモを編集':'メモを追加',
     html:`
@@ -1808,7 +1841,7 @@ function saveNote(u,svUuid,editing){
   const prev=editing?DB.notes().find(x=>x.uuid===u):{uuid:u};
   const rec=Object.assign({},prev,{ uuid:u, survey_uuid:svUuid, recorded_at:prev.recorded_at||nowISO(),
     latitude:(SCREENS._note&&SCREENS._note.latitude)||'', longitude:(SCREENS._note&&SCREENS._note.longitude)||'',
-    category:segVal('category'), content, needs_review:$('#ntReview').checked });
+    category:otherMerge(segVal('category'),'category'), content, needs_review:$('#ntReview').checked });
   if(!DB.upsertNote(rec)) return; toast('保存しました'); goBack();
 }
 function deleteNote(u){ if(!confirm('このメモを削除しますか？')) return; DB.softDelete(DB.key.nt,u); toast('削除しました'); goBack(); }
@@ -1971,9 +2004,10 @@ SCREENS.flightEdit = (argStr)=>{
     count:1, memo:'', needs_review:false, audio:[], media:[] };
   const segH=(field,opts)=>`<div class="seg" data-seg="${field}">${opts.map(o=>
     `<button type="button" class="${f[field]===o?'on':''}" onclick="pickObs(this,'${field}','${esc(o)}')">${esc(o)}</button>`).join('')}</div>`;
+  const bo=otherParse(f.behavior); f.behavior=bo.v;
   const bset=new Set(String(f.behavior||'').split('・').filter(Boolean));
   const segB=`<div class="seg" data-seg="behavior">${OPT.flightBehavior.map(o=>
-    `<button type="button" class="${bset.has(o)?'on':''}" onclick="this.classList.toggle('on')">${esc(o)}</button>`).join('')}</div>`;
+    `<button type="button" class="${bset.has(o)?'on':''}" onclick="toggleMulti(this)">${esc(o)}</button>`).join('')}</div>${otherBox('behavior',bo.other,bset.has('その他'))}`;
   return {
     title: editing?'飛翔経路を編集':'飛翔経路を記録',
     html:`
@@ -2127,6 +2161,7 @@ function saveFlight(u,svUuid,editing,cont){
   const name=(($('#spInput')&&$('#spInput').value)||'').trim();
   const g=n=>{ const el=$(`#flForm [name="${n}"]`); return el?el.value:''; };
   const behSet=[...document.querySelectorAll('[data-seg="behavior"] button.on')].map(b=>b.textContent);
+  const behavior=otherMerge(behSet.join('・'),'behavior');
   const prev=editing?DB.flight(u):{uuid:u};
   const age=segVal('age_class'), individual=(g('individual_label')||'').trim(), height=segVal('height_class');
   const rec=Object.assign({},prev,{ uuid:u, survey_uuid:svUuid,
@@ -2135,7 +2170,7 @@ function saveFlight(u,svUuid,editing,cont){
     start_time:g('start_time')||'', end_time:g('end_time')||'',
     height_class:height,
     age_class:age, individual_label:individual,
-    behavior:behSet.join('・'),
+    behavior:behavior,
     count:g('count')||'',
     memo:(g('memo')||'').trim(),
     needs_review:$('#flReview').checked,
@@ -2146,7 +2181,7 @@ function saveFlight(u,svUuid,editing,cont){
   toast('飛翔経路を保存しました');
   if(cont){ // 属性を引き継いで次の経路を同じ地図で描く
     const keep={ species_id:SCREENS._chosenId||'', species_name:name, age_class:age,
-      individual_label:individual, height_class:height, behavior:behSet.join('・') };
+      individual_label:individual, height_class:height, behavior:behavior };
     goBack(); nav('flightEdit', JSON.stringify({sv:svUuid, keep})); }
   else goBack();
 }
@@ -2559,7 +2594,7 @@ function drawMap(obs,notes,flights,targets,route){
   // 対象位置（止まり木・巣など）を赤の◆で表示
   (targets||[]).forEach(o=>{ const lat=parseFloat(o.target_latitude), lon=parseFloat(o.target_longitude);
     const m=mk(lat,lon,'◆','#b03030').addTo(mapObj);
-    m.bindPopup(`<b>${esc(o.species_name_snapshot||'（未同定）')}</b> 止まり/巣の位置<br>${esc(o.nest_state||'')}${o.nest_tree_species?'<br>営巣木:'+esc(o.nest_tree_species)+(o.nest_tree_height?'（'+esc(o.nest_tree_height)+'m）':''):''}`);
+    m.bindPopup(`<b>${esc(o.species_name_snapshot||'（未同定）')}</b> 止まり/巣の位置<br>${esc(o.nest_state||'')}${(o.perch_size||o.perch_class)?'<br>とまり木:'+esc([o.perch_size,o.perch_class].filter(Boolean).join('・')):''}${o.nest_tree_species?'<br>樹種:'+esc(o.nest_tree_species)+(o.nest_tree_height?'（'+esc(o.nest_tree_height)+'m）':''):''}`);
     group.push([lat,lon]); });
   // 調査ルート（青い線）
   const rp=(route||[]).filter(validPathPt);
@@ -3122,7 +3157,7 @@ async function exportMediaZip(surveys, base){
 const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','survey_season','survey_round','observation_id','observed_at',
   'latitude','longitude','species_name','count','detection_method','distance_band','direction','behavior','habitat','age_class','sex',
   'env_redlist','hokkaido_redlist','species_protection_act','natural_monument','breeding_rank',
-  'target_latitude','target_longitude','nest_tree_species','nest_tree_height','nest_state',
+  'target_latitude','target_longitude','perch_size','perch_class','nest_tree_species','nest_tree_height','nest_state',
   'identification_status','confidence','needs_review','note','audio_file','media_file','external_photo_reference'];
 function csvCell(v){ v=v==null?'':String(v);
   // 数式インジェクション対策は「数値でない」文字列にだけ適用する。
@@ -3138,6 +3173,7 @@ function buildRows(surveys){
       species_name:o.species_name_snapshot, count:o.count, detection_method:o.detection_method,
       distance_band:o.distance_band||'', direction:o.direction||'',
       target_latitude:o.target_latitude||'', target_longitude:o.target_longitude||'',
+      perch_size:o.perch_size||'', perch_class:o.perch_class||'',
       nest_tree_species:o.nest_tree_species||'', nest_tree_height:o.nest_tree_height||'', nest_state:o.nest_state||'',
       behavior:o.behavior, habitat:o.habitat, age_class:o.age_class||'', sex:o.sex||'',
       env_redlist:csvConserv(o.species_name_snapshot,'e'), hokkaido_redlist:csvConserv(o.species_name_snapshot,'k'),
