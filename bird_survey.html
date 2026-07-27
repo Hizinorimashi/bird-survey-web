@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v50（2026-07-24 「その他」に記入欄を追加＋とまり木の種類（階層・分類・樹種名）を記録できるように）';
+const APP_VERSION = 'v51（2026-07-27 Googleドライブ同期：写真・録音も自動で端末間引き継ぎ。動画は手動）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -236,16 +236,37 @@ const DB = {
     rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; return this.save(this.key.hy,a); },
   upsertHypResult(rec){ const a=this.load(this.key.hr); const i=a.findIndex(x=>x.uuid===rec.uuid);
     rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; return this.save(this.key.hr,a); },
+  // updated_at も更新する（端末間同期は updated_at の新しい方を残すため、これが無いと削除・復元が他端末に伝わらない）
   softDelete(k,u){ const a=this.load(k); const i=a.findIndex(x=>x.uuid===u);
-    if(i>=0){ a[i].deleted_at=nowISO(); this.save(k,a);} },
+    if(i>=0){ a[i].deleted_at=nowISO(); a[i].updated_at=nowISO(); this.save(k,a);} },
   restore(k,u){ const a=this.load(k); const i=a.findIndex(x=>x.uuid===u);
-    if(i>=0){ delete a[i].deleted_at; this.save(k,a);} },
-  hardDelete(k,u){ this.save(k, this.load(k).filter(x=>x.uuid!==u)); },
+    if(i>=0){ delete a[i].deleted_at; a[i].updated_at=nowISO(); this.save(k,a);} },
+  // 完全削除は「削除記録（墓標）」を残す。端末間同期で他端末にも完全削除を伝え、古いデータからの復活を防ぐため。
+  // 墓標が保存できなければ本体も消さず、本体が消せなければ墓標も戻す（片方だけの中途半端な状態を残さない）
+  hardDelete(k,u){ if(!tombstoneAdd(u)){ try{ toast('空き容量不足のため完全削除できませんでした'); }catch(e){} return false; }
+    if(!this.save(k, this.load(k).filter(x=>x.uuid!==u))){ tombstoneRemove(u); return false; }
+    return true; },
   deleted(k){ return this.load(k).filter(x=>x.deleted_at); },
   recentSpecies(){ return this.load(this.key.recent); },
   pushRecent(name){ if(!name) return; let a=this.load(this.key.recent).filter(x=>x!==name);
     a.unshift(name); a=a.slice(0,12); this.save(this.key.recent,a); },
 };
+
+/* ---------- 完全削除の記録（墓標） ----------
+   ごみ箱から完全削除したuuidを残し、同期時に他端末へも削除を伝える。
+   期限は設けない（使われなくなった端末の古い同期ファイルがドライブに残っている限り、
+   墓標が失効すると削除済み記録が復活しうるため）。1件あたり数十バイトなので残し続けて実害はない */
+function tombstonesList(){ try{
+  return (JSON.parse(localStorage.getItem('bs_tombstones')||'[]')||[])
+    .filter(t=>t&&typeof t.uuid==='string'&&t.uuid&&typeof t.at==='string'&&t.at);
+}catch(e){ return []; } }
+function tombstonesSave(a){ try{ localStorage.setItem('bs_tombstones', JSON.stringify(a)); return true; }catch(e){ return false; } }
+// 保存の成否を返す。falseのときは呼び出し側が完全削除を中止する（墓標なしで消すと他端末から復活してしまうため）
+function tombstoneAdd(uuid){ if(!uuid) return false; const a=tombstonesList();
+  if(!a.some(t=>t.uuid===uuid)) a.push({uuid, at:nowISO()});
+  return tombstonesSave(a); }
+// 完全削除の巻き戻し用（本体の削除保存に失敗したとき、墓標だけ残さない）
+function tombstoneRemove(uuid){ tombstonesSave(tombstonesList().filter(t=>t.uuid!==uuid)); }
 
 /* ---------- 録音・写真・動画の保存（IndexedDB：サイズが大きいためlocalStorageと分離） ---------- */
 /* ストア 'audio' = 録音 / 'media' = 写真・動画 */
@@ -910,6 +931,7 @@ SCREENS.home = ()=>{
         <button class="btn" onclick="nav('trash',null)">🗑 ごみ箱</button>
         <button class="btn" onclick="nav('cloud',null)">☁ クラウド保存</button>
       </div>
+      ${(gdriveCfg().clientId && GUSER && !gdriveSignedIn())?`<div class="tiny muted" style="margin-top:6px;">☁ ドライブ同期を続けるにはサインインが必要です（上の「クラウド保存」から）</div>`:''}
       <div class="sp"></div>
       <div class="note">観察記録の合計個体数は延べ数です。同一個体を重複して数えている可能性があるため、生息個体数とは限りません。</div>
       <div class="sp"></div>
@@ -3316,7 +3338,7 @@ function buildRecordsBackup(){
   return { app:'bird_survey', kind:'records', version:6, exported_at:nowISO(),
     surveys:c.surveys, observations:c.observations, notes:c.notes,
     hypotheses:c.hypotheses, hyp_results:c.hyp_results, flights:c.flights,
-    recent:DB.recentSpecies(), myguide:myguideList() };
+    recent:DB.recentSpecies(), myguide:myguideList(), tombstones:tombstonesList() };
 }
 // 全部（録音・写真をbase64同梱）。重い。メディア読取や記録読取に失敗したら例外を投げて中止（空上書き防止）
 async function buildFullBackup(){
@@ -3333,7 +3355,7 @@ async function buildFullBackup(){
   return { app:'bird_survey', version:6, exported_at:nowISO(),
     surveys:c.surveys, observations:c.observations, notes:c.notes,
     hypotheses:c.hypotheses, hyp_results:c.hyp_results, flights:c.flights,
-    recent:DB.recentSpecies(), myguide:myguideList(), audio, media };
+    recent:DB.recentSpecies(), myguide:myguideList(), tombstones:tombstonesList(), audio, media };
 }
 async function exportBackup(){
   toast('バックアップを作成中…（写真・動画が多いと時間がかかります）');
@@ -3475,13 +3497,19 @@ async function gdriveFetch(path, opts, token){
   return res.json();
 }
 async function gdriveEnsureFolder(token){
+  // IDのキャッシュはしない（自分が作ったフォルダIDを覚え込むと、2端末が同時に作成した場合に
+  // それぞれ別フォルダを使い続けて同期先が分岐するため）。毎回「作成日が最も古い同名フォルダ」を
+  // 検索して採用することで、重複ができても全端末が同じフォルダへ収束する
   const q=encodeURIComponent("mimeType='application/vnd.google-apps.folder' and name='"+GDRIVE_FOLDER+"' and trashed=false");
-  const list=await gdriveFetch('drive/v3/files?spaces=drive&fields=files(id)&q='+q, {}, token);
+  const url='drive/v3/files?spaces=drive&orderBy='+encodeURIComponent('createdTime')+'&fields=files(id)&q='+q;
+  const list=await gdriveFetch(url, {}, token);
   if(list.files && list.files.length) return list.files[0].id;
   const created=await gdriveFetch('drive/v3/files?fields=id', { method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({ name:GDRIVE_FOLDER, mimeType:'application/vnd.google-apps.folder' }) }, token);
-  return created.id;
+  // 作成直後にもう一度検索して最古を採用（同時に2端末が作成しても、以後は同じ方へ収束する）
+  const again=await gdriveFetch(url, {}, token);
+  return (again.files && again.files.length) ? again.files[0].id : created.id;
 }
 async function gdriveUpsertFile(folderId, name, contentStr, token){
   const q=encodeURIComponent("name='"+name.replace(/'/g,"\\'")+"' and '"+folderId+"' in parents and trashed=false");
@@ -3494,9 +3522,9 @@ async function gdriveUpsertFile(folderId, name, contentStr, token){
       body:JSON.stringify({ name, parents:[folderId] }) }, token);
     id=created.id;
   }
-  await gdriveFetch('upload/drive/v3/files/'+id+'?uploadType=media', { method:'PATCH',
+  const up=await gdriveFetch('upload/drive/v3/files/'+id+'?uploadType=media&fields=id,modifiedTime', { method:'PATCH',
     headers:{'Content-Type':'application/json'}, body:contentStr }, token);
-  return id;
+  return { id, modifiedTime:(up&&up.modifiedTime)||'' };
 }
 // Googleドライブへの保存は直列化する。自動保存と手動保存が同時に走ると
 // 「検索→無い→作成」が二重に起きて同名フォルダ/ファイルを重複生成するため。
@@ -3507,8 +3535,17 @@ async function gdrivePush(kind, dataObj, token){
     const folderId=await gdriveEnsureFolder(token);
     const json=JSON.stringify(dataObj);
     const ymd=dateValue().replace(/-/g,'');
-    await gdriveUpsertFile(folderId, 'birdsurvey_'+kind+'_latest.json', json, token);
-    await gdriveUpsertFile(folderId, 'birdsurvey_'+kind+'_'+ymd+'.json', json, token);
+    if(kind==='records'){
+      // 同期用: 自分専用ファイルだけを上書き（他端末の保存を消す事故を構造的に防ぐ）＋人が復元に使う日次控え
+      //（日次控えも端末別の名前にして、同じ日に2台が保存し合っても互いに上書きしないようにする）
+      const up=await gdriveUpsertFile(folderId, syncFileName(), json, token);
+      await gdriveUpsertFile(folderId, 'birdsurvey_records_'+ymd+'_'+deviceId().slice(0,8)+'.json', json, token);
+      // 自分が保存したファイルは「確認済み」にする（新着チェックが自分の保存に反応しないように）
+      if(up && up.id && up.modifiedTime) syncSeenMark(up.id, up.modifiedTime);
+    }else{
+      await gdriveUpsertFile(folderId, 'birdsurvey_'+kind+'_latest.json', json, token);
+      await gdriveUpsertFile(folderId, 'birdsurvey_'+kind+'_'+ymd+'.json', json, token);
+    }
     localStorage.setItem('bs_gdrive_last', nowISO());
   });
 }
@@ -3516,6 +3553,18 @@ async function gdrivePush(kind, dataObj, token){
 async function gdriveBackupRecords(){
   if(!gdriveCfg().clientId || !gdriveSignedIn()) return;
   const token=await gdriveGetToken(false);
+  // 別端末の未取り込み保存があれば先に合体する。書き込みは自分専用ファイルにしか行わないため、
+  // この取り込みに失敗しても自分の保存で他端末のデータが消えることはない（保存は続行してよい）
+  try{
+    const targets=unseenSyncFiles(await gdriveListSyncFiles(token));
+    if(targets.length){
+      const r=await gdrivePullAll(targets, token);
+      if(r && (r.changed||r.media.done)) toast(`別の端末の記録を取り込みました（記録${r.changed}件・写真/録音${r.media.done}件）`);
+    }
+  }catch(e){}
+  // 写真・録音を先に置き、その後で参照する記録JSONを上げる（動画は手動のみ）。失敗は黙らせず知らせる
+  try{ await gdrivePushMedia(token, {}); }
+  catch(e){ try{ toast('写真・録音のアップロードに一部失敗しました（次の保存時に自動で再試行します）'); }catch(_){} }
   await gdrivePush('records', buildRecordsBackup(), token);
 }
 async function gdriveSignIn(){
@@ -3523,27 +3572,437 @@ async function gdriveSignIn(){
   if(cid) gdriveSaveCfg({ clientId:cid });
   if(!gdriveCfg().clientId){ toast('先にクライアントIDを入力してください'); return; }
   try{
+    gdriveTokenClear();   // 「アカウントを切り替える」で必ず選択画面が出るよう、有効な既存トークンも破棄する
     const token=await gdriveGetToken(true);
-    try{ const about=await gdriveFetch('drive/v3/about?fields=user(emailAddress)', {}, token);
-      GUSER=(about.user&&about.user.emailAddress)||''; }catch(e){ GUSER=''; }
-    if(GUSER) localStorage.setItem('bs_gdrive_user', GUSER);
+    if(!await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗しました。通信環境を確認してもう一度お試しください'); return; }
     toast('サインインしました'+(GUSER?'：'+GUSER:'')); render();
   }catch(e){ toast('サインイン失敗: '+(e.message||e)); }
 }
 function gdriveSignOut(){ gdriveTokenClear(); GUSER=''; localStorage.removeItem('bs_gdrive_user'); toast('サインアウトしました'); render(); }
-async function gdriveSyncNow(){
+// 手動の一括同期：ドライブの新しいデータを取り込んでから、この端末の記録・写真・録音を保存する
+async function gdriveSyncFull(){
   if(!gdriveCfg().clientId){ toast('先にクライアントIDを設定してください'); return; }
-  try{ toast('Googleドライブに保存中…'); const token=await gdriveGetToken(true);
+  try{
+    toast('同期中…');
+    const wasSignedIn=gdriveSignedIn();   // ここからサインインし直した場合はアカウント確認を通す
+    const token=await gdriveGetToken(true);
+    if(!wasSignedIn && !await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗したため中止しました'); return; }
+    const targets=unseenSyncFiles(await gdriveListSyncFiles(token));
+    let pulled=null;
+    if(targets.length) pulled=await gdrivePullAll(targets, token);
+    // アップ済み控えとドライブの実態のずれを修復（ドライブ側で消されたファイルは再アップロード対象に戻す）
+    const byName=await gdriveListMediaFiles(token);
+    const map=await syncMapLoad(); const have=new Set(Object.keys(byName).map(n=>byName[n])); let dropped=0;
+    ['audio','media'].forEach(s=>{ Object.keys(map[s]).forEach(id=>{ if(!have.has(map[s][id])){ delete map[s][id]; dropped++; } }); });
+    if(dropped) await syncMapSave(map);
+    const extra=await gdrivePullMedia(token, {});   // 新着が無くても、過去に取りこぼした写真・録音を再取得
+    const up=await gdrivePushMedia(token, {});      // 写真・録音を先に上げてから、参照する記録JSONを上げる
     await gdrivePush('records', buildRecordsBackup(), token);
-    toast('Googleドライブに保存しました'); render();
-  }catch(e){ toast('保存に失敗: '+(e.message||e)); }
+    const got=(pulled?pulled.media.done:0)+extra.done;
+    const miss=(pulled?pulled.media.miss:0)+extra.miss;
+    const parts=[];
+    if(pulled) parts.push(`取り込み${pulled.changed}件`);
+    if(got) parts.push(`写真/録音の受信${got}件`);
+    parts.push(`アップロード${up.done}件`);
+    let msg='同期しました（'+parts.join('・')+'）';
+    if(miss) msg+=`／未受信の写真・録音が${miss}件（相手の端末で同期した後にもう一度お試しください）`;
+    toast(msg); render();
+  }catch(e){ toast('同期に失敗: '+(e.message||e)); }
 }
 async function gdriveBackupFull(){
   if(!gdriveCfg().clientId){ toast('先にクライアントIDを設定してください'); return; }
-  try{ toast('録音・写真を含めて保存中…'); const token=await gdriveGetToken(true);
+  try{ toast('録音・写真を含めて保存中…');
+    const wasSignedIn=gdriveSignedIn();
+    const token=await gdriveGetToken(true);
+    if(!wasSignedIn && !await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗したため中止しました'); return; }
     const data=await buildFullBackup(); await gdrivePush('full', data, token);
     toast('Googleドライブに保存しました（録音・写真含む）'); render();
   }catch(e){ toast('保存に失敗: '+(e.message||e)); }
+}
+
+/* ---------- Googleドライブ同期（端末間の引き継ぎ：iPhone⇔iPad） ----------
+   正本はドライブ上の birdsurvey_records_latest.json（既存の自動保存と同じファイル）。
+   写真・録音は media サブフォルダに1件1ファイルで置き、記録は updated_at の新しい方を残して合体する。
+   動画は容量が大きいため自動では送受信しない（クラウド保存画面の手動ボタンのみ）。 */
+
+// この端末の固有ID。各端末は自分専用の同期ファイル birdsurvey_sync_<ID>.json にしか書き込まない。
+// これにより「上書きで他端末の保存が消える」事故が構造的に起きない（読むのは全端末のファイル、書くのは自分のだけ）
+function deviceId(){ let d=localStorage.getItem('bs_device_id');
+  if(!d){ d=uuid(); try{ localStorage.setItem('bs_device_id', d); }catch(e){} } return d; }
+function syncFileName(){ return 'birdsurvey_sync_'+deviceId()+'.json'; }
+
+// 対話サインインの後は必ず「誰のドライブか」を確認し、持ち主（クライアントID×アカウント）が変わっていたら
+// 同期の控え（既読・辞退・アップ済み一覧）をリセットする。前の持ち主の控えを引きずると、
+// 新しいアカウントの記録を取り込み損ねたり、未送信のメディアを送信済みと誤認するため。
+// ※持ち主印(bs_sync_owner)はサインアウトでは消さない（サインアウト→別アカウント、という切替も検知するため）
+// 戻り値false＝確認またはリセットに失敗（呼び出し側は同期を中止すること）
+async function gdriveConfirmOwner(token){
+  let email='';
+  try{ const about=await gdriveFetch('drive/v3/about?fields=user(emailAddress)', {}, token);
+    email=(about.user&&about.user.emailAddress)||''; }catch(e){ return false; }
+  if(!email) return false;
+  GUSER=email; try{ localStorage.setItem('bs_gdrive_user', email); }catch(e){}
+  const owner=(gdriveCfg().clientId||'')+'|'+email;
+  if((localStorage.getItem('bs_sync_owner')||'')!==owner){
+    localStorage.removeItem('bs_sync_seen'); localStorage.removeItem('bs_sync_declined');
+    try{ await kvPut('gdrive_media_map', {audio:{},media:{}}); }catch(e){ return false; }
+    try{ localStorage.setItem('bs_sync_owner', owner); }catch(e){ return false; }
+  }
+  return true;
+}
+
+// 既読情報 {fileId: modifiedTime}。ドライブ上の同期ファイルがこれより新しければ「未取り込みの保存」と判断
+function syncSeenLoad(){ try{ const m=JSON.parse(localStorage.getItem('bs_sync_seen')||'{}');
+  return (m && typeof m==='object' && !Array.isArray(m))?m:{}; }catch(e){ return {}; } }
+function syncSeenMark(fileId, modifiedTime){ try{ const m=syncSeenLoad(); m[fileId]=modifiedTime;
+  localStorage.setItem('bs_sync_seen', JSON.stringify(m)); }catch(e){} }
+
+// ドライブ上の同期ファイル一覧（全端末分）。旧形式 birdsurvey_records_latest.json も取り込み対象に含める（v50以前との互換）
+async function gdriveListSyncFiles(token){
+  const folderId=await gdriveEnsureFolder(token);
+  const q=encodeURIComponent("(name contains 'birdsurvey_sync_' or name = 'birdsurvey_records_latest.json') and '"+folderId+"' in parents and trashed=false");
+  const files=[]; let pageToken='';
+  do{
+    const res=await gdriveFetch('drive/v3/files?spaces=drive&pageSize=100&fields=nextPageToken,files(id,name,modifiedTime)&q='+q
+      +(pageToken?('&pageToken='+encodeURIComponent(pageToken)):''), {}, token);
+    (res.files||[]).forEach(f=>files.push(f));
+    pageToken=res.nextPageToken||'';
+  }while(pageToken);
+  const out=files.filter(f=>f && (f.name==='birdsurvey_records_latest.json' || /^birdsurvey_sync_[\w-]+\.json$/.test(f.name)));
+  // ドライブから消えたファイルの既読情報を掃除（肥大防止）
+  try{ const seen=syncSeenLoad(); const ids=new Set(out.map(f=>f.id)); let dirty=false;
+    Object.keys(seen).forEach(id=>{ if(!ids.has(id)){ delete seen[id]; dirty=true; } });
+    if(dirty) localStorage.setItem('bs_sync_seen', JSON.stringify(seen)); }catch(e){}
+  return out;
+}
+// そのうち未読のもの（自分の端末のファイルは除く）
+function unseenSyncFiles(files){
+  const seen=syncSeenLoad(); const own=syncFileName();
+  return files.filter(f=>f.name!==own && f.modifiedTime && (!seen[f.id] || String(f.modifiedTime)>String(seen[f.id])));
+}
+
+// gdriveFetch のJSON化しない版（記録JSON・メディア本体のダウンロード用）。Responseをそのまま返す
+async function gdriveFetchRaw(path, token){
+  const res=await fetch('https://www.googleapis.com/'+path, { headers:{Authorization:'Bearer '+token} });
+  if(res.status===401){ gdriveTokenClear(); }
+  if(!res.ok){ const t=await res.text().catch(()=>''); throw new Error('Drive '+res.status+' '+t.slice(0,140)); }
+  return res;
+}
+
+// 同期対象のメディア一覧＝「観察・飛翔レコードが参照している録音・写真・動画」。
+// 図鑑の切り抜き画像や資料PDFはレコードから参照されないため、この集め方だと自然に対象外になる。
+// 読取失敗時は例外（壊れた状態で同期して他端末を巻き込まないため）
+function collectMediaRefs(){
+  const refs=[]; const seen=new Set();
+  const take=(owner, ownerType, field, store)=>{ (owner[field]||[]).forEach(m=>{
+    if(m && m.id && !seen.has(store+':'+m.id)){ seen.add(store+':'+m.id);
+      refs.push({ store, id:m.id, ext:m.ext||'', mime:m.mime||'',
+        kind:(store==='audio'?'audio':(m.kind||'photo')), meta:m, ownerType, ownerUuid:owner.uuid }); } }); };
+  DB.loadRaw(DB.key.ob).forEach(o=>{ take(o,'obs','audio','audio'); take(o,'obs','media','media'); });
+  DB.loadRaw(DB.key.fl).forEach(f=>{ take(f,'flight','audio','audio'); take(f,'flight','media','media'); });
+  return refs;
+}
+// ドライブ上のファイル名。idは英数字とハイフンのみ(safeId検証済み)なのでそのまま使える
+function mediaFileName(ref){ return ref.store+'_'+ref.id+(ref.ext?('.'+String(ref.ext).replace(/^\./,'')):''); }
+
+// アップロード済みメディアの控え {audio:{id:driveFileId}, media:{...}}。
+// 正本はドライブの実ファイルで、これは通信節約用のキャッシュ（消えてもファイル名検索で復元される）
+function syncMapLoad(){ return kvGet('gdrive_media_map').then(m=>{ m=(m&&typeof m==='object')?m:{};
+  m.audio=m.audio||{}; m.media=m.media||{}; return m; }).catch(()=>({audio:{},media:{}})); }
+function syncMapSave(m){ return kvPut('gdrive_media_map', m).catch(()=>{}); }
+// idが'constructor'等でも誤判定しないよう、継承プロパティを除いた自身の項目だけで判定する
+function syncMapHas(m,store,id){ return !!m[store] && Object.prototype.hasOwnProperty.call(m[store], id); }
+
+// バックアップフォルダ内の media サブフォルダを確保（無ければ作成）。
+// 親フォルダと同じ理由でキャッシュせず、常に最古の同名フォルダへ収束させる
+async function gdriveEnsureMediaFolder(parentId, token){
+  const q=encodeURIComponent("mimeType='application/vnd.google-apps.folder' and name='media' and '"+parentId+"' in parents and trashed=false");
+  const url='drive/v3/files?spaces=drive&orderBy='+encodeURIComponent('createdTime')+'&fields=files(id)&q='+q;
+  const list=await gdriveFetch(url, {}, token);
+  if(list.files && list.files.length) return list.files[0].id;
+  const created=await gdriveFetch('drive/v3/files?fields=id', { method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ name:'media', mimeType:'application/vnd.google-apps.folder', parents:[parentId] }) }, token);
+  const again=await gdriveFetch(url, {}, token);
+  return (again.files && again.files.length) ? again.files[0].id : created.id;
+}
+// blob（録音・写真・動画の実体）のアップロード。gdriveUpsertFileと同じ「検索→無ければ作成→本体PATCH」方式
+async function gdriveUploadBlob(folderId, name, blob, mime, token){
+  const q=encodeURIComponent("name='"+name.replace(/'/g,"\\'")+"' and '"+folderId+"' in parents and trashed=false");
+  const list=await gdriveFetch('drive/v3/files?spaces=drive&fields=files(id)&q='+q, {}, token);
+  let id;
+  if(list.files && list.files.length){ id=list.files[0].id; }
+  else{
+    const created=await gdriveFetch('drive/v3/files?fields=id', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ name, parents:[folderId] }) }, token);
+    id=created.id;
+  }
+  await gdriveFetch('upload/drive/v3/files/'+id+'?uploadType=media', { method:'PATCH',
+    headers:{'Content-Type': mime||'application/octet-stream'}, body:blob }, token);
+  return id;
+}
+// 未アップロード分（レコード参照 − アップ済み控え）をドライブへ。既定は動画以外、videoOnly:trueで動画だけ。
+// 失敗した分は控えに載らないため、次回の自動保存や「今すぐ同期」で自然に再試行される
+async function gdrivePushMedia(token, opts){
+  opts=opts||{};
+  return gdriveSerial(async ()=>{
+    const refs=collectMediaRefs().filter(r=> opts.videoOnly ? r.kind==='video' : r.kind!=='video');
+    const map=await syncMapLoad();
+    const todo=refs.filter(r=>!syncMapHas(map,r.store,r.id));
+    if(!todo.length) return {done:0, skip:0};
+    const parentId=await gdriveEnsureFolder(token);
+    const folderId=await gdriveEnsureMediaFolder(parentId, token);
+    let done=0, skip=0;
+    for(const r of todo){
+      const rec=await (r.store==='audio'?AudioDB:PhotoDB).get(r.id).catch(()=>null);
+      if(!rec || !rec.blob){ skip++; continue; }   // 実体がこの端末に無い（別端末で撮影など）は送れないのでスキップ
+      const fid=await gdriveUploadBlob(folderId, mediaFileName(r), rec.blob, r.mime||rec.mime, token);
+      map[r.store][r.id]=fid;
+      await syncMapSave(map);          // 1件成功するごとに控えを保存（途中で切れても続きから再開できる）
+      done++;
+      if(opts.progress){ try{ opts.progress(done, todo.length); }catch(e){} }
+    }
+    return {done, skip};
+  });
+}
+
+// 同期で受け取ったバックアップの厳格検証。1箇所でも不正なら全体を拒否する（壊れたデータの取り込み・再配布を防ぐ）
+function validateBackupData(d){
+  const bad=msg=>{ throw new Error('ドライブ上のデータ形式が不正です（'+msg+'）'); };
+  const isPlain=x=>x && typeof x==='object' && !Array.isArray(x);
+  // 日時は「日付として読める文字列」だけを許す。壊れた日時（例:'zzzz'）は文字列比較で常に最新扱いになり、
+  // 以後どの正しい更新にも勝ち続けて同期を恒久的に壊すため、ここで必ず弾く
+  const okTime=v=>v==null || (typeof v==='string' && !isNaN(Date.parse(v)));
+  const okStr=v=>v==null || typeof v==='string';
+  const okMedia=a=>a==null || (Array.isArray(a) && a.every(m=>
+    isPlain(m) && typeof m.id==='string' && /^[\w-]+$/.test(m.id) && okStr(m.ext) && okStr(m.mime) && okStr(m.kind) && okStr(m.name)));
+  if(!isPlain(d)) bad('全体');
+  if(d.app!=='bird_survey') bad('種別');
+  if(d.kind!=='records') bad('種類');
+  if(d.version!==6) bad('版'+d.version+'。アプリを最新に更新してください');
+  for(const name of ['surveys','observations','notes','hypotheses','hyp_results','flights']){
+    if(!Array.isArray(d[name])) bad(name);
+    for(const x of d[name]){
+      if(!isPlain(x)) bad(name+'の要素');
+      if(typeof x.uuid!=='string' || !/^[\w-]+$/.test(x.uuid)) bad(name+'のID');
+      if(!safeId(x.survey_uuid) || !safeId(x.hypothesis_uuid)) bad(name+'の参照ID');
+      if(!okTime(x.created_at) || !okTime(x.updated_at) || !okTime(x.deleted_at)) bad(name+'の日時');
+      if(!okMedia(x.audio) || !okMedia(x.media)) bad(name+'のメディア参照');
+    }
+  }
+  if(d.tombstones!=null){
+    if(!Array.isArray(d.tombstones)) bad('削除記録');
+    for(const t of d.tombstones){ if(!isPlain(t) || typeof t.uuid!=='string' || !/^[\w-]+$/.test(t.uuid) || typeof t.at!=='string' || isNaN(Date.parse(t.at))) bad('削除記録の要素'); }
+  }
+  if(d.myguide!=null){
+    if(!Array.isArray(d.myguide)) bad('マイ図鑑');
+    for(const g of d.myguide){ if(g!=null && (!isPlain(g) || !safeId(g.id) || !safeId(g.ref_id))) bad('マイ図鑑の要素'); }
+  }
+  return true;
+}
+// media サブフォルダの全ファイル一覧（名前→fileId）。件数が多い場合のページ送りにも対応
+async function gdriveListMediaFiles(token){
+  const parentId=await gdriveEnsureFolder(token);
+  const folderId=await gdriveEnsureMediaFolder(parentId, token);
+  const byName=Object.create(null); let pageToken='';
+  do{
+    const q=encodeURIComponent("'"+folderId+"' in parents and trashed=false");
+    const res=await gdriveFetch('drive/v3/files?spaces=drive&pageSize=1000&fields=nextPageToken,files(id,name)&q='+q
+      +(pageToken?('&pageToken='+encodeURIComponent(pageToken)):''), {}, token);
+    (res.files||[]).forEach(f=>{ byName[f.name]=f.id; });
+    pageToken=res.nextPageToken||'';
+  }while(pageToken);
+  return byName;
+}
+// 端末に実体が無い録音・写真をドライブから取り込む。既定は動画以外、videoOnly:trueで動画だけ
+async function gdrivePullMedia(token, opts){
+  opts=opts||{};
+  const refs=collectMediaRefs().filter(r=> opts.videoOnly ? r.kind==='video' : r.kind!=='video');
+  const missing=[];
+  for(const r of refs){
+    const rec=await (r.store==='audio'?AudioDB:PhotoDB).get(r.id).catch(()=>null);
+    if(!rec || !rec.blob) missing.push(r);
+  }
+  if(!missing.length) return {done:0, miss:0};
+  const byName=await gdriveListMediaFiles(token);
+  const map=await syncMapLoad();
+  let done=0, miss=0;
+  for(const r of missing){
+    const fid=byName[mediaFileName(r)];
+    if(!fid){ miss++; continue; }                    // 相手の端末がまだアップロードしていない
+    let blob=null;
+    try{ blob=await (await gdriveFetchRaw('drive/v3/files/'+fid+'?alt=media', token)).blob(); }catch(e){ miss++; continue; }
+    const m=r.meta||{};
+    const rec={ id:r.id, blob, mime:m.mime||blob.type, ext:m.ext, size:m.size||blob.size, created_at:m.created_at,
+      obs_uuid: r.ownerType==='obs'?r.ownerUuid:'', flight_uuid: r.ownerType==='flight'?r.ownerUuid:'' };
+    try{
+      if(r.store==='audio'){ rec.dur=m.dur; await AudioDB.put(rec); }
+      else{ rec.kind=m.kind||r.kind; rec.name=m.name; await PhotoDB.put(rec); }
+    }catch(e){ miss++; continue; }                   // 保存失敗（容量不足など）は数えて続行
+    map[r.store][r.id]=fid; await syncMapSave(map);  // 取り込めた分は「アップ済み」扱い（二重アップロード防止）
+    done++;
+    if(opts.progress){ try{ opts.progress(done, missing.length); }catch(e){} }
+  }
+  return {done, miss};
+}
+
+// 別端末のデータを合体。uuidごとに updated_at が新しい方を残す（どちらの端末の記録も消えない）。
+// ローカルに無い＆削除済み(deleted_at付き)は取り込まない（完全削除したものが戻ってくるのを防ぐ）。
+// 全コレクションを計算し終えてから一括保存し、途中失敗時は元に戻す（半分だけ取り込んだ状態をDriveへ再送信しないため）
+function mergeRemoteRecords(d){
+  const colKeys=[['surveys',DB.key.sv],['observations',DB.key.ob],['notes',DB.key.nt],
+    ['hypotheses',DB.key.hy],['hyp_results',DB.key.hr],['flights',DB.key.fl]];
+  // 形式検証: 6コレクションすべて配列であること（片方だけ取り込んで壊れた状態を作らない）
+  for(const [name] of colKeys){ if(!Array.isArray(d[name])) throw new Error('ドライブ上のデータ形式が不正です（'+name+'）'); }
+  let changed=0;
+  // 完全削除の記録（墓標）を合体。墓標より古いレコードは両端末から取り除かれる（削除の伝搬）。
+  // 墓標より新しい updated_at を持つレコード（削除後に作り直された等）は残す
+  const ts=Object.create(null);
+  tombstonesList().forEach(t=>{ ts[t.uuid]=t.at; });
+  (Array.isArray(d.tombstones)?d.tombstones:[]).forEach(t=>{
+    if(t && typeof t.uuid==='string' && t.uuid && typeof t.at==='string' && t.at){
+      if(!ts[t.uuid] || String(t.at)>String(ts[t.uuid])) ts[t.uuid]=t.at; } });
+  const stamp=x=>String(x.updated_at||x.created_at||'');
+  const newer=(mine,theirs)=>stamp(mine)>=stamp(theirs);
+  const buried=x=>{ const at=ts[x.uuid]; return !!at && String(at)>=stamp(x); };
+  // 1) 全コレクションの合体結果を計算だけする（保存はまだしない）
+  const merged={};
+  for(const [name,key] of colKeys){
+    const byId=Object.create(null);
+    DB.loadRaw(key).forEach(x=>{ if(x && typeof x==='object' && x.uuid) byId[x.uuid]=x; });
+    d[name].forEach(x=>{ if(!x || typeof x!=='object' || !x.uuid) return;
+      const mine=byId[x.uuid];
+      if(!mine){ if(!x.deleted_at){ byId[x.uuid]=x; changed++; } return; }
+      if(!newer(mine,x)){ byId[x.uuid]=x; changed++; }
+    });
+    for(const u in byId){ if(buried(byId[u])){ delete byId[u]; changed++; } }
+    merged[key]=Object.values(byId);
+  }
+  // マイ図鑑はid単位の追加のみ（計算だけ）。図鑑の切り抜き(source:'guide')は画像本体を同期しないため取り込まない（参照切れ防止）
+  let newGuide=null;
+  if(Array.isArray(d.myguide) && d.myguide.length){
+    const cur=myguideList(); const byId=Object.create(null); cur.forEach(g=>{ if(g&&g.id) byId[g.id]=g; });
+    d.myguide.forEach(g=>{ if(g&&g.id && g.source!=='guide' && !byId[g.id]){ byId[g.id]=g; changed++; } });
+    newGuide=Object.values(byId);
+  }
+  // 2) 一括保存（6コレクション＋墓標＋マイ図鑑）。1つでも失敗したら全部を元へ巻き戻して中止
+  const touched=colKeys.map(([,k])=>k).concat(['bs_tombstones','bs_myguide']);
+  const before={}; touched.forEach(k=>{ before[k]=localStorage.getItem(k); });
+  const rollback=()=>{ touched.forEach(k=>{ try{ if(before[k]==null) localStorage.removeItem(k); else localStorage.setItem(k,before[k]); }catch(e){} }); };
+  for(const [,key] of colKeys){
+    if(!DB.save(key, merged[key])){ rollback(); throw new Error('保存できませんでした（空き容量を確認してください）'); }
+  }
+  if(!tombstonesSave(Object.keys(ts).map(u=>({uuid:u, at:ts[u]}))) || (newGuide && !myguideSave(newGuide))){
+    rollback(); throw new Error('保存できませんでした（空き容量を確認してください）');
+  }
+  // recent(最近使った種)は端末ごとでよいので同期しない
+  return changed;
+}
+// ドライブから未読の同期ファイルを全部取り込み、足りない写真・録音も取り込む。
+// 順序は必ず「記録が先→メディアが後」（逆にすると、起動時の掃除(mediaGcAll)が
+// 「どの記録も参照していないblob」と誤判定して消す恐れがある）
+async function gdrivePullAll(files, token){
+  return gdriveSerial(async ()=>{
+    const targets=files || unseenSyncFiles(await gdriveListSyncFiles(token));
+    if(!targets.length) return null;
+    let changed=0;
+    for(const f of targets){
+      const d=await (await gdriveFetchRaw('drive/v3/files/'+f.id+'?alt=media', token)).json();
+      validateBackupData(d);                        // 不正なら1件でも全体を拒否（例外）
+      changed+=mergeRemoteRecords(d);
+      syncSeenMark(f.id, f.modifiedTime||'');       // 1ファイル取り込むごとに既読化（途中失敗でも続きから）
+    }
+    const md=await gdrivePullMedia(token, {}).catch(()=>({done:0,miss:0}));
+    return {changed, media:md};
+  });
+}
+// 起動時：別端末からの新しい保存が無いか確認して、あれば取り込みを提案する（サインイン中だけ・失敗は静かに）。
+// 新着が無くても、過去に取りこぼした写真・録音があれば静かに再取得する
+async function gdriveStartupCheck(){
+  try{
+    if(!gdriveCfg().clientId || !gdriveSignedIn()) return;
+    const token=await gdriveGetToken(false);
+    const targets=unseenSyncFiles(await gdriveListSyncFiles(token));
+    let pulledNow=false;
+    const declined=localStorage.getItem('bs_sync_declined')||'';
+    const mark=targets.map(f=>f.id+'@'+f.modifiedTime).sort().join(',');
+    if(targets.length && declined!==mark){   // 前回断られた同じ内容は繰り返し聞かない
+      if(confirm('ドライブに新しいデータがあります（別の端末で保存された記録）。読み込みますか？\n※今の端末の記録は消えません。両方を比べて新しい方が残ります。')){
+        toast('ドライブから読み込み中…');
+        // ユーザーがOKした後の失敗は黙らず知らせる（確認前の通信エラー等は外側のcatchで静かに流す）
+        try{
+          const r=await gdrivePullAll(targets, token);
+          if(r) toast(`ドライブから読み込みました（記録${r.changed}件・写真/録音${r.media.done}件）`);
+          pulledNow=true;
+          reset('home');
+        }catch(e){ toast('読み込みに失敗しました: '+(e.message||e)); }
+      }else{
+        // 既読にはしない（既読は「取り込み済み」の意味。断られた印だけ残す）。
+        // 各端末は自分専用ファイルにしか書かないので、取り込まなくても他端末のデータが消えることはない
+        try{ localStorage.setItem('bs_sync_declined', mark); }catch(e){}
+      }
+    }
+    // 取り込みの有無にかかわらず、過去に取りこぼした写真・録音（通信失敗・相手が後からアップロードした分）を再取得
+    //（直前に取り込んだ場合はその中で取得済みなので省略）
+    if(!pulledNow){
+      const md=await gdrivePullMedia(token, {}).catch(()=>null);
+      if(md && md.done){ toast(`写真・録音${md.done}件を取り込みました`+(md.miss?`（あと${md.miss}件は相手の端末の同期待ち）`:'')); render(); }
+    }
+  }catch(e){ try{ console.error('sync check failed', e); }catch(_){} }
+}
+
+// クラウド保存画面の表示用：未アップロード数（写真・録音・動画別）
+async function syncPendingCounts(){
+  try{
+    const refs=collectMediaRefs(); const map=await syncMapLoad();
+    const c={photo:0, audio:0, video:0};
+    refs.forEach(r=>{ if(!syncMapHas(map,r.store,r.id)){
+      c[r.kind==='video' ? 'video' : (r.store==='audio' ? 'audio' : 'photo')]++; } });
+    return c;
+  }catch(e){ return null; }
+}
+// 端末に実体が無い動画の数（別端末で撮影された動画。ダウンロードボタンの表示判断用）
+async function countMissingVideos(){
+  try{ const refs=collectMediaRefs().filter(r=>r.kind==='video'); let n=0;
+    for(const r of refs){ const rec=await PhotoDB.get(r.id).catch(()=>null); if(!rec||!rec.blob) n++; }
+    return n; }catch(e){ return 0; }
+}
+// クラウド保存画面を開いた後に、未アップロード数と動画ダウンロードボタンを埋める
+async function syncStatusFill(){
+  const el=$('#syncPending'); if(!el) return;
+  const c=await syncPendingCounts();
+  if(!c){ el.textContent='未アップロード数を確認できませんでした'; return; }
+  el.innerHTML=`未アップロード：写真${c.photo}・録音${c.audio}`+(c.video?`・動画${c.video}（手動）`:'');
+  const miss=await countMissingVideos();
+  const w=$('#vidDlWrap');
+  if(w && miss>0) w.innerHTML=`<div class="sp"></div><button class="btn" onclick="gdrivePullVideos()">🎬 動画をダウンロード（${miss}件・Wi-Fi推奨）</button>`;
+}
+// 動画の手動アップロード（自動同期の対象外。容量が大きいためWi-Fi推奨の確認を挟む）
+async function gdriveUploadVideos(){
+  if(!gdriveCfg().clientId){ toast('先にクライアントIDを設定してください'); return; }
+  if(!confirm('動画は容量が大きいため、Wi-Fi接続でのアップロードをおすすめします。続けますか？')) return;
+  try{
+    const wasSignedIn=gdriveSignedIn();
+    const token=await gdriveGetToken(true);
+    if(!wasSignedIn && !await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗したため中止しました'); return; }
+    toast('動画をアップロード中…');
+    const r=await gdrivePushMedia(token, {videoOnly:true, progress:(d,t)=>toast(`動画をアップロード中… ${d}/${t}`)});
+    toast(r.done?`動画${r.done}件をアップロードしました`:'アップロードする動画はありません'); render();
+  }catch(e){ toast('アップロード失敗: '+(e.message||e)); }
+}
+// 動画の手動ダウンロード（別端末で撮影した動画をこの端末に取り込む）
+async function gdrivePullVideos(){
+  if(!gdriveCfg().clientId){ toast('先にクライアントIDを設定してください'); return; }
+  if(!confirm('動画は容量が大きいため、Wi-Fi接続でのダウンロードをおすすめします。続けますか？')) return;
+  try{
+    const wasSignedIn=gdriveSignedIn();
+    const token=await gdriveGetToken(true);
+    if(!wasSignedIn && !await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗したため中止しました'); return; }
+    toast('動画をダウンロード中…');
+    const r=await gdrivePullMedia(token, {videoOnly:true, progress:(d,t)=>toast(`動画をダウンロード中… ${d}/${t}`)});
+    toast(r.done?`動画${r.done}件を取り込みました`:'取り込める動画はありません'); render();
+  }catch(e){ toast('ダウンロード失敗: '+(e.message||e)); }
 }
 
 const APPS_SCRIPT_CODE = `// 鳥類調査記録アプリ バックアップ受け皿（Google Apps Script）
@@ -3590,10 +4049,16 @@ SCREENS.cloud = ()=>{
           <button class="btn primary" onclick="gdriveSignIn()">${gdriveSignedIn()?'アカウントを切り替える':'Googleでサインイン'}</button>
           ${gdriveSignedIn()?'<button class="btn ghost" onclick="gdriveSignOut()">サインアウト</button>':''}
         </div>
-        ${g.clientId?`<div class="sp"></div><div class="btn-grid">
-          <button class="btn" onclick="gdriveSyncNow()">☁ 今すぐ記録を保存</button>
-          <button class="btn" onclick="gdriveBackupFull()">☁ 録音・写真も保存</button>
-        </div>`:''}
+        ${g.clientId?`<div class="sp"></div>
+        <div class="small" id="syncPending">未アップロード数を確認中…</div>
+        <div class="sp"></div>
+        <div class="btn-grid">
+          <button class="btn primary" onclick="gdriveSyncFull()">🔄 今すぐ同期</button>
+          <button class="btn" onclick="gdriveUploadVideos()">🎬 動画をアップロード</button>
+        </div>
+        <span id="vidDlWrap"></span>
+        <div class="sp"></div>
+        <button class="btn ghost" onclick="gdriveBackupFull()">💾 予備の丸ごとバックアップ（1ファイル）</button>`:''}
         <div class="tiny muted" style="margin-top:8px;">会社アカウントで保存したいときは、サインインの画面で<b>会社アカウントを選択</b>してください。弾かれる場合は共有・個人アカウントに切り替えられます。</div>
       </div>
       <div class="divider"></div>
@@ -3628,7 +4093,7 @@ SCREENS.cloud = ()=>{
           <button class="btn" onclick="cloudBackupFull()">☁ 録音・写真も保存</button>
         </div>`:''}
       </div>
-      <div class="note">記録（調査・観察・メモ・仮説）は<b>変更のたび自動</b>でドライブに保存されます。録音・写真は重いので「録音・写真も保存」を時々押してください。データは「${esc(GDRIVE_FOLDER)}」フォルダに入ります。</div>
+      <div class="note">Googleドライブでは、記録（調査・観察・メモ・仮説）と<b>写真・録音が変更のたび自動</b>で保存されます。動画だけは容量が大きいため「動画をアップロード」を手動で押してください（Wi-Fi推奨）。iPhoneとiPadなど<b>2台で同じアカウントにサインイン</b>しておくと、アプリを開いたときに「読み込みますか？」と出て、もう一方の端末の記録を取り込めます。データは「${esc(GDRIVE_FOLDER)}」フォルダに入ります。<br>※端末どうしの引き継ぎを使う前に、<b>すべての端末でホーム画面下の「↻ 最新に更新」を押して同じ版に</b>してください（古い版のままの端末には新しい記録が届きません）。</div>
       <div class="divider"></div>
       <h3 class="muted small">初期設定A：Googleドライブ直接保存（おすすめ・一度だけ・約10分）</h3>
       <div class="note" style="margin-bottom:8px;">このアプリのアドレス（手順4で貼る「JavaScript生成元」）：<br><b style="word-break:break-all;">${esc(location.origin)}</b></div>
@@ -3653,7 +4118,8 @@ SCREENS.cloud = ()=>{
       <pre style="white-space:pre-wrap; word-break:break-all; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:10px; font-size:12px; overflow:auto;">${esc(APPS_SCRIPT_CODE)}</pre>
       <div class="divider"></div>
       <div class="note"><b>復元のしかた</b>：機種変や紛失のときは、Googleドライブの「鳥類調査バックアップ」フォルダから <code>birdsurvey_full_latest.json</code>（または records）をダウンロードし、ホーム「⤒ インポート」で取り込みます。</div>
-    `};
+    `,
+    onMount:()=>{ if(gdriveCfg().clientId) syncStatusFill(); }};
 };
 
 SCREENS.exportHub = ()=>{
@@ -3716,7 +4182,7 @@ SCREENS.importHub = ()=>({
 // （旧実装は typeof!=='string' を無条件で安全扱いしており、配列を渡すと検査を素通りできた）
 function safeId(v){ return v==null || (typeof v==='string' && /^[\w-]*$/.test(v)); }
 function importIdsOk(d){
-  const arrs=[d.surveys,d.observations,d.notes,d.hypotheses,d.hyp_results,d.flights,d.myguide,d.audio,d.media];
+  const arrs=[d.surveys,d.observations,d.notes,d.hypotheses,d.hyp_results,d.flights,d.myguide,d.audio,d.media,d.tombstones];
   for(const a of arrs){ if(!Array.isArray(a)) continue;
     for(const x of a){ if(!x) continue;
       if(![x.uuid,x.id,x.survey_uuid,x.hypothesis_uuid,x.ref_id].every(safeId)) return false;
@@ -3744,11 +4210,20 @@ function doImport(){
       if(Array.isArray(rec.audio)) rec.audio=rec.audio.filter(a=>a&&!failed.has(a.id));
       if(Array.isArray(rec.media)) rec.media=rec.media.filter(m=>m&&!failed.has(m.id)); return rec; };
     (d.observations||[]).forEach(clean); (d.flights||[]).forEach(clean);
+    // 2.5) 完全削除の記録（墓標）を合体し、墓標より古いレコードは取り込まない・残さない
+    //（古いバックアップの取り込みで、完全削除したはずの記録が復活して同期で全端末に広がるのを防ぐ）
+    const ts=Object.create(null); tombstonesList().forEach(t=>{ ts[t.uuid]=t.at; });
+    (Array.isArray(d.tombstones)?d.tombstones:[]).forEach(t=>{
+      if(t && typeof t.uuid==='string' && safeId(t.uuid) && typeof t.at==='string'){
+        if(!ts[t.uuid] || String(t.at)>String(ts[t.uuid])) ts[t.uuid]=t.at; } });
+    const alive=x=>{ const at=x&&ts[x.uuid]; return !(at && String(at)>=String(x.updated_at||x.created_at||'')); };
+    tombstonesSave(Object.keys(ts).map(u=>({uuid:u, at:ts[u]})));
     // 3) 記録をmerge。byIdは Object.create(null) でプロトタイプ汚染を防ぐ。保存失敗は検知する
     let saveOk=true;
     const merge=(key,arr)=>{ const cur=DB.load(key); const byId=Object.create(null);
       cur.forEach(x=>{ if(x&&x.uuid) byId[x.uuid]=x; });
-      (arr||[]).forEach(x=>{ if(x&&x.uuid) byId[x.uuid]=x; }); if(!DB.save(key,Object.values(byId))) saveOk=false; };
+      (arr||[]).forEach(x=>{ if(x&&x.uuid) byId[x.uuid]=x; });
+      if(!DB.save(key,Object.values(byId).filter(alive))) saveOk=false; };
     merge(DB.key.sv,d.surveys); merge(DB.key.ob,d.observations); merge(DB.key.nt,d.notes);
     merge(DB.key.hy,d.hypotheses); merge(DB.key.hr,d.hyp_results); merge(DB.key.fl,d.flights);
     if(d.recent) DB.save(DB.key.recent, d.recent);
@@ -3774,7 +4249,8 @@ function isStandalone(){ return (window.navigator&&window.navigator.standalone==
 if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().catch(()=>{}); }
 
 reset('home');
-mediaGcAll(); // 参照されなくなった録音・写真・動画を掃除
+// 掃除が終わってから同期チェック（並行させると、取り込んだ直後の録音・写真を「参照なし」と誤判定して消す恐れがある）
+mediaGcAll().catch(()=>{}).then(()=>gdriveStartupCheck()); // ドライブに別端末の新しい保存があれば取り込みを提案
 fsLoadSaved().then(()=>{ if(STACK.length===1 && STACK[0].name==='home') render(); }); // 保存フォルダ設定を復元
 if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{})); }
 </script>

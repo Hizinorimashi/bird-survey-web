@@ -1,4 +1,4 @@
-const CACHE = 'bird-survey-v50';
+const CACHE = 'bird-survey-v51';
 // 必須資産（これが揃わないとアプリが成立しない）。install時に全部揃わなければ失敗させ、不完全キャッシュで有効化しない
 const CORE = [
   './bird_survey.html',
@@ -51,12 +51,11 @@ self.addEventListener('install', e => {
 // 同一オリジンに別アプリ(別PWA)がある場合、そのキャッシュまで消さないため。
 function isOwnCache(k){ return k === CACHE || k === TILE_CACHE || k.startsWith('bird-survey-') || k.startsWith('bird-map-tiles-'); }
 self.addEventListener('activate', e => {
-  e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => isOwnCache(k) && k !== CACHE && k !== TILE_CACHE).map(k => caches.delete(k)))
-    )
-  );
-  self.clients.claim();
+  e.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter(k => isOwnCache(k) && k !== CACHE && k !== TILE_CACHE).map(k => caches.delete(k)));
+    await self.clients.claim();   // 開いている画面への適用も完了待ちに含める
+  })());
 });
 
 function isTile(url){ return url.includes('cyberjapandata.gsi.go.jp'); }
@@ -77,9 +76,12 @@ async function handleTile(request){
   try{
     const res = await fetch(request);
     if (res.ok){
-      const keys = await cache.keys();
-      if (keys.length >= MAX_TILES){ for (let i=0;i<200;i++) await cache.delete(keys[i]); }
-      await cache.put(request, res.clone());
+      // キャッシュ保存に失敗（容量不足等）しても、取得できたタイルは必ず返す
+      try{
+        const keys = await cache.keys();
+        if (keys.length >= MAX_TILES){ for (let i=0;i<200;i++) await cache.delete(keys[i]); }
+        await cache.put(request, res.clone());
+      }catch(e){}
     }
     return res;
   }catch(e){
@@ -98,10 +100,11 @@ async function networkFirst(request){
   const timeoutP = new Promise(resolve => setTimeout(() => resolve('timeout'), 3500));
   try{
     const r = await Promise.race([netP, timeoutP]);
-    if (r !== 'timeout' && r) return r;               // 正常応答（404/500含む、そのまま返す）
-    const cached = await cache.match(request);          // タイムアウト→キャッシュ
+    if (r !== 'timeout' && r && cacheable(r, request.url)) return r;   // 正常な2xxかつ期待どおりの内容型のみ即採用
+    const cached = await cache.match(request);          // タイムアウト・障害応答(500や認証画面HTML等)→正常なキャッシュを優先
     if (cached) return cached;
-    return await netP;                                  // キャッシュも無ければネット完了を待つ
+    if (r !== 'timeout' && r) return r;                 // キャッシュが無ければ障害応答でもそのまま返す
+    return await netP;                                  // タイムアウトかつキャッシュ無し→ネット完了を待つ
   }catch(e){
     const cached = await cache.match(request);
     return cached || cache.match('./bird_survey.html');
@@ -127,6 +130,8 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = req.url;
+  // GoogleドライブAPI・認証はSWを介さない（キャッシュ誤混入・認証干渉の防止。ドライブ同期のダウンロードはGETで来る）
+  if (url.startsWith('https://www.googleapis.com/') || url.startsWith('https://accounts.google.com/')) return;
   if (isTile(url)){ e.respondWith(handleTile(req)); return; }
   if (req.mode === 'navigate' || isHtmlShell(url)){ e.respondWith(networkFirst(req)); return; }
   if (isStaticVendor(url)){ e.respondWith(cacheFirst(req)); return; }
