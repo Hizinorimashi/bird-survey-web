@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v52（2026-07-28 ドライブ同期のクライアントIDを内蔵：貼り付け不要でサインインだけに）';
+const APP_VERSION = 'v53（2026-07-28 クライアントIDを完全内蔵化：端末に残った壊れたIDを無視して必ず正しいIDを使う）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3460,19 +3460,11 @@ function gdriveTokenSave(t){ GTOKEN=t; try{ localStorage.setItem('bs_gdrive_toke
 function gdriveTokenClear(){ GTOKEN=null; localStorage.removeItem('bs_gdrive_token'); }
 let GTOKEN = gdriveTokenLoad();                      // {access_token, expiry}（有効期限内のみ復元）
 let GUSER = localStorage.getItem('bs_gdrive_user') || ''; // 前回サインインしたアカウント（表示用）
-// このアプリ用のクライアントID（初期値として埋め込み）。ウェブ用クライアントIDは公開前提の情報で、
-// 悪用防止は「承認済みのJavaScript生成元」とテストユーザー制限の側で効いているため、埋め込んでも安全性は変わらない
+// このアプリ用のクライアントID（内蔵・固定）。ウェブ用クライアントIDは公開前提の情報で、
+// 悪用防止は「承認済みのJavaScript生成元」とテストユーザー制限の側で効いているため、埋め込んでも安全性は変わらない。
+// 過去に端末へ貼り付け保存されたID（コピペ事故で壊れたものを含む）は一切使わず、常にこの値を使う
 const GDRIVE_DEFAULT_CLIENT_ID='39266503709-hqoe2kpd60r59dn5s1ql7ltjs7nu31h0.apps.googleusercontent.com';
-function gdriveCfg(){
-  let c; try{ c=JSON.parse(localStorage.getItem('bs_gdrive')||'{}'); }catch(e){ c={}; }
-  // 貼り付け時に紛れ込んだ改行・空白は除去し、形が壊れているIDは初期値に戻す
-  //（メール経由のコピーで途中に改行が入り「リクエスト形式が不正」エラーになる事故への保険）
-  let id=String(c.clientId||'').replace(/\s+/g,'');
-  if(!/^[\w-]+\.apps\.googleusercontent\.com$/.test(id)) id=GDRIVE_DEFAULT_CLIENT_ID;
-  c.clientId=id;
-  return c;
-}
-function gdriveSaveCfg(c){ localStorage.setItem('bs_gdrive', JSON.stringify(c||{})); }
+function gdriveCfg(){ return { clientId: GDRIVE_DEFAULT_CLIENT_ID }; }
 function gdriveLast(){ return localStorage.getItem('bs_gdrive_last')||''; }
 function gisReady(){ return !!(window.google && google.accounts && google.accounts.oauth2); }
 function gdriveSignedIn(){ return !!(GTOKEN && GTOKEN.access_token && Date.now() < GTOKEN.expiry-60000); }
@@ -3579,9 +3571,6 @@ async function gdriveBackupRecords(){
   await gdrivePush('records', buildRecordsBackup(), token);
 }
 async function gdriveSignIn(){
-  const cid=(($('#gdriveClientId')&&$('#gdriveClientId').value)||'').trim();
-  if(cid) gdriveSaveCfg({ clientId:cid });
-  if(!gdriveCfg().clientId){ toast('先にクライアントIDを入力してください'); return; }
   try{
     gdriveTokenClear();   // 「アカウントを切り替える」で必ず選択画面が出るよう、有効な既存トークンも破棄する
     const token=await gdriveGetToken(true);
@@ -4054,8 +4043,7 @@ SCREENS.cloud = ()=>{
         <div class="sp"></div>
         <div class="small">${gStatus}</div>
         <div class="sp"></div>
-        <label class="field"><span class="lab">クライアントID（設定済み・通常は変更不要）</span>
-          <input id="gdriveClientId" autocomplete="off" placeholder="xxxx.apps.googleusercontent.com" value="${esc(g.clientId||'')}"></label>
+        <div class="tiny muted">クライアントIDはアプリに内蔵済みです（入力・貼り付けは不要）</div>
         <div class="btn-grid${gdriveSignedIn()?'':' one'}">
           <button class="btn primary" onclick="gdriveSignIn()">${gdriveSignedIn()?'アカウントを切り替える':'Googleでサインイン'}</button>
           ${gdriveSignedIn()?'<button class="btn ghost" onclick="gdriveSignOut()">サインアウト</button>':''}
