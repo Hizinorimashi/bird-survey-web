@@ -173,7 +173,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v53（2026-07-28 クライアントIDを完全内蔵化：端末に残った壊れたIDを無視して必ず正しいIDを使う）';
+const APP_VERSION = 'v54（2026-07-28 同期の結果表示を具体的に：記録の件数・取り込み・アップロード数を明示）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -193,8 +193,8 @@ function fmtDate(s){ if(!s) return '—'; return String(s).slice(0,10); }
 function fmtTime(s){ if(!s) return '—'; const d=new Date(s); if(isNaN(d)) return '—';
   const p=n=>String(n).padStart(2,'0'); return `${p(d.getHours())}:${p(d.getMinutes())}`; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
-  clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),1800); }
+function toast(msg,ms){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),ms||1800); }
 
 /* ---------- データ層（localStorage） ---------- */
 const DB = {
@@ -3600,13 +3600,14 @@ async function gdriveSyncFull(){
     await gdrivePush('records', buildRecordsBackup(), token);
     const got=(pulled?pulled.media.done:0)+extra.done;
     const miss=(pulled?pulled.media.miss:0)+extra.miss;
-    const parts=[];
-    if(pulled) parts.push(`取り込み${pulled.changed}件`);
-    if(got) parts.push(`写真/録音の受信${got}件`);
-    parts.push(`アップロード${up.done}件`);
-    let msg='同期しました（'+parts.join('・')+'）';
-    if(miss) msg+=`／未受信の写真・録音が${miss}件（相手の端末で同期した後にもう一度お試しください）`;
-    toast(msg); render();
+    // 何がどれだけ保存されたかを具体的に示す（調査・観察の件数はこの端末の現在数）
+    const parts=[`記録を保存（調査${DB.surveys().length}・観察${DB.observations().length}）`];
+    if(pulled && pulled.changed) parts.push(`別端末から取り込み${pulled.changed}件`);
+    if(got) parts.push(`写真・録音の受信${got}件`);
+    if(up.done) parts.push(`写真・録音のアップロード${up.done}件`);
+    let msg='同期しました：'+parts.join('／');
+    if(miss) msg+=`（未受信${miss}件は相手の端末の同期待ち）`;
+    toast(msg, 4000); render();
   }catch(e){ toast('同期に失敗: '+(e.message||e)); }
 }
 async function gdriveBackupFull(){
@@ -3933,7 +3934,7 @@ async function gdriveStartupCheck(){
         // ユーザーがOKした後の失敗は黙らず知らせる（確認前の通信エラー等は外側のcatchで静かに流す）
         try{
           const r=await gdrivePullAll(targets, token);
-          if(r) toast(`ドライブから読み込みました（記録${r.changed}件・写真/録音${r.media.done}件）`);
+          if(r) toast(`ドライブから読み込みました：記録の取り込み${r.changed}件／写真・録音${r.media.done}件`, 4000);
           pulledNow=true;
           reset('home');
         }catch(e){ toast('読み込みに失敗しました: '+(e.message||e)); }
