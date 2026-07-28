@@ -182,7 +182,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v55（2026-07-28 メディア一覧：全調査の写真・動画・録音を新しい順に一覧、タップで拡大→記録へ）';
+const APP_VERSION = 'v56（2026-07-28 図鑑・資料PDFを手動でドライブに退避・端末間で受け渡せるように）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -334,7 +334,7 @@ const AudioDB = makeBlobStore('audio','audio');   // 観察の o.audio[] が参�
 const PhotoDB = makeBlobStore('media','media');   // 観察の o.media[] が参照
 function mediaGcAll(){ return Promise.all([AudioDB.gc().catch(()=>{}), PhotoDB.gc().catch(()=>{})]); }
 
-// 資料PDF（図鑑など）。端末内のみに保存し、公開URL・バックアップには含めない
+// 資料PDF（図鑑など）。公開URL・自動同期・バックアップには含めない（手動の図鑑・資料同期でのみ自分のドライブと受け渡す）
 const RefDB = {
   put(rec){ return idbDo('refdoc','readwrite', st=>st.put(rec)); },
   get(id){ return idbDo('refdoc','readonly', st=>st.get(id)); },
@@ -1520,7 +1520,7 @@ function importGuideImages(input){
     const kind=(f.type||'').startsWith('video')?'video':'photo';
     const ext=fileExt(f.name,f.type), mid=uuid();
     return PhotoDB.put({ id:mid, kind, mime:f.type||'', ext, size:f.size, name:f.name||'', obs_uuid:'', created_at:nowISO(), blob:f })
-      .then(()=>{ adds.push({ id:uuid(), species_name:name, kind, ref_id:mid, ext, mime:f.type||'', source:'guide', created_at:nowISO() }); });
+      .then(()=>{ adds.push({ id:uuid(), species_name:name, kind, ref_id:mid, ext, mime:f.type||'', size:f.size, source:'guide', created_at:nowISO() }); });
   });
   Promise.all(jobs).then(()=>{
     let l=myguideList().concat(adds);
@@ -1568,7 +1568,7 @@ async function importGuideZip(input){
     const mime=ext==='png'?'image/png':(/^jpe?g$/.test(ext)?'image/jpeg':(ext==='webp'?'image/webp':'image/'+ext));
     const blob=new Blob([e.data],{type:mime}); const mid=uuid();
     try{ await PhotoDB.put({ id:mid, kind:'photo', mime, ext, size:blob.size, name:base, obs_uuid:'', created_at:nowISO(), blob });
-      adds.push({ id:uuid(), species_name:name, kind:'photo', ref_id:mid, ext, mime, source:'guide', created_at:nowISO() });
+      adds.push({ id:uuid(), species_name:name, kind:'photo', ref_id:mid, ext, mime, size:blob.size, source:'guide', created_at:nowISO() });
     }catch(err){}
     if(++done%20===0) toast(`取り込み中… ${done}/${imgs.length}`);
   }
@@ -3005,7 +3005,7 @@ SCREENS.guide = ()=>({
       <div class="sp"></div>
       <input type="file" id="guideImgInput" accept="image/*" multiple style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideImages(this)">
       <label class="btn ghost" for="guideImgInput">画像を個別に取り込む（1枚ずつ）</label>
-      <div class="tiny muted" style="margin-top:6px;">ファイル名が和名（例：ハシブトガラス.png）だと、その種の図鑑に表示されます。取り込んだ画像は<b>この端末だけ</b>に保存され、公開URLには一切上がりません（市販図鑑の私的利用）。</div>
+      <div class="tiny muted" style="margin-top:6px;">ファイル名が和名（例：ハシブトガラス.png）だと、その種の図鑑に表示されます。取り込んだ画像が<b>公開されることはありません</b>（市販図鑑の私的利用）。別の端末でも見たいときは「☁ クラウド保存」の「📚 図鑑・資料をアップロード／ダウンロード」で受け渡せます。</div>
     </div>
     <label class="field"><span class="lab">種を探す（和名・ひらがな）</span>
       <input id="guideBox" autocomplete="off" placeholder="例）カワセミ" oninput="renderGuideList(this.value)"></label>
@@ -3023,10 +3023,10 @@ function myguideItemHtml(g){
         : '<img class="myel" alt="写真" style="max-width:100%; border-radius:8px; display:block;">');
   const lab = g.source==='guide' ? '📖 図鑑（取り込み）'
     : (g.kind==='audio'?'🎧 自分の録音':(g.kind==='video'?'🎬 自分の動画':'📷 自分の写真'));
-  return `<div class="myitem" data-kind="${g.kind}" data-ref="${esc(g.ref_id)}" style="margin-top:6px;">
+  return `<div class="myitem" data-kind="${esc(g.kind)}" data-ref="${esc(g.ref_id)}" style="margin-top:6px;">
     ${inner}
     <div class="row"><span class="tiny muted grow">${lab}</span>
-      <button type="button" class="btn ghost danger" style="width:auto; padding:4px 10px; font-size:12px;" onclick="removeFromGuide('${g.id}')">図鑑から外す</button></div>
+      <button type="button" class="btn ghost danger" style="width:auto; padding:4px 10px; font-size:12px;" onclick="removeFromGuide('${esc(g.id)}')">図鑑から外す</button></div>
   </div>`;
 }
 function updateCallSaved(){
@@ -3160,7 +3160,7 @@ SCREENS.refdocs = ()=>{
             <div class="small muted">${Math.round(r.size/1024/1024*10)/10} MB ・ ${fmtDate(r.created_at)} ・ タップで開く</div></div>
           <button class="btn danger" style="width:auto; padding:6px 12px;" onclick="delRefdoc('${r.id}')">削除</button>
         </div></div>`).join('') : '<div class="empty small">まだ取り込んだ図鑑がありません。<br>手持ちのPDFを取り込むと、圏外でもアプリ内で開けます。</div>'}
-      <div class="note">取り込んだPDFは<b>この端末の中だけ</b>に保存され、公開URLやバックアップには一切上がりません（私的利用）。市販図鑑のスキャン等はこちらへ。</div>
+      <div class="note">取り込んだPDFが<b>公開されることはありません</b>（市販図鑑のスキャン等の私的利用）。別の端末でも見たいときは、「☁ クラウド保存」画面の「📚 図鑑・資料をアップロード／ダウンロード」で<b>自分のGoogleドライブ経由</b>で受け渡せます。</div>
     `};
 };
 
@@ -4160,6 +4160,204 @@ async function gdrivePullVideos(){
   }catch(e){ toast('ダウンロード失敗: '+(e.message||e)); }
 }
 
+/* ---------- 図鑑・資料PDFの手動同期（libraryフォルダ） ----------
+   資料PDF(RefDB)と図鑑切り抜き画像(PhotoDB＋bs_myguideのsource:'guide')は自動同期に含めない
+   （容量が大きい・市販図鑑の私的利用の建付けを保つため）。手動ボタンで自分のドライブとだけ受け渡す。
+   blobだけでは一覧を復元できないため、目録 birdsurvey_library_latest.json（メタ）とセットで運ぶ */
+async function gdriveEnsureLibraryFolder(parentId, token){
+  const q=encodeURIComponent("mimeType='application/vnd.google-apps.folder' and name='library' and '"+parentId+"' in parents and trashed=false");
+  const url='drive/v3/files?spaces=drive&orderBy='+encodeURIComponent('createdTime')+'&fields=files(id)&q='+q;
+  const list=await gdriveFetch(url, {}, token);
+  if(list.files && list.files.length) return list.files[0].id;
+  const created=await gdriveFetch('drive/v3/files?fields=id', { method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ name:'library', mimeType:'application/vnd.google-apps.folder', parents:[parentId] }) }, token);
+  const again=await gdriveFetch(url, {}, token);   // 作成直後に再検索して最古を採用（2端末同時作成でも収束）
+  return (again.files && again.files.length) ? again.files[0].id : created.id;
+}
+// フォルダ内一覧 name→{id, size}。sizeは空ファイル（アップロード中断の残骸）の検出に使う
+async function gdriveListLibraryFiles(folderId, token){
+  const byName=Object.create(null); let pageToken='';
+  do{
+    const q=encodeURIComponent("'"+folderId+"' in parents and trashed=false");
+    const res=await gdriveFetch('drive/v3/files?spaces=drive&pageSize=1000&fields=nextPageToken,files(id,name,size)&q='+q
+      +(pageToken?('&pageToken='+encodeURIComponent(pageToken)):''), {}, token);
+    (res.files||[]).forEach(f=>{ byName[f.name]={ id:f.id, size:Number(f.size||0) }; });
+    pageToken=res.nextPageToken||'';
+  }while(pageToken);
+  return byName;
+}
+function buildLibraryManifest(){
+  return { app:'bird_survey', kind:'library', version:1, exported_at:nowISO(),
+    refdocs:refdocList(), guides:myguideList().filter(g=>g&&g.source==='guide') };
+}
+function libGuideFileName(g){ return 'guide_'+g.ref_id+(g.ext?('.'+String(g.ext).replace(/^\./,'')):''); }
+// 目録の厳格検証。id/種別/拡張子/MIME/日時/サイズまで確認し、1箇所でも不正なら全体拒否
+//（kindや日時の細工は図鑑表示のXSSや「常に最新扱い」による正常画像の追い出しにつながるため）
+function validateLibraryManifest(d){
+  const bad=msg=>{ throw new Error('ドライブ上の図鑑・資料の目録が不正です（'+msg+'）'); };
+  const isPlain=x=>x && typeof x==='object' && !Array.isArray(x);
+  const idOk=v=>typeof v==='string' && /^[\w-]+$/.test(v);
+  const extOk=v=>v==null || (typeof v==='string' && /^[A-Za-z0-9]{1,5}$/.test(v));
+  const mimeOk=v=>v==null || v==='' || (typeof v==='string' && /^[\w.+-]+\/[\w.+-]+$/.test(v));
+  const timeOk=v=>v==null || (typeof v==='string' && !isNaN(Date.parse(v)));
+  const sizeOk=v=>v==null || (typeof v==='number' && isFinite(v) && v>=0);
+  if(!isPlain(d) || d.app!=='bird_survey' || d.kind!=='library') bad('種別');
+  if(d.version!==1) bad('版');
+  if(!Array.isArray(d.refdocs) || !Array.isArray(d.guides)) bad('形式');
+  if(d.refdocs.length>1000 || d.guides.length>5000) bad('件数');
+  for(const r of d.refdocs){ if(!isPlain(r) || !idOk(r.id) || typeof r.name!=='string' || r.name.length>300
+    || !sizeOk(r.size) || !timeOk(r.created_at)) bad('資料の要素'); }
+  for(const g of d.guides){ if(!isPlain(g) || !idOk(g.id) || !idOk(g.ref_id) || g.source!=='guide'
+    || (g.kind!=='photo' && g.kind!=='video') || typeof (g.species_name||'')!=='string' || String(g.species_name||'').length>100
+    || !extOk(g.ext) || !mimeOk(g.mime) || !sizeOk(g.size) || !timeOk(g.created_at)) bad('図鑑の要素');
+    // MIMEと種別の対応（写真にvideo/等が紛れない）
+    if(g.mime && g.kind==='photo' && !/^image\//.test(g.mime)) bad('図鑑のMIME');
+    if(g.mime && g.kind==='video' && !/^video\//.test(g.mime)) bad('図鑑のMIME'); }
+  return true;
+}
+// 2つの目録をid単位の和集合に（アップロード時、他端末が上げた分を目録から消さないため）。壊れた側は無視
+function unionLibraryManifests(a, b){
+  try{ validateLibraryManifest(b); }catch(e){ return a; }
+  const out={ app:'bird_survey', kind:'library', version:1, exported_at:nowISO(),
+    refdocs:a.refdocs.slice(), guides:a.guides.slice() };
+  const rIds=new Set(out.refdocs.map(r=>r.id)); b.refdocs.forEach(r=>{ if(!rIds.has(r.id)) out.refdocs.push(r); });
+  const gIds=new Set(out.guides.map(g=>g.id)); b.guides.forEach(g=>{ if(!gIds.has(g.id)) out.guides.push(g); });
+  return out;
+}
+// 目録のメタを端末に追加する（追加のみ・既存は消さない）。blobより先に保存する
+//（起動時の掃除mediaGcAllに、後から入れるblobが消されないため）。同一種の整理はblob取得後に別途行う
+function mergeLibraryManifestAdd(d){
+  validateLibraryManifest(d);
+  const cur=refdocList(); const have=new Set(cur.map(r=>r.id));
+  const merged=cur.slice();
+  d.refdocs.forEach(r=>{ if(!have.has(r.id)) merged.push({ id:r.id, name:String(r.name), size:r.size, created_at:r.created_at }); });
+  refdocSave(merged);
+  const guide=myguideList(); const gHave=new Set(guide.map(g=>g&&g.id));
+  let changed=false;
+  d.guides.forEach(g=>{ if(!gHave.has(g.id)){ guide.push(g); changed=true; } });
+  if(changed && !myguideSave(guide)) throw new Error('保存できませんでした（空き容量を確認してください）');
+}
+// 同一種のsource:'guide'を「実体が端末にある最新の1件」に整理する。
+// 実体の取得に失敗した種は古い画像とメタをそのまま残す（新メタだけ残して旧を消すと、掃除で旧画像まで消えて全滅するため）
+async function libFinalizeGuides(){
+  const guide=myguideList();
+  const bySp=Object.create(null);
+  guide.forEach(g=>{ if(g && g.source==='guide'){ const k=g.species_name||''; (bySp[k]=bySp[k]||[]).push(g); } });
+  const drop=new Set();
+  const tv=g=>{ const n=Date.parse(g.created_at||''); return isNaN(n)?0:n; };   // 表記ゆれに左右されない数値時刻で比較
+  for(const sp in bySp){
+    const arr=bySp[sp].slice().sort((a,b)=>tv(b)-tv(a));
+    if(arr.length<2) continue;
+    let keepIdx=-1;
+    for(let i=0;i<arr.length;i++){ const rec=await PhotoDB.get(arr[i].ref_id).catch(()=>null);
+      if(rec && rec.blob && rec.blob.size>0){ keepIdx=i; break; } }
+    if(keepIdx<0) continue;   // どれも実体なし→整理せず次回の取得に賭ける
+    // 実体を持つ最新の1件より「古いもの」だけ整理する。より新しい実体待ちメタは残す（次回取得で置き換わる）
+    for(let i=keepIdx+1;i<arr.length;i++) drop.add(arr[i].id);
+  }
+  if(drop.size) myguideSave(myguideList().filter(g=>!(g && drop.has(g.id))));
+}
+// 手動アップロード: 目録＋ドライブに無い実体だけを送る（差分はドライブの一覧との突き合わせで判定）
+async function gdriveUploadLibrary(){
+  if(!gdriveCfg().clientId){ toast('先にクライアントIDを設定してください'); return; }
+  if(!confirm('図鑑・資料PDFは容量が大きいことがあるため、Wi-Fi接続でのアップロードをおすすめします。続けますか？\n（送り先は自分のGoogleドライブだけで、公開はされません）')) return;
+  try{
+    const wasSignedIn=gdriveSignedIn();
+    const token=await gdriveGetToken(true);
+    if(!wasSignedIn && !await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗したため中止しました'); return; }
+    const local=buildLibraryManifest();
+    if(!local.refdocs.length && !local.guides.length){ toast('アップロードする図鑑・資料がありません'); return; }
+    toast('図鑑・資料をアップロード中…');
+    const r=await gdriveSerial(async ()=>{
+      const parentId=await gdriveEnsureFolder(token);
+      const folderId=await gdriveEnsureLibraryFolder(parentId, token);
+      const files=await gdriveListLibraryFiles(folderId, token);
+      // ドライブ上の既存目録と合体してから上げる（他端末がアップした分を目録から消さないため）。
+      // 既存目録が壊れていて読めない場合は、実体だけ上げて目録の更新は見送る（他端末分を上書きで消さない）
+      let man=local, manBlocked=false;
+      const remote=files['birdsurvey_library_latest.json'];
+      if(remote){
+        try{
+          const rd=await (await gdriveFetchRaw('drive/v3/files/'+remote.id+'?alt=media', token)).json();
+          validateLibraryManifest(rd);
+          man=unionLibraryManifests(local, rd);
+        }catch(e){ manBlocked=true; }
+      }
+      const jobs=[];
+      local.refdocs.forEach(m=>jobs.push({ name:'refdoc_'+m.id+'.pdf', size:(typeof m.size==='number'?m.size:null), get:()=>RefDB.get(m.id), mime:'application/pdf' }));
+      local.guides.forEach(g=>jobs.push({ name:libGuideFileName(g), size:(typeof g.size==='number'?g.size:null), get:()=>PhotoDB.get(g.ref_id), mime:g.mime||'' }));
+      // 未アップ・空ファイル（中断の残骸）・サイズ不一致は上げ直す
+      const todo=jobs.filter(j=>{ const f=files[j.name];
+        return !f || !(f.size>0) || (j.size!=null && f.size!==j.size); });
+      let done=0, skip=0;
+      for(const j of todo){
+        const rec=await j.get().catch(()=>null);
+        if(!rec || !rec.blob || !(rec.blob.size>0)){ skip++; continue; }   // 実体がこの端末に無い分は送れない
+        await gdriveUploadBlob(folderId, j.name, rec.blob, j.mime||rec.blob.type||'application/octet-stream', token);
+        done++; try{ toast(`図鑑・資料をアップロード中… ${done}/${todo.length}`); }catch(e){}
+      }
+      // 目録は全実体を確認でき、既存目録も正常なときだけ更新（壊れた状態や欠けた項目を固定しない）
+      if(!skip && !manBlocked){ validateLibraryManifest(man); await gdriveUpsertFile(folderId, 'birdsurvey_library_latest.json', JSON.stringify(man), token); }
+      return { done, already:jobs.length-todo.length, skip, manBlocked };
+    });
+    let msg;
+    if(r.manBlocked){ msg='ドライブ上の目録が壊れているため目録は更新しませんでした'+(r.done?`（実体${r.done}件はアップロード済み）`:''); }
+    else if(r.skip){ msg=`${r.skip}件の実体を確認できなかったため、目録は更新しませんでした`+(r.done?`（${r.done}件はアップロード済み）`:''); }
+    else if(r.done){ msg=`図鑑・資料${r.done}件をアップロードしました`+(r.already?`（${r.already}件はアップ済み）`:''); }
+    else{ msg='すべてアップロード済みです'; }
+    toast(msg, 4000); render();
+  }catch(e){ toast('アップロード失敗: '+(e.message||e)); }
+}
+// 手動ダウンロード: 目録を取り込んでから、実体が無い分だけ受け取る
+async function gdrivePullLibrary(){
+  if(!gdriveCfg().clientId){ toast('先にクライアントIDを設定してください'); return; }
+  if(!confirm('図鑑・資料PDFは容量が大きいことがあるため、Wi-Fi接続でのダウンロードをおすすめします。続けますか？')) return;
+  try{
+    const wasSignedIn=gdriveSignedIn();
+    const token=await gdriveGetToken(true);
+    if(!wasSignedIn && !await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗したため中止しました'); return; }
+    toast('図鑑・資料を確認中…');
+    const r=await gdriveSerial(async ()=>{
+      const parentId=await gdriveEnsureFolder(token);
+      const folderId=await gdriveEnsureLibraryFolder(parentId, token);
+      const files=await gdriveListLibraryFiles(folderId, token);
+      const man=files['birdsurvey_library_latest.json'];
+      if(!man) return null;
+      const d=await (await gdriveFetchRaw('drive/v3/files/'+man.id+'?alt=media', token)).json();
+      mergeLibraryManifestAdd(d);                     // 1) メタを先に「追加のみ」で保存（既存は消さない）
+      const jobs=[];                                  // 2) 実体が無い分だけダウンロード
+      refdocList().forEach(m=>jobs.push({ name:'refdoc_'+m.id+'.pdf', size:(typeof m.size==='number'?m.size:null),
+        has:()=>RefDB.get(m.id), put:blob=>RefDB.put({ id:m.id, blob }) }));
+      myguideList().filter(g=>g&&g.source==='guide').forEach(g=>jobs.push({ name:libGuideFileName(g),
+        size:(typeof g.size==='number'?g.size:null),
+        has:()=>PhotoDB.get(g.ref_id),
+        put:blob=>PhotoDB.put({ id:g.ref_id, kind:g.kind||'photo', mime:g.mime||blob.type, ext:g.ext,
+          size:blob.size, name:'', obs_uuid:'', created_at:g.created_at||nowISO(), blob }) }));
+      let done=0, miss=0;
+      for(const j of jobs){
+        const rec=await j.has().catch(()=>null);
+        if(rec && rec.blob && rec.blob.size>0) continue;
+        const f=files[j.name];
+        if(!f || !(f.size>0)){ miss++; continue; }    // 相手がまだ上げていない／中断の残骸（空ファイル）は取らない
+        if(j.size!=null && f.size!==j.size){ miss++; continue; }   // 目録のサイズと不一致（不完全ファイル）は取らない
+        let blob=null; try{ blob=await (await gdriveFetchRaw('drive/v3/files/'+f.id+'?alt=media', token)).blob(); }catch(e){ miss++; continue; }
+        if(!(blob.size>0) || (j.size!=null && blob.size!==j.size)){ miss++; continue; }
+        try{ await j.put(blob); }catch(e){ miss++; continue; }    // 保存失敗（容量不足等）は数えて続行
+        done++; try{ toast(`図鑑・資料をダウンロード中… ${done}件`); }catch(e){}
+      }
+      // 3) 同一種の図鑑画像を「実体がある最新1件」に整理（実体を取れなかった種は旧画像を残す）→ 不要になった実体を掃除
+      await libFinalizeGuides();
+      mediaGcAll().catch(()=>{});
+      return { done, miss };
+    });
+    if(!r){ toast('ドライブに図鑑・資料がまだありません（先に相手の端末でアップロードしてください）', 4000); return; }
+    let msg=r.done?`図鑑・資料${r.done}件を取り込みました`:'新しく取り込む図鑑・資料はありません';
+    if(r.miss) msg+=`（${r.miss}件は未取得。相手の端末でアップロード後にもう一度）`;
+    toast(msg, 4000); render();
+  }catch(e){ toast('ダウンロード失敗: '+(e.message||e)); }
+}
+
 const APPS_SCRIPT_CODE = `// 鳥類調査記録アプリ バックアップ受け皿（Google Apps Script）
 // TOKEN を好きな合言葉に変え、デプロイ→ウェブアプリ（実行:自分／アクセス:全員）→URLをアプリに貼る
 var TOKEN  = 'あいことば';            // ← アプリにも同じ合言葉を入れる
@@ -4212,6 +4410,11 @@ SCREENS.cloud = ()=>{
         </div>
         <span id="vidDlWrap"></span>
         <div class="sp"></div>
+        <div class="btn-grid">
+          <button class="btn" onclick="gdriveUploadLibrary()">📚 図鑑・資料をアップロード</button>
+          <button class="btn" onclick="gdrivePullLibrary()">📚 図鑑・資料をダウンロード</button>
+        </div>
+        <div class="sp"></div>
         <button class="btn ghost" onclick="gdriveBackupFull()">💾 予備の丸ごとバックアップ（1ファイル）</button>`:''}
         <div class="tiny muted" style="margin-top:8px;">会社アカウントで保存したいときは、サインインの画面で<b>会社アカウントを選択</b>してください。弾かれる場合は共有・個人アカウントに切り替えられます。</div>
       </div>
@@ -4247,7 +4450,7 @@ SCREENS.cloud = ()=>{
           <button class="btn" onclick="cloudBackupFull()">☁ 録音・写真も保存</button>
         </div>`:''}
       </div>
-      <div class="note">Googleドライブでは、記録（調査・観察・メモ・仮説）と<b>写真・録音が変更のたび自動</b>で保存されます。動画だけは容量が大きいため「動画をアップロード」を手動で押してください（Wi-Fi推奨）。iPhoneとiPadなど<b>2台で同じアカウントにサインイン</b>しておくと、アプリを開いたときに「読み込みますか？」と出て、もう一方の端末の記録を取り込めます。データは「${esc(GDRIVE_FOLDER)}」フォルダに入ります。<br>※端末どうしの引き継ぎを使う前に、<b>すべての端末でホーム画面下の「↻ 最新に更新」を押して同じ版に</b>してください（古い版のままの端末には新しい記録が届きません）。</div>
+      <div class="note">Googleドライブでは、記録（調査・観察・メモ・仮説）と<b>写真・録音が変更のたび自動</b>で保存されます。動画だけは容量が大きいため「動画をアップロード」を手動で押してください（Wi-Fi推奨）。図鑑の切り抜き画像と資料PDFも自動同期には含まれないので、「図鑑・資料をアップロード／ダウンロード」で受け渡してください。iPhoneとiPadなど<b>2台で同じアカウントにサインイン</b>しておくと、アプリを開いたときに「読み込みますか？」と出て、もう一方の端末の記録を取り込めます。データは「${esc(GDRIVE_FOLDER)}」フォルダに入ります。<br>※端末どうしの引き継ぎを使う前に、<b>すべての端末でホーム画面下の「↻ 最新に更新」を押して同じ版に</b>してください（古い版のままの端末には新しい記録が届きません）。</div>
       <div class="divider"></div>
       <h3 class="muted small">初期設定A：Googleドライブ直接保存（おすすめ・一度だけ・約10分）</h3>
       <div class="note" style="margin-bottom:8px;">このアプリのアドレス（手順4で貼る「JavaScript生成元」）：<br><b style="word-break:break-all;">${esc(location.origin)}</b></div>
