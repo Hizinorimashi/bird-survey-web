@@ -133,6 +133,15 @@
     background:rgba(0,0,0,.6); color:#fff; border:1px solid rgba(255,255,255,.5); font-size:16px;
     line-height:1; cursor:pointer; z-index:2;}
   .mediacap{margin-top:3px; text-align:center;}
+  /* メディア一覧（ギャラリー）・拡大表示 */
+  .galplay{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:#fff; font-size:26px; text-shadow:0 1px 6px rgba(0,0,0,.8); pointer-events:none;}
+  .galaudio{width:100%; height:100%; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:4px; font-size:26px; color:var(--muted);}
+  .lightbox{position:fixed; inset:0; background:rgba(0,0,0,.92); z-index:1500;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; padding:14px;}
+  .lightbox-media{max-width:100%; max-height:68vh; object-fit:contain; border-radius:8px; background:#000;}
+  .lightbox-bar{margin-top:12px; width:100%; max-width:480px; text-align:center; color:#fff;}
 
   /* 選択削除 */
   .selcard.selected{border-color:var(--accent); background:var(--panel2);}
@@ -173,7 +182,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v54（2026-07-28 同期の結果表示を具体的に：記録の件数・取り込み・アップロード数を明示）';
+const APP_VERSION = 'v55（2026-07-28 メディア一覧：全調査の写真・動画・録音を新しい順に一覧、タップで拡大→記録へ）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -844,6 +853,7 @@ function render(){
   if(_mapTimer){ clearTimeout(_mapTimer); _mapTimer=null; }   // 前画面の地図初期化予約を取り消す
   if(mapObj){ try{ mapObj.remove(); }catch(e){} mapObj=null; }
   if(typeof stopWalk==='function') stopWalk(true);   // ルートの自動記録（GPS監視）を確実に止める
+  if(document.getElementById('lightbox')) galClose();   // メディア拡大表示の閉じ忘れを解放（#mainの外なのでここで面倒を見る）
   const cur = STACK[STACK.length-1] || {name:'home'};
   const scr = SCREENS[cur.name] || SCREENS.home;
   const out = scr(cur.arg) || {};
@@ -916,6 +926,8 @@ SCREENS.home = ()=>{
       </div>
       <div class="sp"></div>
       <button class="btn" onclick="nav('refdocs',null)">📚 資料・図鑑（PDF取り込み）</button>
+      <div class="sp"></div>
+      <button class="btn" onclick="SCREENS._galPage=0; nav('gallery',null)">🖼 メディア一覧（写真・動画・録音）</button>
       <div class="sp"></div>
       ${active.length?`<h3 class="muted small">継続中の調査</h3>${active.map(svCard).join('')}`:''}
       ${listHeader}
@@ -2758,6 +2770,148 @@ function runSearch(q){
           ${r.snippet?`<div class="small" style="margin-top:4px;">${esc(String(r.snippet).slice(0,80))}</div>`:''}
         </div><span class="muted">›</span></div></div>`;
     }).join('');
+}
+
+/* ============================================================
+   メディア一覧（全調査の写真・動画・録音を新しい順に一覧）
+   ============================================================ */
+// 一覧の元データ。生きている観察・飛翔レコードから直接メディア参照を集める
+//（同期用のcollectMediaRefsは削除済みレコードを含み、重複排除の順序次第で生存側の参照が欠落しうるため使わない）
+function galleryItems(){
+  const svMap=Object.create(null); DB.surveys().forEach(s=>{ svMap[s.uuid]=s; });
+  const items=[]; const seen=new Set();
+  const take=(owner, ownerType)=>{
+    const s=svMap[owner.survey_uuid]; if(!s) return;   // 削除済み調査のものは出さない
+    const when=(ownerType==='obs' ? owner.observed_at : owner.start_time)||'';
+    const add=(m, store)=>{
+      if(!m||!m.id) return; const key=store+':'+m.id;
+      if(seen.has(key)) return; seen.add(key);
+      const w=when || m.created_at || '';
+      const t=Date.parse(w);   // 保存形式（UTC/端末時刻）が混在しても正しく並ぶよう数値化して比較する
+      items.push({ store, id:m.id, kind:(store==='audio'?'audio':(m.kind||'photo')),
+        when:w, t:isNaN(t)?0:t, dur:m.dur,
+        species:owner.species_name_snapshot||'', svUuid:s.uuid, svName:s.name||'',
+        ownerType, ownerUuid:owner.uuid });
+    };
+    (owner.audio||[]).forEach(m=>add(m,'audio'));
+    (owner.media||[]).forEach(m=>add(m,'media'));
+  };
+  DB.observations().forEach(o=>take(o,'obs'));
+  DB.flights().forEach(f=>take(f,'flight'));
+  items.sort((a,b)=>b.t-a.t);
+  return items;
+}
+function galFmtWhen(w, withTime){ if(!w) return ''; const d=new Date(w); if(isNaN(d)) return '';
+  const md=(d.getMonth()+1)+'/'+d.getDate();
+  return withTime ? md+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2) : md;
+}
+const GAL_PAGE_SIZE=60;
+SCREENS.gallery = ()=>{
+  const kind=SCREENS._galKind||'all';
+  const surveys=DB.surveys().slice().sort((a,b)=>String(b.survey_date||'').localeCompare(String(a.survey_date||'')));
+  let sv=SCREENS._galSv||'';
+  if(sv && !surveys.some(s=>s.uuid===sv)){ sv=''; SCREENS._galSv=''; }   // 絞り込み先の調査が削除されていたら解除
+  let items=galleryItems();
+  const total=items.length;
+  if(sv) items=items.filter(it=>it.svUuid===sv);
+  if(kind!=='all') items=items.filter(it=>it.kind===kind);
+  SCREENS._galItems=items;   // 拡大表示・記録ジャンプ用（一覧の位置で特定する。IDは録音と写真で重複しうるため使わない）
+  const pages=Math.max(1, Math.ceil(items.length/GAL_PAGE_SIZE));
+  const page=Math.min(Math.max(0, SCREENS._galPage||0), pages-1); SCREENS._galPage=page;
+  const start=page*GAL_PAGE_SIZE;
+  const shown=items.slice(start, start+GAL_PAGE_SIZE);
+  const chip=(k,label)=>`<span class="c" style="${kind===k?'border-color:var(--accent); font-weight:700;':''}" onclick="galSetKind('${k}')">${label}</span>`;
+  return { title:'メディア一覧',
+    html:`
+      <div class="chips">${chip('all','すべて')}${chip('photo','📷 写真')}${chip('video','🎬 動画')}${chip('audio','🎤 録音')}</div>
+      <div class="sp"></div>
+      <label class="field"><span class="lab">調査で絞り込み</span>
+        <select onchange="galSetSv(this.value)">
+          <option value="">すべての調査</option>
+          ${surveys.map(s=>`<option value="${s.uuid}" ${sv===s.uuid?'selected':''}>${esc(s.name||'')}（${esc(fmtDate(s.survey_date))}）</option>`).join('')}
+        </select></label>
+      ${items.length? '' : '<div class="empty">表示できる写真・動画・録音がありません。<br>観察記録に写真や録音を付けると、ここに一覧されます。</div>'}
+      ${shown.length?`<div class="mediagrid">${shown.map((it,i)=>{
+        const idx=start+i;
+        const thumb = it.kind==='audio'
+          ? `<div class="galaudio">🎤<div class="tiny">${it.dur?esc(fmtDur(it.dur)):'録音'}</div></div>`
+          : it.kind==='video'
+            ? '<video class="mediael" preload="metadata" muted playsinline></video><div class="galplay">▶</div>'
+            : '<img class="mediael" alt="写真">';
+        return `<div class="mediaitem" data-gid="${idx}">
+          <div class="mediathumb" onclick="galOpen(${idx})">${thumb}</div>
+          <div class="tiny muted mediacap">${esc((it.species||'—').slice(0,7))} ・ ${galFmtWhen(it.when)}</div>
+        </div>`;}).join('')}</div>`:''}
+      ${pages>1?`<div class="sp"></div><div class="btn-grid">
+        <button class="btn" ${page<=0?'disabled':''} onclick="galPage(-1)">‹ 前の${GAL_PAGE_SIZE}件</button>
+        <button class="btn" ${page>=pages-1?'disabled':''} onclick="galPage(1)">次の${GAL_PAGE_SIZE}件 ›</button>
+      </div><div class="tiny muted" style="text-align:center; margin-top:6px;">${page+1} / ${pages} ページ</div>`:''}
+      <div class="sp"></div>
+      <div class="note">該当${items.length}件${(sv||kind!=='all')?`（全体では${total}件）`:''}。サムネイルをタップすると拡大表示され、そこから元の記録を開けます。「☁ 未取得」は相手の端末からまだ届いていないもの（同期待ち・動画は手動ダウンロード）です。録音（🎤）は拡大表示で再生できます。</div>
+    `,
+    onMount:()=>{ galLoadThumbs(shown, start); }};
+};
+// 表示中ページのタイルにIndexedDBのblobを割り当てる（画面遷移していたら中止＝既存メディアパネルと同じ作法）。
+// 録音は一覧では読み込まない（拡大表示で初めて読む＝一覧が軽い）
+function galLoadThumbs(shown, start){
+  const main=$('#main'); if(!main) return;
+  const gen=++_mediaGen;
+  shown.forEach((it,i)=>{
+    if(it.store==='audio') return;
+    PhotoDB.get(it.id).then(r=>{
+      if(gen!==_mediaGen) return;
+      const el=main.querySelector(`.mediaitem[data-gid="${start+i}"] .mediael`); if(!el||!el.isConnected) return;
+      if(!r||!r.blob){   // 実体がまだこの端末に無い（同期待ち・動画の手動DL前）
+        const th=el.closest('.mediathumb');
+        if(th) th.innerHTML='<div class="tiny muted" style="display:flex; align-items:center; justify-content:center; height:100%; text-align:center;">☁ 未取得</div>';
+        return;
+      }
+      if(el._url) URL.revokeObjectURL(el._url);
+      el._url=URL.createObjectURL(r.blob); el.src=el._url;
+    }).catch(()=>{});
+  });
+}
+function galSetKind(k){ SCREENS._galKind=k; SCREENS._galPage=0; render(); }
+function galSetSv(v){ SCREENS._galSv=v; SCREENS._galPage=0; render(); }
+function galPage(d){ SCREENS._galPage=Math.max(0,(SCREENS._galPage||0)+d); render(); }
+// 拡大表示（ライトボックス）。#main の外に置くため、URL解放は galClose で自前管理する
+function galClose(){
+  const lb=document.getElementById('lightbox'); if(!lb) return;
+  revokePanelUrls(lb, '.mediael, audio');
+  lb.remove();
+}
+function galOpen(idx){
+  const it=(SCREENS._galItems||[])[idx]; if(!it) return;
+  galClose();
+  const lb=document.createElement('div');
+  lb.className='lightbox'; lb.id='lightbox';
+  lb.onclick=(e)=>{ if(e.target===lb) galClose(); };   // 背景タップで閉じる
+  lb.innerHTML=`
+    ${it.kind==='video' ? '<video class="lightbox-media mediael" controls playsinline></video>'
+      : it.kind==='audio' ? '<div style="font-size:44px;">🎤</div><audio controls class="recaudio" style="width:100%; max-width:480px;"></audio>'
+      : '<img class="lightbox-media mediael" alt="写真">'}
+    <div class="lightbox-bar">
+      <div class="small">${esc(it.species||'')} ・ ${galFmtWhen(it.when,true)} ・ ${esc(it.svName)}</div>
+      <div class="btn-grid" style="margin-top:10px;">
+        <button class="btn primary" onclick="galJump(${idx})">この記録を開く</button>
+        <button class="btn ghost" onclick="galClose()">閉じる</button>
+      </div>
+    </div>`;
+  document.body.appendChild(lb);
+  // 世代カウンタは使わない（一覧のサムネ読み込みを巻き添えで中断させないため）。閉じられたら isConnected で弾く
+  const db = it.store==='audio' ? AudioDB : PhotoDB;
+  db.get(it.id).then(r=>{
+    const el=lb.querySelector('.mediael, audio'); if(!el||!el.isConnected) return;
+    if(!r||!r.blob){ toast('この端末にまだ実体がありません（同期・ダウンロード待ち）'); return; }
+    if(el._url) URL.revokeObjectURL(el._url);
+    el._url=URL.createObjectURL(r.blob); el.src=el._url;
+  }).catch(()=>{});
+}
+function galJump(idx){
+  const it=(SCREENS._galItems||[])[idx]; if(!it) return;
+  galClose();
+  if(it.ownerType==='flight') nav('flightEdit', JSON.stringify({sv:it.svUuid, id:it.ownerUuid}));
+  else nav('obsEdit', JSON.stringify({sv:it.svUuid, id:it.ownerUuid}));
 }
 
 /* ============================================================
