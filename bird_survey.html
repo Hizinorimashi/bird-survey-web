@@ -21,7 +21,7 @@
      htmlのlightクラスで切替（html側に付けると最上位背景・引っ張り表示の帯まで明るくなる） */
   html.light{
     --bg:#eef1ef; --panel:#ffffff; --panel2:#dfe6e1; --line:#b9c6be;
-    --fg:#17211b; --muted:#5a6b62; --accent:#1f7a52; --accent2:#276e50;
+    --fg:#17211b; --muted:#57685f; --accent:#1f7a52; --accent2:#276e50;
     --warn:#9a6b00; --danger:#b23c3c; --chip:#dbe5dd;
   }
   html.light .leaflet-container{background:#dfe3df;}
@@ -207,7 +207,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v63（2026-07-29 検索とホームを高速化・屋外用の明るい表示を追加）';
+const APP_VERSION = 'v64（2026-07-30 図鑑・鳴き声画面を整理（鳴き声保存と図鑑取り込みを折りたたみに））';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3478,26 +3478,29 @@ function purgeAll(){
 SCREENS.guide = ()=>({
   title:'図鑑・鳴き声',
   html:`
-    <div class="card">
-      <div class="small">🎧 オフライン鳴き声 <b>${Object.keys(CALLS).length}種</b>（北海道の鳥・同梱・圏外でも再生）</div>
-      <div class="tiny muted">道外の種はオフライン音源を同梱していません（🔊/🐦の外部リンクで再生できます）。</div>
-      <div class="small muted" id="callSaved">保存状況を確認中…</div>
-      <div class="sp"></div>
-      <button class="btn" id="dlCallsBtn" onclick="downloadCalls()">⬇ 鳴き声を端末に保存（約96MB・Wi-Fi推奨）</button>
-      <div class="sp"></div>
-      <button class="btn ghost" onclick="nav('callCredits',null)">鳴き声の出典一覧</button>
-    </div>
-    <div class="card">
-      <div class="small">📖 図鑑の切り抜き画像 <b>${myguideList().filter(g=>g.source==='guide').length}種</b>取り込み済み</div>
-      <div class="sp"></div>
-      <input type="file" id="guideZipInput" accept=".zip,application/zip" style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideZip(this)">
-      <label class="btn primary" for="guideZipInput">📦 図鑑ZIPを一括取り込み（ファイル1個でOK）</label>
-      <div class="tiny muted" style="margin-top:6px;">配布された <b>種図鑑.zip</b> を選ぶだけで、たくさんの種の図版をまとめて取り込めます。iPhoneでは「ファイル」から Googleドライブ／OneDrive／iCloud のどこに置いた1ファイルでも選べます。</div>
-      <div class="sp"></div>
-      <input type="file" id="guideImgInput" accept="image/*" multiple style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideImages(this)">
-      <label class="btn ghost" for="guideImgInput">画像を個別に取り込む（1枚ずつ）</label>
-      <div class="tiny muted" style="margin-top:6px;">ファイル名が和名（例：ハシブトガラス.png）だと、その種の図鑑に表示されます。取り込んだ画像が<b>公開されることはありません</b>（市販図鑑の私的利用）。別の端末でも見たいときは「☁ クラウド保存」の「📚 図鑑・資料をアップロード／ダウンロード」で受け渡せます。</div>
-    </div>
+    <details class="fold" style="margin-bottom:12px;" ${callsAllSavedFlag()?'':'open'}>
+      <summary>🎧 オフライン鳴き声（${callsAllSavedFlag()?`全${Object.keys(CALLS).length}種保存済み`:`${Object.keys(CALLS).length}種・圏外でも再生`}）</summary>
+      <div class="card" style="background:var(--panel2); margin-bottom:0;">
+        <div class="tiny muted">北海道の鳥を同梱。道外の種はオフライン音源を同梱していません（🔊/🐦の外部リンクで再生できます）。</div>
+        <div class="small muted" id="callSaved">保存状況を確認中…</div>
+        <div class="sp"></div>
+        <button class="btn" id="dlCallsBtn" onclick="downloadCalls()" ${_dlCallsRunning?'disabled':''}>${_dlCallsRunning?'ダウンロード中…':'⬇ 鳴き声を端末に保存（約96MB・Wi-Fi推奨）'}</button>
+        <div class="sp"></div>
+        <button class="btn ghost" onclick="nav('callCredits',null)">鳴き声の出典一覧</button>
+      </div>
+    </details>
+    <details class="fold" style="margin-bottom:12px;">
+      <summary>📦 図鑑画像の取り込み（ZIP・個別）— ${myguideList().filter(g=>g.source==='guide').length}種済み</summary>
+      <div class="card" style="background:var(--panel2); margin-bottom:0;">
+        <input type="file" id="guideZipInput" accept=".zip,application/zip" style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideZip(this)">
+        <label class="btn primary" for="guideZipInput">📦 図鑑ZIPを一括取り込み（ファイル1個でOK）</label>
+        <div class="tiny muted" style="margin-top:6px;">配布された <b>種図鑑.zip</b> を選ぶだけで、たくさんの種の図版をまとめて取り込めます。iPhoneでは「ファイル」から Googleドライブ／OneDrive／iCloud のどこに置いた1ファイルでも選べます。</div>
+        <div class="sp"></div>
+        <input type="file" id="guideImgInput" accept="image/*" multiple style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideImages(this)">
+        <label class="btn ghost" for="guideImgInput">画像を個別に取り込む（1枚ずつ）</label>
+        <div class="tiny muted" style="margin-top:6px;">ファイル名が和名（例：ハシブトガラス.png）だと、その種の図鑑に表示されます。取り込んだ画像が<b>公開されることはありません</b>（市販図鑑の私的利用）。別の端末でも見たいときは「☁ クラウド保存」の「📚 図鑑・資料をアップロード／ダウンロード」で受け渡せます。</div>
+      </div>
+    </details>
     <label class="field"><span class="lab">種を探す（和名・ひらがな）</span>
       <input id="guideBox" autocomplete="off" placeholder="例）カワセミ" oninput="renderGuideList(this.value)"></label>
     <div class="row" style="margin-bottom:10px;"><button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="toggleGuideMine()">${SCREENS._guideMineOnly?'← すべての種を表示':'🕮 自分の記録がある種だけ'}</button></div>
@@ -3520,10 +3523,24 @@ function myguideItemHtml(g){
       <button type="button" class="btn ghost danger" style="width:auto; padding:4px 10px; font-size:12px;" onclick="removeFromGuide('${esc(g.id)}')">図鑑から外す</button></div>
   </div>`;
 }
+/* 鳴き声の折りたたみ判定。全種保存済みなら畳む（未保存のうちは開いて目立たせる）。
+   localStorage直書き＝テーマと同じく端末ごとの状態（同期対象にしない）。
+   値は音源一覧の署名（種名＋ファイル名から算出）。音源の追加・差し替えで署名が変わるため、
+   旧版で保存した「済み」を信用せず、誤って「全種保存済み」と畳んだままにしない */
+let _callsSig=null;
+function callsSig(){
+  if(_callsSig===null){ let h=0;
+    for(const jp in CALLS){ const s=jp+':'+CALLS[jp].f+';'; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))|0; }
+    _callsSig='s'+(h>>>0).toString(36)+'-'+Object.keys(CALLS).length; }
+  return _callsSig;
+}
+function callsAllSavedFlag(){ try{ return localStorage.getItem('bs_calls_allsaved')===callsSig(); }catch(e){ return false; } }
 function updateCallSaved(){
-  const el=$('#callSaved'), btn0=$('#dlCallsBtn'); if(!el&&!btn0) return;
   const total=Object.keys(CALLS).length;
   countUpToDateCalls().then(n=>{
+    // 開閉フラグは画面表示の有無に関係なく更新（別画面でDL完了しても次回表示に反映）。
+    // 表示中のopen状態は触らない（見ている最中に勝手に閉じない。次回表示から反映）
+    try{ if(n>=total) localStorage.setItem('bs_calls_allsaved',callsSig()); else localStorage.removeItem('bs_calls_allsaved'); }catch(e){}
     const rest=Math.max(0,total-n);   // 未保存＋差し替えで古くなった種
     const sv=$('#callSaved');
     if(sv) sv.textContent = n>=total ? `✅ 全${total}種を端末に保存済み（圏外でも再生できます）` : `端末に保存済み: ${n} / ${total} 種`;
