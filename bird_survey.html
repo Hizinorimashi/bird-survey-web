@@ -197,7 +197,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v61（2026-07-29 「観察を追加」「すぐ録音」も同じ高さに統一）';
+const APP_VERSION = 'v62（2026-07-29 ラインセンサス強化：観察入力中もルート記録を継続・自動下書き保存・GPS監視を一本化）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -868,7 +868,7 @@ const DISCARDED=new Set();
 // 保存フローは保存成功時に SCREENS._dirty=false にしてから遷移するので、ここには引っかからない
 function leaveGuardOk(){
   const cur=STACK[STACK.length-1]||{};
-  const editScreen=(cur.name==='obsEdit'||cur.name==='noteEdit'||cur.name==='flightEdit'
+  const editScreen=(cur.name==='obsEdit'||cur.name==='noteEdit'||cur.name==='flightEdit'||cur.name==='routeEdit'
     ||(cur.name==='surveyEdit' && SCREENS._editing));   // 既存調査の途中編集も保護（新規は下書き自動保存があるので対象外）
   const dirty=editScreen && SCREENS._dirty;
   const ghost=dirty ? SCREENS._ghost : null;   // 写真・録音を先に付けてDBに仮保存された未保存の新規記録
@@ -907,7 +907,13 @@ function render(){
   if(PDFCTX){ try{ PDFCTX.doc.destroy(); }catch(e){} PDFCTX=null; } // PDF閲覧の後始末
   if(_mapTimer){ clearTimeout(_mapTimer); _mapTimer=null; }   // 前画面の地図初期化予約を取り消す
   if(typeof destroyMap==='function') destroyMap();   // 地図＋コンパス監視＋許可待ちをまとめて破棄
-  if(typeof stopWalk==='function') stopWalk(true);   // ルートの自動記録（GPS監視）を確実に止める
+  routeLayer=null; routeLine=null; routeEndMarker=null;   // 破棄済み地図のルート描画層への参照を残さない
+  // GPSインジケータ監視は画面ごとに張り直す（出しっぱなし＝電池消耗の防止）。
+  // ただし調査画面内の再描画（さらに表示等）では止めない（瞬断と測位再起動の負荷を避ける）
+  if(typeof stopGps==='function' && (STACK[STACK.length-1]||{}).name!=='survey') stopGps();
+  // 歩行ルート記録（WALK）はここでは止めない＝観察入力などに移っても記録は継続する。停止は⏹/保存/調査終了のみ。
+  // ただし記録中の調査そのものが消えていたら（同期の完全削除など）止める
+  if(WALK && !DB.survey(WALK.sv)){ stopWalk(true); try{ toast('記録中の調査が削除されたためルート記録を停止しました', 4000); }catch(e){} }
   if(document.getElementById('lightbox')) galClose();   // メディア拡大表示の閉じ忘れを解放（#mainの外なのでここで面倒を見る）
   const cur = STACK[STACK.length-1] || {name:'home'};
   const scr = SCREENS[cur.name] || SCREENS.home;
@@ -915,6 +921,7 @@ function render(){
   $('#hTitle').textContent = out.title || '鳥類調査記録';
   $('#backBtn').classList.toggle('hidden', STACK.length<=1);
   const sub = $('#hSub'); sub.innerHTML = (out.sub||[]).join('');
+  if(typeof renderWalkPill==='function') renderWalkPill();   // 歩行記録中の常設表示（全画面）
   const main = $('#main');
   _recGen++; _mediaGen++;   // 保留中のメディア非同期処理を無効化（切り離されたDOMへURLを付けない）
   revokePanelUrls(main, 'audio, .mediael');   // 画面差し替え前に音声・写真のObject URLを解放（リーク防止）
@@ -1130,15 +1137,23 @@ function saveSurvey(u, editing){
 }
 // 調査を関連データごとソフト削除（ごみ箱から戻せる）
 function softDeleteSurveyCascade(u){
-  DB.softDelete(DB.key.sv,u);
+  const walkingHere = WALK && WALK.sv===u;
+  if(walkingHere && !stopWalk(true)){
+    // ルート本保存ができない状態。削除自体が成功することを確かめてから、下書きに残して強制停止する
+    if(!DB.softDelete(DB.key.sv,u)) return false;   // 削除も失敗（容量不足）→記録は継続（DB.saveが警告済み）
+    routeDraftSave(); forceStopWalk();
+  } else {
+    if(!DB.softDelete(DB.key.sv,u)) return false;
+  }
   DB.obsOf(u).forEach(o=>DB.softDelete(DB.key.ob,o.uuid));
   DB.notesOf(u).forEach(n=>DB.softDelete(DB.key.nt,n.uuid));
   DB.hypOf(u).forEach(h=>DB.softDelete(DB.key.hy,h.uuid));
   DB.flightsOf(u).forEach(f=>DB.softDelete(DB.key.fl,f.uuid));
+  return true;
 }
 function deleteSurvey(u){
   if(!confirm('この調査と、ひも付く観察記録を削除します。よろしいですか？（あとで「ごみ箱」から戻せます）')) return;
-  softDeleteSurveyCascade(u);
+  if(!softDeleteSurveyCascade(u)) return;
   toast('削除しました'); reset('home');
 }
 
@@ -1285,7 +1300,7 @@ SCREENS.survey = (u)=>{
           <div class="small"><span class="badge">${esc(n.category||'')}</span> ${fmtTime(n.recorded_at)}</div>
           <div>${esc((n.content||'').slice(0,120))}</div></div>`).join('')}`:''}
     `,
-    onMount:()=>{ if(running) startGpsIndicator(); }
+    onMount:()=>{ if(running && gpsWatchId==null) startGpsIndicator(); }   // 再描画では張り直さない（瞬断防止）
   };
 };
 // 一覧の「さらに表示」「要確認のみ」。録音中は再描画で録音が中断されるため操作を保留してもらう
@@ -1365,6 +1380,7 @@ const FIX_FRESH_MS=5*60*1000;
 function freshFix(maxMs){ return (lastFix && (Date.now()-(lastFix.t||0))<=(maxMs||FIX_FRESH_MS)) ? lastFix : null; }
 function startGpsIndicator(){
   stopGps();
+  if(WALK) return;   // 歩行記録中はルートのwatchがlastFixと#pGpsを更新するので二重監視しない（電池対策）
   if(!navigator.geolocation) return;
   gpsWatchId=navigator.geolocation.watchPosition(p=>{
     lastFix={lat:p.coords.latitude, lon:p.coords.longitude, acc:p.coords.accuracy, t:Date.now()};
@@ -2220,15 +2236,83 @@ function deleteNote(u){ if(!confirm('このメモを削除しますか？')) ret
 /* ============================================================
    調査ルート（ラインセンサスの経路）：描く／歩いて自動記録
    ============================================================ */
-let routePath=[], routeLayer=null, routeMode='draw', routeWatchId=null, routeWakeLock=null, routeLine=null, routeEndMarker=null, _walkStarting=false;
+let routePath=[], routeLayer=null, routeMode='draw', routeLine=null, routeEndMarker=null, _walkStarting=false;
+// 歩行記録セッション。画面をまたいで継続し、停止は「⏹記録停止／ルート保存／調査終了」だけ
+let WALK=null;   // { sv, watchId, wakeLock, lastSave, saveFailed }
+// 歩行中の下書き保存（調査ごとの独立キー・localStorage直書き＝自動同期を発火させず電池・通信を守る）。
+// 電池切れ・アプリ落ちからの復元用。baseFp＝歩行開始時点の正規ルートの指紋（同期で届いた別ルートを誤って潰さないため）
+function routeDraftKey(sv){ return 'bs_route_draft_'+sv; }
+// 変更検知用の軽量指紋（点数＋末尾点）。点数だけだと「1つ戻す→新しい点」で同数のまま内容が変わるのを見逃す
+function routeTailFp(){ return routePath.length+':'+(routePath.length?String(routePath[routePath.length-1]):''); }
+function routeDraftSave(){
+  if(!WALK || WALK.saveFailed) return false;
+  try{ localStorage.setItem(routeDraftKey(WALK.sv), JSON.stringify({ sv:WALK.sv, route:routePath, baseFp:WALK.baseFp, t:Date.now() }));
+    WALK.lastSave=Date.now(); WALK.savedFp=routeTailFp(); return true; }
+  catch(e){ WALK.saveFailed=true;
+    try{ toast('空き容量不足でルートの自動保存ができません（停止時の保存は試みます）', 4000); }catch(_){} return false; }
+}
+function routeDraftLoad(sv){ try{ const d=JSON.parse(localStorage.getItem(routeDraftKey(sv))||'null');
+  if(d && d.sv===sv && Array.isArray(d.route)) return d; }catch(e){} return null; }
+function routeDraftClear(sv){ try{ localStorage.removeItem(routeDraftKey(sv)); }catch(e){} }
+// 下書きの復元判定。正規ルートが下書き作成時から変わっていなければ「点数が多い方」を自動採用。
+// 変わっている（同期で別端末のルートが届いた等）ときは無断で潰さず、ユーザーに選ばせる
+function maybeRestoreDraft(sv){
+  SCREENS._draftChecked=sv;   // 同じ画面滞在中に二重で確認しない（画面表示時と歩行開始時の二重ダイアログ防止）
+  const d=routeDraftLoad(sv); if(!d) return;
+  const pts=(d.route||[]).filter(validPathPt);
+  const s=DB.survey(sv); const curFp=JSON.stringify((s&&s.route)||[]);
+  if((d.baseFp||'[]')===curFp){
+    const same=JSON.stringify(pts)===JSON.stringify(routePath);
+    if(pts.length>routePath.length || (pts.length && pts.length===routePath.length && !same)){
+      // 点数が多い、または同点数でも内容が違う（「1つ戻す→新しい点」の同数変化）→下書きの方が新しい操作結果
+      routePath=pts; toast('前回の続き（未保存のルート）を復元しました', 4000);
+    }
+    else routeDraftClear(sv);   // 正規と同じ・または正規の方が進んでいる＝下書きは不要
+  } else if(pts.length){
+    if(confirm('未保存の歩行ルートの下書きがあります。復元して今のルートを置き換えますか？\n（キャンセル＝下書きを破棄して今のルートを使う）')){ routePath=pts; }
+    else routeDraftClear(sv);
+  } else routeDraftClear(sv);
+}
+// 全画面共通の「🚶 ルート記録中」表示（タップで記録中のルート画面へ。表示中なら何もしない）
+function walkPillTap(){ if(!WALK) return; const cur=STACK[STACK.length-1]||{};
+  if(cur.name==='routeEdit' && cur.arg===WALK.sv) return;
+  nav('routeEdit', WALK.sv); }
+function renderWalkPill(){
+  const sub=$('#hSub'); if(!sub) return;
+  const old=document.getElementById('walkPill'); if(old) old.remove();
+  if(WALK) sub.insertAdjacentHTML('afterbegin',
+    `<span class="pill ok" id="walkPill" style="cursor:pointer;" onclick="walkPillTap()">🚶 ルート記録中</span>`);
+}
+// WakeLock取得（歩行中のみ）。バックグラウンド復帰時にも呼ばれ、取り直す。
+// 古いセッション・古いrequestの結果は必ず捨てる（同一セッション内の多重requestで参照が迷子にならないよう世代番号で照合）
+function walkWakeLock(){
+  if(!WALK || !('wakeLock' in navigator)) return;
+  const walk=WALK;
+  const req=++walk.wlReq;
+  if(walk.wakeLock){ try{ const r=walk.wakeLock.release(); if(r&&r.catch) r.catch(()=>{}); }catch(e){} walk.wakeLock=null; }
+  navigator.wakeLock.request('screen').then(w=>{
+    if(WALK===walk && walk.wlReq===req){
+      if(walk.wakeLock){ try{ const r=walk.wakeLock.release(); if(r&&r.catch) r.catch(()=>{}); }catch(e){} }
+      walk.wakeLock=w;
+    } else { try{ w.release(); }catch(e){} } }).catch(()=>{});
+}
+// 画面復帰時: 歩行記録中ならWakeLockを取り直す（バックグラウンドでOSが解放するため）
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && WALK) walkWakeLock(); });
 SCREENS.routeEdit = (svUuid)=>{
   const s=DB.survey(svUuid); if(!s) return SCREENS.home();
+  // 別の調査を歩行記録中なら、この画面での編集は混線のもとなので案内だけ出す
+  if(WALK && WALK.sv!==svUuid){
+    return { title:'調査ルート', sub:[`<span class="pill">${esc(s.name)}</span>`],
+      html:`<div class="note">いま<b>別の調査</b>のルートを記録中です。先にそちらを停止（または保存）してから、この調査のルートを編集してください。</div>
+        <button class="btn primary" onclick="nav('routeEdit', WALK.sv)">🚶 記録中の調査のルート画面を開く</button>` };
+  }
+  const walking = !!(WALK && WALK.sv===svUuid);
   return { title:'調査ルート', sub:[`<span class="pill">${esc(s.name)}</span>`],
     html:`
-      <div class="note">この調査の移動ルート（ラインセンサスの経路）を記録します。<b>✏描く</b>＝地図をタップして線を引く。<b>🚶歩いて記録</b>＝歩きながら現在地を自動で点にする（<b>画面を開いたまま</b>にしてください。閉じると止まります）。距離が自動計算され、密度（種数/km・個体数/km）に使えます。</div>
+      <div class="note">この調査の移動ルート（ラインセンサスの経路）を記録します。<b>✏描く</b>＝地図をタップして線を引く。<b>🚶歩いて記録</b>＝歩きながら現在地を自動で点にする。<b>記録中は観察の入力など他の画面に移ってもOK</b>（画面上部の🚶が目印。停止はこの画面の⏹か、ルート保存・調査終了で）。距離が自動計算され、密度（種数/km・個体数/km）に使えます。</div>
       <div class="seg" data-seg="routeMode" style="margin-bottom:8px;">
-        <button type="button" class="on" onclick="setRouteMode('draw',this)">✏ 描く</button>
-        <button type="button" onclick="setRouteMode('walk',this)">🚶 歩いて記録</button>
+        <button type="button" class="${walking?'':'on'}" onclick="setRouteMode('draw',this)">✏ 描く</button>
+        <button type="button" class="${walking?'on':''}" onclick="setRouteMode('walk',this)">🚶 歩いて記録</button>
       </div>
       <div id="rmap" style="height:calc(100vh - 500px); min-height:240px; border-radius:var(--radius); border:1px solid var(--line);"></div>
       <div class="sp"></div>
@@ -2237,12 +2321,23 @@ SCREENS.routeEdit = (svUuid)=>{
       <button class="btn primary big" onclick="saveRoute('${svUuid}')">保存する</button>
       ${(s.route&&s.route.length)?`<div class="sp"></div><button class="btn danger" onclick="clearRouteConfirm()">この調査のルートを消す</button>`:''}
     `,
-    onMount:()=>{ routePath=(s.route||[]).slice(); routeMode='draw'; SCREENS._routeSv=svUuid; renderRouteCtrls();
+    onMount:()=>{ SCREENS._routeSv=svUuid;
+      if(walking){ routeMode='walk'; }   // 記録中は進行中の routePath が正（DBの値で上書きしない）
+      else {
+        routePath=(s.route||[]).filter(validPathPt);
+        maybeRestoreDraft(svUuid);   // 電池切れ・アプリ落ちの置き土産があれば復元（同期で変わっていれば確認）
+        routeMode='draw';
+      }
+      renderRouteCtrls();
       _mapTimer=setTimeout(()=>initRouteMap(),50); }
   };
 };
 function setRouteMode(mode,btn){
-  if(mode!=='walk') stopWalk(true);   // 描くモードに戻ったら記録停止
+  if(mode!=='walk' && WALK && WALK.sv===SCREENS._routeSv){
+    // 誤タップで無警告に記録が止まらないよう確認する（停止＝保存を伴う）
+    if(!confirm('歩行記録を停止して「描く」モードに切り替えますか？')) return;
+    if(!stopWalk()) return;   // 保存できなければ切替も中止（記録は継続）
+  }
   routeMode=mode;
   if(btn){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); }
   renderRouteCtrls();
@@ -2250,7 +2345,7 @@ function setRouteMode(mode,btn){
 function renderRouteCtrls(){
   const el=$('#routeCtrls'); if(!el) return;
   if(routeMode==='walk'){
-    el.innerHTML = routeWatchId
+    el.innerHTML = (WALK && WALK.sv===SCREENS._routeSv)
       ? `<button class="btn danger" onclick="stopWalk()">⏹ 記録停止</button><button class="btn ghost" onclick="routeUndo()">↶ 1つ戻す</button>`
       : `<button class="btn primary" onclick="startWalk()">▶ 記録開始</button><button class="btn ghost danger" onclick="routeClearAll()">全消去</button>`;
   } else {
@@ -2263,7 +2358,7 @@ function initRouteMap(){
   if(routePath.length){ center=routePath[routePath.length-1]; zoom=15; }
   else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=15; }
   mapObj=createBaseMap('rmap', center, zoom, {});
-  mapObj.on('click', e=>{ if(routeMode==='draw'){ routePath.push([e.latlng.lat, e.latlng.lng]); redrawRoute(); } });
+  mapObj.on('click', e=>{ if(routeMode==='draw'){ routePath.push([e.latlng.lat, e.latlng.lng]); SCREENS._dirty=true; redrawRoute(); } });
   redrawRoute();
   if(routePath.length>1){ try{ mapObj.fitBounds(routePath,{padding:[40,40]}); }catch(e){} }
   addLocateControl();
@@ -2296,47 +2391,103 @@ function routeAppend(pt){
   }
   routeInfo();
 }
-function routeUndo(){ routePath.pop(); redrawRoute(); }
-function routeClearAll(){ if(routePath.length && !confirm('描いたルートを全部消しますか？')) return; routePath=[]; redrawRoute(); }
+function routeUndo(){ if(!routePath.length) return; routePath.pop(); if(routeMode==='draw') SCREENS._dirty=true; redrawRoute(); }
+function routeClearAll(){ if(!routePath.length) return; if(!confirm('描いたルートを全部消しますか？')) return;
+  routePath=[]; if(routeMode==='draw') SCREENS._dirty=true; redrawRoute(); }
 function startWalk(){
-  if(routeWatchId!=null || _walkStarting) return;   // 二重起動防止（watch/WakeLockのリークと孤児watchを防ぐ）
+  if(WALK || _walkStarting) return;   // 二重起動防止（watch/WakeLockのリークと孤児watchを防ぐ）
+  const sv=SCREENS._routeSv; if(!sv){ toast('調査のルート画面から開始してください'); return; }
   if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
+  if(SCREENS._draftChecked!==sv){ maybeRestoreDraft(sv); redrawRoute(); }   // 画面表示時に確認済みなら二重確認しない
   _walkStarting=true;
+  const walk={ sv, watchId:null, wakeLock:null, timer:null, lastSave:Date.now(), savedFp:'', wlReq:0, saveFailed:false,
+    baseFp:JSON.stringify((DB.survey(sv)&&DB.survey(sv).route)||[]) };   // 開始時点の正規ルートの指紋（同期競合の検出用）
   // 先にwatchを張ってIDを確定（WakeLock取得のawait中に二度押しされてもリークしない）
-  routeWatchId=navigator.geolocation.watchPosition(p=>{
+  walk.watchId=navigator.geolocation.watchPosition(p=>{
+    if(WALK!==walk) return;   // 停止済みセッションの遅延通知は無視（新しい記録に混入させない）
     const pt=[p.coords.latitude, p.coords.longitude];
     lastFix={lat:pt[0],lon:pt[1],acc:p.coords.accuracy,t:Date.now()};
+    // 歩行中はこのwatchがGPSインジケータも担う（インジケータ用watchと二重にしない＝電池対策）
+    const el=$('#pGps'); if(el){ el.textContent=`GPS ±${Math.round(p.coords.accuracy)}m`; el.className='pill ok'; }
     const last=routePath[routePath.length-1];
     // 直前から約5m以上動いたときだけ点を足す（GPSのゆらぎで点が溜まるのを防ぐ）
-    if(!last || distMeters(last,pt)>=5){ routeAppend(pt);
-      if(mapObj){ try{ mapObj.panTo(pt); }catch(e){} } }
-  }, e=>{ stopWalk(); toast('位置を取得できず記録を停止しました'); }, {enableHighAccuracy:true, maximumAge:1000, timeout:20000});
+    if(!last || distMeters(last,pt)>=5){
+      routeAppend(pt);
+      if(routeLayer && mapObj){ try{ mapObj.panTo(pt); }catch(e){} }   // ルート地図が出ている時だけ追従（他画面の地図を動かさない）
+    }
+  }, e=>{
+    if(WALK!==walk) return;   // 古いセッションの失敗通知で新しい記録を止めない
+    if(!stopWalk(true)){ toast('位置が取得できず、保存もできないため記録状態を保持しています（空き容量を確保してください）', 4000); return; }
+    toast('位置を取得できず記録を停止しました');
+    const el=$('#pGps'); if(el){ el.textContent='GPS 取得不可'; el.className='pill off'; }
+    const cur=STACK[STACK.length-1]||{}; if(cur.name==='survey') startGpsIndicator();   // 調査画面なら通常監視に復帰
+  }, {enableHighAccuracy:true, maximumAge:1000, timeout:20000});
+  // 20秒ごとの下書き保存（静止中でも未保存の変更があれば保存する。点追加時だけの判定だと静止中に保存されない）
+  walk.timer=setInterval(()=>{ if(WALK===walk && routeTailFp()!==walk.savedFp) routeDraftSave(); }, 20000);
+  WALK=walk;
   _walkStarting=false;
-  toast('記録を開始しました。画面を開いたまま歩いてください');
-  renderRouteCtrls();
-  // 画面が消えると記録が止まるため、可能なら画面を点けたままにする（取得はwatch確定後・非ブロッキング）
-  if('wakeLock' in navigator){ navigator.wakeLock.request('screen').then(w=>{ if(routeWatchId!=null) routeWakeLock=w; else { try{ w.release(); }catch(e){} } }).catch(()=>{}); }
+  if(routeDraftSave()) SCREENS._dirty=false;   // 開始時点の状態を下書き化。成功したら「描く」での未保存扱いも解除
+  toast('ルート記録を開始しました。他の画面に移っても記録は続きます（上の🚶が目印）', 3000);
+  renderRouteCtrls(); renderWalkPill();
+  walkWakeLock();   // 画面が消えると端末によっては記録が止まるため、可能なら点けたままにする
 }
+// 監視だけを強制停止する（保存はしない）。削除確定後など「続けても意味がない」場合の最終手段
+function forceStopWalk(){
+  const walk=WALK; if(!walk) return;
+  if(walk.watchId!=null && navigator.geolocation){ try{ navigator.geolocation.clearWatch(walk.watchId); }catch(e){} }
+  if(walk.timer){ clearInterval(walk.timer); }
+  if(walk.wakeLock){ try{ const r=walk.wakeLock.release(); if(r&&r.catch) r.catch(()=>{}); }catch(e){} }
+  WALK=null; renderWalkPill();
+}
+// 停止＝「保存に成功してから監視を止める」。保存できないときは記録を続けたまま false を返す（データを失わない）
 function stopWalk(silent){
-  const wasWalking = routeWatchId!=null;
-  if(routeWatchId!=null){ try{ navigator.geolocation.clearWatch(routeWatchId); }catch(e){} routeWatchId=null;
-    if(!silent) toast('記録を停止しました'); }
-  if(routeWakeLock){ try{ routeWakeLock.release(); }catch(e){} routeWakeLock=null; }
-  // 歩いて溜めた点は、停止時（画面離脱含む）に自動保存して消失を防ぐ
-  if(wasWalking && routePath.length>=2 && SCREENS._routeSv){ const s=DB.survey(SCREENS._routeSv);
-    if(s){ s.route=routePath.slice(); s.route_length_m=Math.round(pathLength(routePath)); DB.upsertSurvey(s); } }
-  if(!silent) renderRouteCtrls();
+  if(!WALK){ if(!silent) renderRouteCtrls(); return true; }
+  const walk=WALK;
+  if(routePath.length>=2){
+    const s=DB.survey(walk.sv);
+    if(s){
+      const nowFp=JSON.stringify(s.route||[]);
+      if(nowFp!==walk.baseFp &&
+         !confirm('歩行中に、別の端末からこの調査のルート変更が届いています。今歩いた記録で置き換えますか？\n（キャンセル＝届いた内容を残す。歩いた分は下書きとして保持されます）')){
+        // 置き換えない: 停止前に最新の歩行分を下書きへ確定し、routePathは届いた正規ルートに合わせる
+        //（この後saveRouteが呼ばれても、届いたルートを上書きしない）。下書きに残せないなら停止しない（表示との食い違い防止）
+        if(!routeDraftSave()){ toast('歩いた分を下書きに残せないため停止を中止しました（空き容量を確保してください）', 4000); return false; }
+        routePath=(s.route||[]).filter(validPathPt);
+        if(routeLayer) redrawRoute();
+      } else {
+        s.route=routePath.slice(); s.route_length_m=Math.round(pathLength(routePath));
+        if(!DB.upsertSurvey(s)){
+          toast('保存できないため記録を続けています。空き容量を確保してからもう一度停止してください', 4000);
+          return false;   // WALKを維持＝watchもWakeLockも生きたまま。下書きも残る
+        }
+        routeDraftClear(walk.sv);
+      }
+    } else {
+      // 調査が見つからない（削除済み等）→ 本保存はできないが、停止前に最新分を下書きへ確定して残す。
+      // 下書きにも残せないなら停止しない（「保持されます」の表示と食い違わないように）
+      if(!routeDraftSave()){ toast('歩いた分を下書きに残せないため停止を中止しました（空き容量を確保してください）', 4000); return false; }
+    }
+  }
+  // 2点未満のときは下書きに触らない（過去の下書きを誤って消さない。不要な下書きは復元判定が整理する）
+  if(walk.watchId!=null && navigator.geolocation){ try{ navigator.geolocation.clearWatch(walk.watchId); }catch(e){} }
+  if(walk.timer){ clearInterval(walk.timer); }
+  if(walk.wakeLock){ try{ const r=walk.wakeLock.release(); if(r&&r.catch) r.catch(()=>{}); }catch(e){} }
+  WALK=null;
+  if(!silent){ toast('ルート記録を停止しました'); renderRouteCtrls(); }
+  renderWalkPill();
+  return true;
 }
 function saveRoute(svUuid){
-  stopWalk(true);
+  if(!stopWalk(true)) return;   // 歩行中で保存失敗なら中断（記録は継続している）
   const s=DB.survey(svUuid); if(!s){ toast('調査が見つかりません'); return; }
   s.route=routePath.slice(); s.route_length_m=Math.round(pathLength(routePath));
   if(!DB.upsertSurvey(s)) return;
+  routeDraftClear(svUuid); SCREENS._dirty=false;
   toast(`ルートを保存しました（約${fmtDist(pathLength(routePath))}）`);
   goBack();
 }
 function clearRouteConfirm(){ if(!confirm('この調査のルートを消しますか？')) return;
-  routePath=[]; redrawRoute(); }
+  routePath=[]; SCREENS._dirty=true; redrawRoute(); }
 /* 同じルートで次の調査を作る（季節・回次を変えて束ねる） */
 function newSurveyFromRoute(u){ const s=DB.survey(u); if(!s) return;
   const nextRound=(String(s.round_no||'').match(/^\d+$/))? String(parseInt(s.round_no,10)+1):'';
@@ -2807,6 +2958,9 @@ SCREENS.surveyEnd = (u)=>{
   };
 };
 function finishSurvey(u){
+  if(WALK && WALK.sv===u){   // 歩行記録が残っていれば止めてルートを本保存（先に保存してからsを読む）
+    if(!stopWalk(true)){ toast('ルートを保存できなかったため終了を中止しました。空き容量を確保してからもう一度お試しください', 4000); return; }
+  }
   const s=DB.survey(u); const f=$('#rvForm'); const review={};
   f.querySelectorAll('textarea').forEach(t=>review[t.name]=t.value);
   s.review=review;
