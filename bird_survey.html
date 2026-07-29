@@ -17,6 +17,16 @@
     --warn:#e0a030; --danger:#d05555; --chip:#233029;
     --radius:14px;
   }
+  /* 屋外モード（明るい表示）。晴天の野外で暗色画面が反射で読めない対策。
+     htmlのlightクラスで切替（html側に付けると最上位背景・引っ張り表示の帯まで明るくなる） */
+  html.light{
+    --bg:#eef1ef; --panel:#ffffff; --panel2:#dfe6e1; --line:#b9c6be;
+    --fg:#17211b; --muted:#5a6b62; --accent:#1f7a52; --accent2:#276e50;
+    --warn:#9a6b00; --danger:#b23c3c; --chip:#dbe5dd;
+  }
+  html.light .leaflet-container{background:#dfe3df;}
+  html.light .act.recing{background:#f0dada; color:#8a2525;}
+  html.light .btn.danger{border-color:#d0a0a0;}
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{margin:0; padding:0; background:var(--bg); color:var(--fg);
     font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;
@@ -197,7 +207,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v62（2026-07-29 ラインセンサス強化：観察入力中もルート記録を継続・自動下書き保存・GPS監視を一本化）';
+const APP_VERSION = 'v63（2026-07-29 検索とホームを高速化・屋外用の明るい表示を追加）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -939,8 +949,12 @@ SCREENS.home = ()=>{
   const others = surveys.filter(s=>s.status!=='調査中');
 
   const selMode = !!(SCREENS._sel && SCREENS._sel.scope==='home');
+  // 調査ごとの観察を1回の走査でまとめる（調査数×全観察の読み直しを避ける）。
+  // Object.create(null)＝取込データのIDが __proto__ 等でも安全に扱う
+  const obsBySv = Object.create(null);
+  DB.observations().forEach(o=>{ (obsBySv[o.survey_uuid] || (obsBySv[o.survey_uuid]=[])).push(o); });
   const svCard = s=>{
-    const obs = DB.obsOf(s.uuid);
+    const obs = obsBySv[s.uuid] || [];
     const spCount = new Set(obs.filter(o=>o.species_name_snapshot).map(o=>o.species_name_snapshot)).size;
     const review = obs.filter(o=>o.needs_review).length;
     const body = `
@@ -1011,6 +1025,8 @@ SCREENS.home = ()=>{
       ${(gdriveCfg().clientId && GUSER && !gdriveSignedIn())?`<div class="tiny muted" style="margin-top:6px;">☁ ドライブ同期を続けるにはサインインが必要です（上の「クラウド保存」から）</div>`:''}
       <div class="sp"></div>
       <div class="note">観察記録の合計個体数は延べ数です。同一個体を重複して数えている可能性があるため、生息個体数とは限りません。</div>
+      <div class="sp"></div>
+      <button class="btn" onclick="toggleTheme()">${themeMode()==='light'?'🌙 通常（暗い表示）に戻す':'☀ 屋外モード（明るい表示）にする'}</button>
       <div class="sp"></div>
       <div class="row" style="justify-content:space-between; align-items:center;">
         <span class="tiny muted">バージョン ${APP_VERSION}</span>
@@ -3187,35 +3203,53 @@ SCREENS.search = ()=>({
   title:'検索',
   html:`
     <label class="field"><span class="lab">記録を横断して探す（種名・メモ・場所・行動など）</span>
-      <input id="searchBox" autocomplete="off" placeholder="例）カワセミ ／ 採餌 ／ 川の名前" oninput="runSearch(this.value)"></label>
+      <input id="searchBox" autocomplete="off" placeholder="例）カワセミ ／ 採餌 ／ 川の名前" oninput="searchInput(this.value)"></label>
     <div id="searchResults"></div>`,
-  onMount:()=>{ const b=$('#searchBox'); if(b) b.value=SCREENS._searchQ||''; runSearch(SCREENS._searchQ||''); if(b) b.focus(); }
+  onMount:()=>{ SCREENS._searchIdx=null; SCREENS._searchShow=100;
+    const b=$('#searchBox'); if(b) b.value=SCREENS._searchQ||''; runSearch(SCREENS._searchQ||''); if(b) b.focus(); }
 });
+let searchTimer=null;
+function searchInput(q){   // 1文字ごとに全記録を走査しない（入力が250ms止まってから検索）
+  SCREENS._searchQ=q; SCREENS._searchShow=100;
+  clearTimeout(searchTimer);
+  if(!(q||'').trim()){ runSearch(q); return; }   // 空にしたら即時に案内表示へ
+  const box=$('#searchResults'); if(box) box.innerHTML='<div class="empty small">検索中…</div>';   // 待ち時間に古い結果を触れないように
+  searchTimer=setTimeout(()=>runSearch(q), 250);
+}
+// 検索対象の正規化（カタカナ化・小文字化）を先に1回だけ済ませた索引。
+// 画面を開くたびに作り直す（onMountでnull化）ので、同期で増えた記録も開き直せば反映される
+function buildSearchIndex(){
+  const norm=t=>toKata(String(t||'').toLowerCase());
+  const svMap={}; DB.surveys().forEach(s=>svMap[s.uuid]=s); // 削除されていない調査のみ
+  const idx=[];
+  DB.observations().forEach(o=>{ const s=svMap[o.survey_uuid]; if(!s) return;
+    idx.push({ kind:'obs', s, o, t:o.observed_at||'',
+      norm:[o.species_name_snapshot,o.note,o.behavior,o.habitat,o.detection_method,o.identification_status,s.name,s.location_name].map(norm).join('\n'),
+      title:o.species_name_snapshot||'（未同定）',
+      sub:`${esc(s.name||'')} ・ ${fmtDate(o.observed_at)} ・ ${esc(o.detection_method||'')}${o.behavior?' ・ '+esc(o.behavior):''}`,
+      snippet:o.note||'', marks:`${(o.audio&&o.audio.length)?'🎤':''}${(o.media&&o.media.length)?'📷':''}${o.latitude?'📍':''}` });
+  });
+  DB.notes().forEach(n=>{ const s=svMap[n.survey_uuid]; if(!s) return;
+    idx.push({ kind:'note', s, n, t:n.recorded_at||'',
+      norm:[n.content,n.category,s.name,s.location_name].map(norm).join('\n'),
+      title:'📝 メモ: '+esc(n.category||''), sub:`${esc(s.name||'')} ・ ${fmtDate(n.recorded_at)}`,
+      snippet:n.content||'', marks:'' });
+  });
+  idx.sort((a,b)=>String(b.t).localeCompare(String(a.t)));
+  return idx;
+}
+function searchMore(){ SCREENS._searchShow=(SCREENS._searchShow||100)+100; runSearch(SCREENS._searchQ||''); }
 function runSearch(q){
   SCREENS._searchQ=q; const box=$('#searchResults'); if(!box) return;
   q=(q||'').trim();
   if(!q){ box.innerHTML='<div class="empty small">種名・メモ・場所などを入力すると、すべての調査から探します。</div>'; return; }
+  if(!SCREENS._searchIdx) SCREENS._searchIdx=buildSearchIndex();
   const qk=toKata(q.toLowerCase());
-  const hit=txt=>toKata(String(txt||'').toLowerCase()).includes(qk);
-  const svMap={}; DB.surveys().forEach(s=>svMap[s.uuid]=s); // 削除されていない調査のみ
-  const results=[];
-  DB.observations().forEach(o=>{ const s=svMap[o.survey_uuid]; if(!s) return;
-    if([o.species_name_snapshot,o.note,o.behavior,o.habitat,o.detection_method,o.identification_status,s.name,s.location_name].some(hit)){
-      results.push({ kind:'obs', s, o, t:o.observed_at||'',
-        title:o.species_name_snapshot||'（未同定）',
-        sub:`${esc(s.name||'')} ・ ${fmtDate(o.observed_at)} ・ ${esc(o.detection_method||'')}${o.behavior?' ・ '+esc(o.behavior):''}`,
-        snippet:o.note||'', marks:`${(o.audio&&o.audio.length)?'🎤':''}${(o.media&&o.media.length)?'📷':''}${o.latitude?'📍':''}` });
-    }});
-  DB.notes().forEach(n=>{ const s=svMap[n.survey_uuid]; if(!s) return;
-    if([n.content,n.category,s.name,s.location_name].some(hit)){
-      results.push({ kind:'note', s, n, t:n.recorded_at||'',
-        title:'📝 メモ: '+esc(n.category||''), sub:`${esc(s.name||'')} ・ ${fmtDate(n.recorded_at)}`,
-        snippet:n.content||'', marks:'' });
-    }});
-  results.sort((a,b)=>String(b.t).localeCompare(String(a.t)));
+  const results=SCREENS._searchIdx.filter(r=>r.norm.includes(qk));
   if(!results.length){ box.innerHTML=`<div class="empty small">「${esc(q)}」に一致する記録はありませんでした。</div>`; return; }
+  const show=Math.max(100, SCREENS._searchShow||100);
   box.innerHTML=`<div class="small muted" style="margin-bottom:8px;">${results.length}件見つかりました</div>`+
-    results.slice(0,200).map(r=>{
+    results.slice(0,show).map(r=>{
       const act=r.kind==='obs'
         ? `nav('obsEdit', JSON.stringify({sv:'${r.s.uuid}',id:'${r.o.uuid}'}))`
         : `nav('noteEdit', JSON.stringify({sv:'${r.s.uuid}',id:'${r.n.uuid}'}))`;
@@ -3225,7 +3259,8 @@ function runSearch(q){
           <div class="small muted">${r.sub}</div>
           ${r.snippet?`<div class="small" style="margin-top:4px;">${esc(String(r.snippet).slice(0,80))}</div>`:''}
         </div><span class="muted">›</span></div></div>`;
-    }).join('');
+    }).join('')+
+    (results.length>show?`<button class="btn" onclick="searchMore()">さらに表示（残り ${results.length-show}件）</button>`:'');
 }
 
 /* ============================================================
@@ -5063,6 +5098,18 @@ function isStandalone(){ return (window.navigator&&window.navigator.standalone==
 // データを消えにくくする（永続ストレージを要求。対応ブラウザで有効・非対応でも無害）
 if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().catch(()=>{}); }
 
+/* 表示テーマ（屋外モード）。localStorage直書き＝自動同期を発火させず端末ごとの好みにする */
+function themeMode(){
+  try{ return localStorage.getItem('bs_theme')==='light' ? 'light' : 'dark'; }
+  catch(e){ return 'dark'; }   // 保存領域を読めない設定でも起動を止めない
+}
+function applyTheme(){
+  const light = themeMode()==='light';
+  document.documentElement.classList.toggle('light', light);
+  const m=document.querySelector('meta[name="theme-color"]'); if(m) m.content = light ? '#eef1ef' : '#0a0f0d';
+}
+function toggleTheme(){ try{ localStorage.setItem('bs_theme', themeMode()==='light'?'dark':'light'); }catch(e){} applyTheme(); render(); }
+applyTheme();
 reset('home');
 // 掃除が終わってから同期チェック（並行させると、取り込んだ直後の録音・写真を「参照なし」と誤判定して消す恐れがある）
 mediaGcAll().catch(()=>{}).then(()=>gdriveStartupCheck()); // ドライブに別端末の新しい保存があれば取り込みを提案
