@@ -184,7 +184,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v57（2026-07-29 地図の回転＋方位表示：2本指ひねり・コンパス追従・北マークで復帰）';
+const APP_VERSION = 'v58（2026-07-29 現場データ保護：GPS精度の保存漏れ・古い位置の自動使用・入力/録音中の離脱警告・書きかけ記録の始末・密度計算を修正）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -247,16 +247,22 @@ const DB = {
     rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; return this.save(this.key.hy,a); },
   upsertHypResult(rec){ const a=this.load(this.key.hr); const i=a.findIndex(x=>x.uuid===rec.uuid);
     rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; return this.save(this.key.hr,a); },
-  // updated_at も更新する（端末間同期は updated_at の新しい方を残すため、これが無いと削除・復元が他端末に伝わらない）
+  // updated_at も更新する（端末間同期は updated_at の新しい方を残すため、これが無いと削除・復元が他端末に伝わらない）。
+  // 保存の成否を返す（容量不足で削除できていないのに「削除しました」と表示しないため）
   softDelete(k,u){ const a=this.load(k); const i=a.findIndex(x=>x.uuid===u);
-    if(i>=0){ a[i].deleted_at=nowISO(); a[i].updated_at=nowISO(); this.save(k,a);} },
+    if(i>=0){ a[i].deleted_at=nowISO(); a[i].updated_at=nowISO(); return this.save(k,a); } return false; },
   restore(k,u){ const a=this.load(k); const i=a.findIndex(x=>x.uuid===u);
-    if(i>=0){ delete a[i].deleted_at; a[i].updated_at=nowISO(); this.save(k,a);} },
+    if(i>=0){ delete a[i].deleted_at; a[i].updated_at=nowISO(); return this.save(k,a); } return false; },
   // 完全削除は「削除記録（墓標）」を残す。端末間同期で他端末にも完全削除を伝え、古いデータからの復活を防ぐため。
-  // 墓標が保存できなければ本体も消さず、本体が消せなければ墓標も戻す（片方だけの中途半端な状態を残さない）
+  // 墓標が保存できなければ本体も消さず、本体が消せなければ墓標も戻す（片方だけの中途半端な状態を残さない）。
+  // 原本の読み取りは厳格版（読めない状態で寛容版の[]を保存すると、全記録を空で上書きしてしまうため）
   hardDelete(k,u){ if(!tombstoneAdd(u)){ try{ toast('空き容量不足のため完全削除できませんでした'); }catch(e){} return false; }
-    if(!this.save(k, this.load(k).filter(x=>x.uuid!==u))){ tombstoneRemove(u); return false; }
+    let a; try{ a=this.loadRaw(k); }catch(e){ this._untomb(u);
+      try{ toast('データを読み取れないため完全削除を中止しました'); }catch(_){} return false; }
+    if(!this.save(k, a.filter(x=>x.uuid!==u))){ this._untomb(u); return false; }
     return true; },
+  _untomb(u){ if(!tombstoneRemove(u)){   // 墓標を戻せないと、消していない記録が同期で消される恐れがあるため強く警告
+    try{ toast('⚠ 削除記録の取り消しに失敗しました。空き容量を確保し、この記録を開いて保存し直してください', 5000); }catch(e){} } },
   deleted(k){ return this.load(k).filter(x=>x.deleted_at); },
   recentSpecies(){ return this.load(this.key.recent); },
   pushRecent(name){ if(!name) return; let a=this.load(this.key.recent).filter(x=>x!==name);
@@ -276,8 +282,8 @@ function tombstonesSave(a){ try{ localStorage.setItem('bs_tombstones', JSON.stri
 function tombstoneAdd(uuid){ if(!uuid) return false; const a=tombstonesList();
   if(!a.some(t=>t.uuid===uuid)) a.push({uuid, at:nowISO()});
   return tombstonesSave(a); }
-// 完全削除の巻き戻し用（本体の削除保存に失敗したとき、墓標だけ残さない）
-function tombstoneRemove(uuid){ tombstonesSave(tombstonesList().filter(t=>t.uuid!==uuid)); }
+// 完全削除の巻き戻し用（本体の削除保存に失敗したとき、墓標だけ残さない）。成否を返す
+function tombstoneRemove(uuid){ return tombstonesSave(tombstonesList().filter(t=>t.uuid!==uuid)); }
 
 /* ---------- 録音・写真・動画の保存（IndexedDB：サイズが大きいためlocalStorageと分離） ---------- */
 /* ストア 'audio' = 録音 / 'media' = 写真・動画 */
@@ -843,14 +849,45 @@ let _mapTimer = null;   // 地図初期化の保留タイマー（画面を離�
 let _recGen = 0, _mediaGen = 0;   // 録音/写真パネルの世代。再描画・画面遷移で+1し、古い非同期処理のURL割当を無効化する
 let mapCurMarker = null, mapCurCircle = null; // 地図上の現在地マーカー・精度円
 
-function nav(name, arg){ SCREENS._sel=null; STACK.push({name,arg}); render(); }
-function goBack(){ if(STACK.length>1){ SCREENS._sel=null; STACK.pop(); render(); } }
+// 破棄を選んだ新規記録のuuid。後から完了する写真・録音の保存処理が仮記録を作り直さないための名簿（セッション内のみ）
+const DISCARDED=new Set();
+// 画面を離れる前の確認。録音中と、編集画面の未保存入力を無警告で捨てないための関門。
+// 保存フローは保存成功時に SCREENS._dirty=false にしてから遷移するので、ここには引っかからない
+function leaveGuardOk(){
+  const cur=STACK[STACK.length-1]||{};
+  const editScreen=(cur.name==='obsEdit'||cur.name==='noteEdit'||cur.name==='flightEdit');
+  const dirty=editScreen && SCREENS._dirty;
+  const ghost=dirty ? SCREENS._ghost : null;   // 写真・録音を先に付けてDBに仮保存された未保存の新規記録
+  if(!REC && !dirty) return true;
+  let msg;
+  if(REC && dirty) msg='録音中で、入力内容もまだ保存されていません。両方とも破棄して離れますか？';
+  else if(REC) msg='録音中です。この画面を離れると録音は保存されずに破棄されます。離れますか？';
+  else if(ghost) msg='写真・録音を付けた書きかけの記録があります。保存せずに破棄しますか？';
+  else msg='入力内容がまだ保存されていません。保存せずに戻りますか？';
+  if(!confirm(msg)) return false;
+  if(dirty){
+    if(ghost){
+      // 仮保存済みの幽霊記録を片付ける（墓標が付くので同期でも復活しない）。消せなければ離脱させない
+      if(!DB.hardDelete(ghost.key, ghost.uuid)){
+        toast('空き容量不足のため破棄できませんでした。空きを確保してからもう一度お試しください', 4000); return false; }
+      mediaGcAll().catch(()=>{});
+    }
+    // 未保存の新規記録は破棄済み名簿へ（保存待ちの写真・録音が完了しても、もう記録を作らせない）
+    const newUuid = (cur.name==='obsEdit' && !SCREENS._obsEditing) ? (SCREENS._obs&&SCREENS._obs.uuid)
+                  : (cur.name==='flightEdit' && !SCREENS._flightEditing) ? SCREENS._flightSelf : null;
+    if(newUuid) DISCARDED.add(newUuid);
+  }
+  return true;
+}
+function nav(name, arg){ if(!leaveGuardOk()) return; SCREENS._sel=null; STACK.push({name,arg}); render(); }
+function goBack(){ if(STACK.length>1){ if(!leaveGuardOk()) return; SCREENS._sel=null; STACK.pop(); render(); } }
 function reset(name,arg){ SCREENS._sel=null; STACK=[{name,arg}]; render(); }
 
 const SCREENS = {}; // name -> function(arg) -> returns {title, sub[], html, onMount}
 
 function render(){
-  if(REC) recAbort(); // 画面を離れたら録音を中断（保存はしない）
+  if(REC) recAbort(); // 画面を離れたら録音を中断（保存はしない。離脱前の確認は leaveGuardOk が担当）
+  SCREENS._dirty=false; SCREENS._ghost=null;   // 新しい画面は未編集状態から始まる（編集画面の操作でtrueになる）
   if(PDFCTX){ try{ PDFCTX.doc.destroy(); }catch(e){} PDFCTX=null; } // PDF閲覧の後始末
   if(_mapTimer){ clearTimeout(_mapTimer); _mapTimer=null; }   // 前画面の地図初期化予約を取り消す
   if(typeof destroyMap==='function') destroyMap();   // 地図＋コンパス監視＋許可待ちをまとめて破棄
@@ -1212,6 +1249,9 @@ function startSurvey(u){ const s=DB.survey(u); if(!s) return;
 
 /* GPS状態インジケータ（ヘッダの pill を更新） */
 let gpsWatchId=null, lastFix=null;
+// 位置の自動入力に使ってよい鮮度。これより古い測位は「前の地点・前日の位置」の恐れがあるため自動では使わない
+const FIX_FRESH_MS=5*60*1000;
+function freshFix(maxMs){ return (lastFix && (Date.now()-(lastFix.t||0))<=(maxMs||FIX_FRESH_MS)) ? lastFix : null; }
 function startGpsIndicator(){
   stopGps();
   if(!navigator.geolocation) return;
@@ -1239,8 +1279,12 @@ SCREENS.obsEdit = (argStr)=>{
       nest_tree_species:'', nest_tree_height:'', nest_state:'',
       note:'', identification_status:'確定', confidence:'中',
       needs_review:false, external_photo_reference:'' };
-    // 現在のGPSを初期値に
-    if(lastFix){ o.latitude=lastFix.lat.toFixed(6); o.longitude=lastFix.lon.toFixed(6); o.gps_accuracy=Math.round(lastFix.acc); }
+    // 「保存して続けて」からは前の記録の位置をそのまま引き継ぐ（位置を消して保存したなら空のまま＝GPSで上書きしない）。
+    // keepが無いときだけ、新鮮なGPSを初期値にする（古い測位は使わない）
+    if(arg.keep){ const k=arg.keep;
+      if(validLatLon(String(k.lat||''), String(k.lon||''))){ o.latitude=String(k.lat); o.longitude=String(k.lon); o.gps_accuracy=(k.acc==null)?'':k.acc; }
+    }
+    else { const fx=freshFix(); if(fx){ o.latitude=fx.lat.toFixed(6); o.longitude=fx.lon.toFixed(6); o.gps_accuracy=Math.round(fx.acc); } }
   } else if(o.observed_at && o.observed_at.length>16){ o.observed_at=localDatetimeValue(new Date(o.observed_at)); }
 
   // 「その他（記入内容）」をボタン一致用の値と記入欄の初期値に分解
@@ -1298,8 +1342,8 @@ SCREENS.obsEdit = (argStr)=>{
           <div class="row"><div class="grow small muted">位置：<span id="posLabel">${o.latitude?esc(o.latitude)+', '+esc(o.longitude)+(o.gps_accuracy?` (±${esc(o.gps_accuracy)}m)`:''):'未取得'}</span></div>
             <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="grabGps()">📍 現在地</button></div>
           <div class="two" style="margin-top:8px;">
-            <input id="latIn" inputmode="decimal" placeholder="緯度" value="${esc(o.latitude)}">
-            <input id="lonIn" inputmode="decimal" placeholder="経度" value="${esc(o.longitude)}">
+            <input id="latIn" inputmode="decimal" placeholder="緯度" value="${esc(o.latitude)}" oninput="posManualEdit()">
+            <input id="lonIn" inputmode="decimal" placeholder="経度" value="${esc(o.longitude)}" oninput="posManualEdit()">
           </div>
         </div>
         <div class="card" style="background:var(--panel2);">
@@ -1332,13 +1376,15 @@ SCREENS.obsEdit = (argStr)=>{
       <div class="note">種名が未入力なら「未同定」として保存されます。同じ場所で何種も見たときは「保存して続けて別の種を追加」で位置を引き継いで連続入力できます。</div>
     `,
     onMount:()=>{ SCREENS._obs=o; SCREENS._mediaCtx={kind:'obs', uuid:o.uuid, sv:o.survey_uuid}; SCREENS._audio=(o.audio||[]).slice(); SCREENS._media=(o.media||[]).slice();
-      SCREENS._chosenId=o.species_id||''; SCREENS._acc=null;   // 前の画面の種ID・GPS精度を引き継がない
+      SCREENS._chosenId=o.species_id||''; SCREENS._obsEditing=editing;
+      // 精度の扱い: null=保存時に既存値を維持 / ''=不明（手入力座標） / 数値=確定値。初期値は画面に表示している精度と一致させる
+      SCREENS._acc=(o.gps_accuracy===''||o.gps_accuracy==null)?null:o.gps_accuracy;
+      const fEl=$('#obForm'); if(fEl){ ['input','change'].forEach(ev=>fEl.addEventListener(ev, ()=>{ SCREENS._dirty=true; })); }   // 文字・数値・日時・チェックの変更検知
       renderQuickSpecies(); renderRecPanel(); renderMediaPanel(); updateSpRefLinks(o.species_name_snapshot);
-      if(!o.latitude && lastFix){ /* すでに反映済み */ }
     }
   };
 };
-function pickObs(btn,field,val){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); syncOther(field); }
+function pickObs(btn,field,val){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); syncOther(field); SCREENS._dirty=true; }
 function segVal(field){ const on=document.querySelector(`[data-seg="${field}"] button.on`); return on? (on.textContent==='なし'?'':on.textContent):''; }
 function segVals(field){ return [...document.querySelectorAll(`[data-seg="${field}"] button.on`)].map(b=>b.textContent).filter(t=>t!=='なし').join('・'); }
 
@@ -1360,7 +1406,7 @@ function syncOther(field){
   const on=[...document.querySelectorAll(`[data-seg="${field}"] button.on`)].some(b=>b.textContent==='その他');
   inp.style.display=on?'':'none'; }
 function toggleMulti(btn){ btn.classList.toggle('on');
-  const seg=btn.closest('[data-seg]'); if(seg) syncOther(seg.dataset.seg); }
+  const seg=btn.closest('[data-seg]'); if(seg) syncOther(seg.dataset.seg); SCREENS._dirty=true; }
 
 /* 種名検索（ひらがな・カタカナどちらの入力でもヒット） */
 function toKata(s){ return String(s||'').replace(/[ぁ-ゖ]/g,c=>String.fromCharCode(c.charCodeAt(0)+0x60)); }
@@ -1378,8 +1424,15 @@ function spSearch(q){
     : `<div class="suggest"><div class="item" style="color:var(--muted)" onclick="chooseSpecies('','')">候補なし → 未同定で保存</div></div>`;
 }
 function chooseSpecies(id,name){ $('#spInput').value=name; $('#spSuggest').innerHTML=''; updateSpRefLinks(name);
+  SCREENS._dirty=true;
   if(!name){ document.querySelectorAll('[data-seg="identification_status"] button').forEach(b=>{
-    b.classList.toggle('on', b.textContent==='未同定'); }); } SCREENS._chosenId=id; }
+    b.classList.toggle('on', b.textContent==='未同定'); }); }
+  else if(segVal('identification_status')==='未同定'){
+    // 「候補になし→未同定」の後に種を選び直したら「確定」へ戻す（「疑い」等の手動選択は上書きしない）
+    document.querySelectorAll('[data-seg="identification_status"] button').forEach(b=>{
+      b.classList.toggle('on', b.textContent==='確定'); });
+  }
+  SCREENS._chosenId=id; }
 function renderQuickSpecies(){
   const box=$('#spQuick'); const recent=DB.recentSpecies();
   const svUuid=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;   // 編集中の記録が属する調査を参照
@@ -1389,6 +1442,12 @@ function renderQuickSpecies(){
 }
 // data属性から値を読む（onclickのJS文字列にユーザー入力を埋め込まない＝XSS対策）
 function pickQuickSpecies(el){ const n=(el&&el.getAttribute('data-sp'))||''; chooseSpecies('',n); }
+// 緯度・経度を手入力したとき: 手入力座標にGPS精度は付けられないため「不明」にし、表示からも±を消す
+function posManualEdit(){
+  SCREENS._acc=''; SCREENS._dirty=true;
+  const la=$('#latIn')?$('#latIn').value.trim():'', lo=$('#lonIn')?$('#lonIn').value.trim():'';
+  const pl=$('#posLabel'); if(pl) pl.textContent=(la||lo)?(la+', '+lo):'未取得';
+}
 function grabGps(){
   if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
   const own=(SCREENS._obs&&SCREENS._obs.uuid); toast('位置を取得中…');
@@ -1398,7 +1457,7 @@ function grabGps(){
     if(!$('#latIn') || (SCREENS._obs&&SCREENS._obs.uuid)!==own) return;
     $('#latIn').value=p.coords.latitude.toFixed(6); $('#lonIn').value=p.coords.longitude.toFixed(6);
     $('#posLabel').textContent=`${p.coords.latitude.toFixed(6)}, ${p.coords.longitude.toFixed(6)} (±${Math.round(p.coords.accuracy)}m)`;
-    SCREENS._acc=Math.round(p.coords.accuracy);
+    SCREENS._acc=Math.round(p.coords.accuracy); SCREENS._dirty=true;   // プログラムによる値変更はinput監視に乗らないため明示
     toast('位置を取得しました');
   }, e=>toast('位置を取得できませんでした'), {enableHighAccuracy:true, timeout:15000});
 }
@@ -1537,12 +1596,13 @@ function initObsTargetMap(){
   mapObj=createBaseMap('otMap', center, zoom, {});
   // 観察者の位置を緑丸で薄く表示（対象位置の目安）
   if(!isNaN(ola)&&!isNaN(olo)) L.circleMarker([ola,olo],{radius:5,color:'#fff',weight:1,fillColor:'#3fb984',fillOpacity:.9}).addTo(mapObj).bindPopup('観察者の位置');
-  if(!isNaN(lat)&&!isNaN(lon)) setObsTarget(lat,lon);
+  if(!isNaN(lat)&&!isNaN(lon)) setObsTarget(lat,lon,true);   // 既存値の初期表示は変更扱いにしない
   mapObj.on('click', e=>setObsTarget(e.latlng.lat, e.latlng.lng));
 }
-function setObsTarget(lat,lon){
+function setObsTarget(lat,lon,silent){
   $('#otLat').value=lat.toFixed(6); $('#otLon').value=lon.toFixed(6);
   $('#otLabel').textContent=lat.toFixed(6)+', '+lon.toFixed(6);
+  if(!silent) SCREENS._dirty=true;   // 地図タップ・GPS取得はinput監視に乗らないため明示（初期表示はsilent）
   const mapShown=$('#otMap') && $('#otMap').style.display!=='none';
   if(mapObj && mapShown){ if(obsTargetMarker){ try{ mapObj.removeLayer(obsTargetMarker); }catch(e){} }
     // 標準ピン画像はオフライン非同梱のため自作アイコン（divIcon）を使う
@@ -1550,7 +1610,8 @@ function setObsTarget(lat,lon){
     obsTargetMarker=L.marker([lat,lon],{icon}).addTo(mapObj); }
 }
 function obsTargetFromGps(){
-  if(lastFix){ setObsTarget(lastFix.lat,lastFix.lon); if(mapObj && $('#otMap').style.display!=='none') mapObj.setView([lastFix.lat,lastFix.lon],16); toast('現在地を対象位置にしました'); return; }
+  const fx=freshFix();
+  if(fx){ setObsTarget(fx.lat,fx.lon); if(mapObj && $('#otMap').style.display!=='none') mapObj.setView([fx.lat,fx.lon],16); toast('現在地を対象位置にしました'); return; }
   if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
   const own=(SCREENS._obs&&SCREENS._obs.uuid); toast('位置を取得中…');
   navigator.geolocation.getCurrentPosition(p=>{ lastFix={lat:p.coords.latitude,lon:p.coords.longitude,acc:p.coords.accuracy,t:Date.now()};
@@ -1559,7 +1620,9 @@ function obsTargetFromGps(){
     setObsTarget(p.coords.latitude,p.coords.longitude); toast('現在地を対象位置にしました'); },
     e=>toast('位置を取得できませんでした'), {enableHighAccuracy:true,timeout:15000});
 }
-function clearObsTarget(){ $('#otLat').value=''; $('#otLon').value=''; $('#otLabel').textContent='未指定';
+function clearObsTarget(){
+  if($('#otLat').value || $('#otLon').value) SCREENS._dirty=true;   // 値が実際に消えるときだけ「未保存の変更」扱い
+  $('#otLat').value=''; $('#otLon').value=''; $('#otLabel').textContent='未指定';
   if(mapObj&&obsTargetMarker){ try{ mapObj.removeLayer(obsTargetMarker); }catch(e){} obsTargetMarker=null; } }
 function saveObs(u, svUuid, editing, cont){
   const f=$('#obForm'); const g=n=>{const el=f.querySelector(`[name="${n}"]`); return el?el.value:'';};
@@ -1575,7 +1638,8 @@ function saveObs(u, svUuid, editing, cont){
     uuid:u, survey_uuid:svUuid,
     observed_at: g('observed_at')? new Date(g('observed_at')).toISOString() : nowISO(),
     latitude: lat, longitude: lon,
-    gps_accuracy: SCREENS._acc || (DB.observations().find(x=>x.uuid===u)||{}).gps_accuracy || '',
+    // 精度: 座標なしなら必ず空 / _acc===null は「この画面で位置に触れていない」＝既存値を維持 / ''や数値はその値
+    gps_accuracy: (!lat && !lon) ? '' : (SCREENS._acc===null ? ((DB.observations().find(x=>x.uuid===u)||{}).gps_accuracy||'') : SCREENS._acc),
     species_id: (speciesByName(name)||{}).species_id || SCREENS._chosenId || '', species_name_snapshot: name,
     count: parseInt(g('count'),10)||0, detection_method: segVal('detection_method'),
     behavior: otherMerge(segVals('behavior'),'behavior'), habitat: otherMerge(segVals('habitat'),'habitat'),
@@ -1591,9 +1655,11 @@ function saveObs(u, svUuid, editing, cont){
   });
   if(!DB.upsertObs(rec)) return;   // 保存失敗(DB.saveが警告済み)。成功表示も画面遷移もしない
   if(name) DB.pushRecent(name);
+  const keep={ lat:rec.latitude, lon:rec.longitude, acc:rec.gps_accuracy };   // 「続けて」用に、保存した位置と精度をそのまま引き継ぐ
   SCREENS._acc=null; SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
+  SCREENS._dirty=false; SCREENS._ghost=null;   // 保存済みなので離脱ガード対象から外す
   toast('保存しました');
-  if(cont){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid})); } // 位置を引き継いで次の種へ
+  if(cont){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid, keep})); } // 位置を引き継いで次の種へ
   else goBack();
 }
 /* ---------- マイ図鑑（自分の確定記録を種の図鑑に登録） ---------- */
@@ -1695,7 +1761,9 @@ async function importGuideZip(input){
 /* ---------- まとめて記録（定点で複数種を共通の位置・時刻で一括入力） ---------- */
 SCREENS.obsBatch = (svUuid)=>{
   const s=DB.survey(svUuid); if(!s) return SCREENS.home();
-  const lat=lastFix?lastFix.lat.toFixed(6):''; const lon=lastFix?lastFix.lon.toFixed(6):'';
+  const _bfx=freshFix();   // 古い測位は自動入力しない（前の地点の座標が付くのを防ぐ）
+  const lat=_bfx?_bfx.lat.toFixed(6):''; const lon=_bfx?_bfx.lon.toFixed(6):'';
+  SCREENS._batchAcc=_bfx?Math.round(_bfx.acc):'';   // 初期充填座標の精度もここで確定（前回画面の値を引きずらない）
   const seg=(field,opts,allowEmpty,def)=>`<div class="seg" data-seg="${field}">
     ${allowEmpty?`<button type="button" class="" onclick="pickObs(this,'${field}','')">なし</button>`:''}
     ${opts.map(x=>`<button type="button" class="${x===def?'on':''}" onclick="pickObs(this,'${field}','${esc(x)}')">${esc(x)}</button>`).join('')}</div>`;
@@ -1707,8 +1775,8 @@ SCREENS.obsBatch = (svUuid)=>{
         <div class="row"><div class="grow small muted">位置（全種で共通）</div>
           <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="batchGps()">📍 現在地</button></div>
         <div class="two" style="margin-top:8px;">
-          <input id="batchLat" inputmode="decimal" placeholder="緯度" value="${esc(lat)}">
-          <input id="batchLon" inputmode="decimal" placeholder="経度" value="${esc(lon)}">
+          <input id="batchLat" inputmode="decimal" placeholder="緯度" value="${esc(lat)}" oninput="SCREENS._batchAcc=''">
+          <input id="batchLon" inputmode="decimal" placeholder="経度" value="${esc(lon)}" oninput="SCREENS._batchAcc=''">
         </div>
       </div>
       <label class="field"><span class="lab">確認方法（共通）</span>${seg('detection_method',OPT.detection,false,'目視')}</label>
@@ -1727,7 +1795,7 @@ SCREENS.obsBatch = (svUuid)=>{
       <div class="sp"></div>
       <button class="btn primary big" id="batchSaveBtn" onclick="batchSave('${svUuid}')" disabled>0種をまとめて保存</button>
     `,
-    onMount:()=>{ SCREENS._batchItems=[]; SCREENS._batchAcc=null; renderBatchList(); const i=$('#batchSp'); if(i) i.focus(); }
+    onMount:()=>{ SCREENS._batchItems=[]; renderBatchList(); const i=$('#batchSp'); if(i) i.focus(); }   // _batchAccは画面構築冒頭で確定済み（ここで消さない）
   };
 };
 function batchAdd(){
@@ -1766,7 +1834,7 @@ function batchSave(svUuid){
   const arr=DB.load(DB.key.ob);
   items.forEach(it=>{ const sp=speciesByName(it.name);
     arr.push({ uuid:uuid(), survey_uuid:svUuid, observed_at:when, latitude:lat, longitude:lon,
-      gps_accuracy: SCREENS._batchAcc||'', species_id: sp?sp.species_id:'', species_name_snapshot:it.name,
+      gps_accuracy: (!lat && !lon) ? '' : (SCREENS._batchAcc||''), species_id: sp?sp.species_id:'', species_name_snapshot:it.name,
       count: it.count, detection_method:method, behavior:'', habitat:habitat,
       identification_status:'確定', confidence:'中', needs_review:false, note:'', external_photo_reference:'', audio:[], media:[],
       created_at:when, updated_at:when });
@@ -1777,7 +1845,9 @@ function batchSave(svUuid){
   SCREENS._batchItems=null; SCREENS._batchAcc=null; goBack();
 }
 function deleteObs(u){ if(!confirm('この観察記録を削除しますか？')) return;
-  DB.softDelete(DB.key.ob,u); toast('削除しました'); goBack(); }
+  if(!DB.softDelete(DB.key.ob,u)) return;   // 保存失敗（容量不足）はDB.saveが警告済み。成功表示も遷移もしない
+  SCREENS._dirty=false; SCREENS._ghost=null;   // 削除確定後に離脱ガードが二重に確認しないように
+  toast('削除しました'); goBack(); }
 
 /* ---------- 録音 ---------- */
 let REC = null; // 録音中コンテキスト { mr, stream, t0, chunks, timer, abort }
@@ -1801,22 +1871,30 @@ async function recToggle(){
   let mr;
   try{ mr=new MediaRecorder(stream, mime?{mimeType:mime}:undefined); }
   catch(e){ stream.getTracks().forEach(t=>t.stop()); toast('録音を開始できませんでした'); return; }
-  const ctx={ mr, stream, t0:Date.now(), chunks:[], timer:null, abort:false };
+  const ctx={ mr, stream, t0:Date.now(), chunks:[], timer:null, abort:false,
+    target:mediaTarget() };   // 録音開始時点の対象を固定（停止・保存完了までに画面が変わっても取り違えない）
+  // 未保存の新規記録なら、保存完了を待たずこの時点で離脱ガード対象にする（写真の取り込みと同じ扱い）
+  if((ctx.target.kind==='obs' && SCREENS._obsEditing===false && SCREENS._obs && SCREENS._obs.uuid===ctx.target.uuid) ||
+     (ctx.target.kind==='flight' && SCREENS._flightEditing===false && SCREENS._flightSelf===ctx.target.uuid)){
+    SCREENS._dirty=true;
+    SCREENS._ghost={ key:(ctx.target.kind==='flight'?DB.key.fl:DB.key.ob), uuid:ctx.target.uuid };
+  }
   mr.ondataavailable=e=>{ if(e.data && e.data.size) ctx.chunks.push(e.data); };
   mr.onstop=()=>{ clearInterval(ctx.timer); stream.getTracks().forEach(t=>t.stop());
     const wasAbort=ctx.abort; REC=null; renderRecPanel();
-    if(!wasAbort) recFinalize(ctx.chunks, mr.mimeType||mime, ctx.t0); };
+    if(!wasAbort) recFinalize(ctx.chunks, mr.mimeType||mime, ctx.t0, ctx.target); };
   REC=ctx; mr.start(); ctx.timer=setInterval(updateRecTimer,250); renderRecPanel();
 }
 function recStop(){ if(REC){ clearInterval(REC.timer); try{ REC.mr.stop(); }catch(e){} } }
 function recAbort(){ if(REC){ REC.abort=true; clearInterval(REC.timer); try{ REC.mr.stop(); }catch(e){} } }
 function updateRecTimer(){ const el=$('#recTime'); if(el && REC) el.textContent=fmtDur((Date.now()-REC.t0)/1000); }
 
-function recFinalize(chunks, mime, t0){
+function recFinalize(chunks, mime, t0, targetAtStart){
   const dur=Math.round((Date.now()-t0)/1000);
   const blob=new Blob(chunks,{type:mime}); if(!blob.size){ toast('録音が空でした'); return; }
   const meta={ id:uuid(), dur, size:blob.size, mime, ext:mimeExt(mime), created_at:nowISO() };
-  const target=mediaTarget();   // 録音開始時点の対象を固定（保存完了までに画面が変わっても取り違えない）
+  const target=targetAtStart||mediaTarget();   // 録音開始時点の対象（引数）を優先
+  if(target.uuid && DISCARDED.has(target.uuid)){ return; }   // 破棄済みの記録の分は保存しない（実体も残さない）
   const owner = target.kind==='flight' ? { flight_uuid:target.uuid, obs_uuid:'' } : { obs_uuid:target.uuid };
   AudioDB.put(Object.assign({}, meta, { blob }, owner)).then(()=>{
     attachMediaMeta(target,'audio',meta); scheduleFolderFull(); toast('録音を保存しました');
@@ -1833,6 +1911,7 @@ function mediaTarget(){ const c=mediaCtx(); return { kind:c.kind, uuid:c.uuid, s
 // 対象レコード(target)へメディアmetaを追記。保存済みならDBへ直接反映し、
 // 現在画面が同じ対象の時だけ編集中配列とパネルを更新する（別記録への誤添付・誤表示を防ぐ）
 function attachMediaMeta(target, field, meta){
+  if(target.uuid && DISCARDED.has(target.uuid)) return;   // ユーザーが破棄した新規記録には、後から完了した保存分も付けない
   if(target.uuid){ const recKey=target.kind==='flight'?DB.key.fl:DB.key.ob;
     const list=DB.load(recKey); const i=list.findIndex(x=>x.uuid===target.uuid);
     if(i>=0){ list[i][field]=(list[i][field]||[]).concat([meta]);
@@ -1848,6 +1927,11 @@ function attachMediaMeta(target, field, meta){
     } }
   const cur=mediaCtx();
   if(cur.kind===target.kind && cur.uuid===target.uuid){
+    // 「未保存の新規記録」への追加だけを離脱ガード対象にする（既存記録へのメディアは即DB保存済み＝離脱しても消えないため）
+    const isNew = target.kind==='flight' ? (SCREENS._flightEditing===false && SCREENS._flightSelf===target.uuid)
+                                         : (SCREENS._obsEditing===false && SCREENS._obs && SCREENS._obs.uuid===target.uuid);
+    if(isNew){ SCREENS._dirty=true;
+      SCREENS._ghost={ key:(target.kind==='flight'?DB.key.fl:DB.key.ob), uuid:target.uuid }; }
     if(field==='audio'){ SCREENS._audio=(SCREENS._audio||[]).concat([meta]); renderRecPanel(); }
     else { SCREENS._media=(SCREENS._media||[]).concat([meta]); renderMediaPanel(); } }
 }
@@ -1899,6 +1983,12 @@ function pickMedia(input){
   const files=Array.from(input.files||[]); input.value='';
   if(!files.length) return;
   const target=mediaTarget();   // 取り込み開始時点の対象を固定
+  // 未保存の新規記録なら、保存完了を待たずこの時点でガード対象にする（完了前に離脱してもすり抜けない）
+  if((target.kind==='obs' && SCREENS._obsEditing===false && SCREENS._obs && SCREENS._obs.uuid===target.uuid) ||
+     (target.kind==='flight' && SCREENS._flightEditing===false && SCREENS._flightSelf===target.uuid)){
+    SCREENS._dirty=true;
+    SCREENS._ghost={ key:(target.kind==='flight'?DB.key.fl:DB.key.ob), uuid:target.uuid };
+  }
   const owner = target.kind==='flight' ? { flight_uuid:target.uuid, obs_uuid:'' } : { obs_uuid:target.uuid };
   toast('取り込み中…');
   let ok=0, fail=0;
@@ -1910,7 +2000,9 @@ function pickMedia(input){
       .then(()=>{ attachMediaMeta(target,'media',meta); ok++; })
       .catch(()=>{ fail++; });
   });
-  Promise.all(jobs).then(()=>{ scheduleFolderFull();
+  Promise.all(jobs).then(()=>{
+    if(DISCARDED.has(target.uuid)){ mediaGcAll().catch(()=>{}); return; }   // 取り込み中に破棄された→結果は捨てて実体も掃除
+    scheduleFolderFull();
     if(fail) toast(`写真・動画：${ok}件追加・${fail}件失敗`); else toast('写真・動画を追加しました'); });
 }
 function delMedia(id){ const target=mediaTarget();
@@ -1958,7 +2050,7 @@ SCREENS.noteEdit = (argStr)=>{
   let n = editing ? Object.assign({},DB.notes().find(x=>x.uuid===arg.id)) : null;
   if(!n) n={ uuid:uuid(), survey_uuid:svUuid, recorded_at:nowISO(), latitude:'', longitude:'',
     category:'特記事項', content:'', needs_review:false };
-  if(lastFix && !n.latitude){ n.latitude=lastFix.lat.toFixed(6); n.longitude=lastFix.lon.toFixed(6); }
+  { const fx=freshFix(); if(!editing && fx && !n.latitude){ n.latitude=fx.lat.toFixed(6); n.longitude=fx.lon.toFixed(6); } }
   const co=otherParse(n.category); n.category=co.v;
   const seg=`<div class="seg" data-seg="category">${OPT.noteCat.map(c=>
     `<button type="button" class="${n.category===c?'on':''}" onclick="pickObs(this,'category','${esc(c)}')">${esc(c)}</button>`).join('')}</div>${otherBox('category',co.other,n.category==='その他')}`;
@@ -1968,7 +2060,7 @@ SCREENS.noteEdit = (argStr)=>{
       <form id="ntForm">
         <label class="field"><span class="lab">分類</span>${seg}</label>
         <label class="field"><span class="lab">本文</span>
-          <textarea name="content" style="min-height:140px;" placeholder="調査条件・環境・気づき・次回課題など">${esc(n.content)}</textarea></label>
+          <textarea name="content" style="min-height:140px;" placeholder="調査条件・環境・気づき・次回課題など" oninput="SCREENS._dirty=true">${esc(n.content)}</textarea></label>
         <label class="field row" style="gap:12px; align-items:center;">
           <input type="checkbox" id="ntReview" style="width:auto;" ${n.needs_review?'checked':''}>
           <span class="lab" style="margin:0;">要確認フラグ</span></label>
@@ -1976,7 +2068,8 @@ SCREENS.noteEdit = (argStr)=>{
       <button class="btn primary big" onclick="saveNote('${n.uuid}','${svUuid}',${editing})">保存する</button>
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteNote('${n.uuid}')">このメモを削除</button>`:''}
     `,
-    onMount:()=>{ SCREENS._note=n; }
+    onMount:()=>{ SCREENS._note=n;
+      const nf=$('#ntForm'); if(nf){ ['input','change'].forEach(ev=>nf.addEventListener(ev, ()=>{ SCREENS._dirty=true; })); } }
   };
 };
 function saveNote(u,svUuid,editing){
@@ -1986,9 +2079,11 @@ function saveNote(u,svUuid,editing){
   const rec=Object.assign({},prev,{ uuid:u, survey_uuid:svUuid, recorded_at:prev.recorded_at||nowISO(),
     latitude:(SCREENS._note&&SCREENS._note.latitude)||'', longitude:(SCREENS._note&&SCREENS._note.longitude)||'',
     category:otherMerge(segVal('category'),'category'), content, needs_review:$('#ntReview').checked });
-  if(!DB.upsertNote(rec)) return; toast('保存しました'); goBack();
+  if(!DB.upsertNote(rec)) return; SCREENS._dirty=false; toast('保存しました'); goBack();
 }
-function deleteNote(u){ if(!confirm('このメモを削除しますか？')) return; DB.softDelete(DB.key.nt,u); toast('削除しました'); goBack(); }
+function deleteNote(u){ if(!confirm('このメモを削除しますか？')) return;
+  if(!DB.softDelete(DB.key.nt,u)) return;
+  SCREENS._dirty=false; toast('削除しました'); goBack(); }
 
 /* ============================================================
    調査ルート（ラインセンサスの経路）：描く／歩いて自動記録
@@ -2190,7 +2285,8 @@ SCREENS.flightEdit = (argStr)=>{
     `,
     onMount:()=>{ SCREENS._chosenId=f.species_id||''; flightPath=(f.path||[]).slice();
       SCREENS._mediaCtx={kind:'flight', uuid:f.uuid, sv:svUuid}; SCREENS._audio=(f.audio||[]).slice(); SCREENS._media=(f.media||[]).slice();
-      SCREENS._flightSelf=f.uuid; SCREENS._flightSv=svUuid;
+      SCREENS._flightSelf=f.uuid; SCREENS._flightSv=svUuid; SCREENS._flightEditing=editing;
+      const flEl=$('#flForm'); if(flEl){ ['input','change'].forEach(ev=>flEl.addEventListener(ev, ()=>{ SCREENS._dirty=true; })); }   // 種名・時刻・メモ等の変更検知
       renderRecPanel(); renderMediaPanel();
       updateSpRefLinks(f.species_name_snapshot||''); _mapTimer=setTimeout(()=>initFlightMap(),50); }
   };
@@ -2254,7 +2350,7 @@ function initFlightMap(){
   if(flightPath.length){ center=flightPath[0]; zoom=15; }
   else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=15; }
   mapObj=createBaseMap('fmap', center, zoom, {});
-  mapObj.on('click', e=>{ flightPath.push([e.latlng.lat, e.latlng.lng]); redrawFlight(); });
+  mapObj.on('click', e=>{ flightPath.push([e.latlng.lat, e.latlng.lng]); SCREENS._dirty=true; redrawFlight(); });
   // 同じ調査の他の飛翔経路を薄く重ねる（1画面で何本も見えるように）
   if(SCREENS._flightSv){ DB.flightsOf(SCREENS._flightSv).forEach(of=>{
     if(of.uuid===SCREENS._flightSelf) return;
@@ -2282,8 +2378,8 @@ function redrawFlight(){
   if(info){ let d=0; for(let i=1;i<flightPath.length;i++){ try{ d+=mapObj.distance(flightPath[i-1],flightPath[i]); }catch(e){} }
     info.textContent = flightPath.length? `${flightPath.length}点 ・ 全長 約${d>=1000?(d/1000).toFixed(2)+'km':Math.round(d)+'m'}` : 'まだ点がありません。地図をタップして描いてください。'; }
 }
-function flightUndo(){ flightPath.pop(); redrawFlight(); }
-function flightClear(){ if(flightPath.length && !confirm('描いた線を全部消しますか？')) return; flightPath=[]; redrawFlight(); }
+function flightUndo(){ if(!flightPath.length) return; flightPath.pop(); SCREENS._dirty=true; redrawFlight(); }
+function flightClear(){ if(!flightPath.length) return; if(!confirm('描いた線を全部消しますか？')) return; flightPath=[]; SCREENS._dirty=true; redrawFlight(); }
 function saveFlight(u,svUuid,editing,cont){
   if(flightPath.length<2){ toast('地図を2点以上タップして経路を描いてください'); return; }
   const name=(($('#spInput')&&$('#spInput').value)||'').trim();
@@ -2306,6 +2402,7 @@ function saveFlight(u,svUuid,editing,cont){
   if(!DB.upsertFlight(rec)) return;   // 保存失敗なら成功表示も遷移もしない
   if(name) DB.pushRecent(name);
   SCREENS._audio=null; SCREENS._media=null; SCREENS._mediaCtx=null;
+  SCREENS._dirty=false;   // 保存済みなので離脱ガード対象から外す
   toast('飛翔経路を保存しました');
   if(cont){ // 属性を引き継いで次の経路を同じ地図で描く
     const keep={ species_id:SCREENS._chosenId||'', species_name:name, age_class:age,
@@ -2313,7 +2410,9 @@ function saveFlight(u,svUuid,editing,cont){
     goBack(); nav('flightEdit', JSON.stringify({sv:svUuid, keep})); }
   else goBack();
 }
-function deleteFlight(u){ if(!confirm('この飛翔経路を削除しますか？')) return; DB.softDelete(DB.key.fl,u); toast('削除しました'); goBack(); }
+function deleteFlight(u){ if(!confirm('この飛翔経路を削除しますか？')) return;
+  if(!DB.softDelete(DB.key.fl,u)) return;
+  SCREENS._dirty=false; SCREENS._ghost=null; toast('削除しました'); goBack(); }
 
 /* 飛翔経路のカード（調査画面・まとめ画面で共用） */
 function flightCard(u,f){ return `<div class="card tap" onclick="nav('flightEdit', JSON.stringify({sv:'${u}',id:'${f.uuid}'}))">
@@ -2616,8 +2715,10 @@ SCREENS.summary = (u)=>{
   // 分子はラインセンサスに合わせ「観察のみ・未同定を除く」（飛翔経路は含めない）
   const routeLen=pathLength((s.route||[]).filter(validPathPt));
   const km=routeLen/1000;
-  const obsInd=obs.reduce((a,o)=>a+(parseInt(o.count,10)||0),0);
-  const obsSp=new Set(obs.map(o=>o.species_name_snapshot).filter(n=>n&&n!=='（未同定）')).size;
+  // 注記どおり「未同定を除く」を個体数・種数の両方に適用（従来は種数のみ除外で、個体/kmに未同定が混ざっていた）
+  const obsIdOk=obs.filter(o=>!(o.identification_status==='未同定' || !o.species_name_snapshot));
+  const obsInd=obsIdOk.reduce((a,o)=>a+(parseInt(o.count,10)||0),0);
+  const obsSp=new Set(obsIdOk.map(o=>o.species_name_snapshot).filter(n=>n&&n!=='（未同定）')).size;
   const densHtml = km>0 ? `<div class="sp"></div>
       <h3 style="margin:0 0 6px;">ルート密度</h3>
       <div class="row" style="gap:8px;flex-wrap:wrap;">
@@ -4159,7 +4260,8 @@ async function gdriveStartupCheck(){
           const r=await gdrivePullAll(targets, token);
           if(r) toast(`ドライブから読み込みました：記録の取り込み${r.changed}件／写真・録音${r.media.done}件`, 4000);
           pulledNow=true;
-          reset('home');
+          // 取り込み中に入力・録音を始めていたら画面を作り直さない（未保存の内容が消えるため）
+          if(!SCREENS._dirty && !REC) reset('home');
         }catch(e){ toast('読み込みに失敗しました: '+(e.message||e)); }
       }else{
         // 既読にはしない（既読は「取り込み済み」の意味。断られた印だけ残す）。
@@ -4171,7 +4273,8 @@ async function gdriveStartupCheck(){
     //（直前に取り込んだ場合はその中で取得済みなので省略）
     if(!pulledNow){
       const md=await gdrivePullMedia(token, {}).catch(()=>null);
-      if(md && md.done){ toast(`写真・録音${md.done}件を取り込みました`+(md.miss?`（あと${md.miss}件は相手の端末の同期待ち）`:'')); render(); }
+      if(md && md.done){ toast(`写真・録音${md.done}件を取り込みました`+(md.miss?`（あと${md.miss}件は相手の端末の同期待ち）`:''));
+        if(!SCREENS._dirty && !REC) render(); }   // 入力・録音中は画面を作り直さない（未保存の内容が消えるため）
     }
   }catch(e){ try{ console.error('sync check failed', e); }catch(_){} }
 }
