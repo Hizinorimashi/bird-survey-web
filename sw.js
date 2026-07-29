@@ -1,4 +1,4 @@
-const CACHE = 'bird-survey-v56';
+const CACHE = 'bird-survey-v57';
 // 必須資産（これが揃わないとアプリが成立しない）。install時に全部揃わなければ失敗させ、不完全キャッシュで有効化しない
 const CORE = [
   './bird_survey.html',
@@ -11,7 +11,8 @@ const CORE = [
 // 任意資産（無くても主要機能は動く）。個別に失敗を許容する
 const OPTIONAL = [
   './vendor/pdf.min.js',
-  './vendor/pdf.worker.min.js'
+  './vendor/pdf.worker.min.js',
+  './vendor/leaflet-rotate.js'
 ];
 
 // 地図タイル用の別キャッシュ（容量制限付き）。
@@ -63,6 +64,7 @@ function isTile(url){ return url.includes('cyberjapandata.gsi.go.jp'); }
 function isStaticVendor(url){
   return url.endsWith('/leaflet.js') || url.endsWith('/leaflet.css') ||
          url.endsWith('/vendor/pdf.min.js') || url.endsWith('/vendor/pdf.worker.min.js') ||
+         url.endsWith('/vendor/leaflet-rotate.js') ||
          url.endsWith('/icon-192.svg') || url.endsWith('/icon-512.svg');
 }
 // アプリ本体(HTML/manifest)はネット優先で最新を取りに行く（ただしタイムアウト付き）
