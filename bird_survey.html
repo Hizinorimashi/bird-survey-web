@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><!-- ピンチ拡大可（屋外・老眼・手袋対応） -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0a0f0d">
@@ -32,7 +32,7 @@
     border-bottom:1px solid var(--line); padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;}
   .hbar{display:flex; align-items:center; gap:10px;}
   .htitle{font-weight:700; font-size:18px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-  .back{background:none; border:none; color:var(--accent); font-size:16px; padding:6px 4px; cursor:pointer;}
+  .back{background:none; border:none; color:var(--accent); font-size:17px; padding:10px 12px; cursor:pointer;}
   .hsub{display:flex; gap:10px; flex-wrap:wrap; margin-top:6px; font-size:13px; color:var(--muted);}
   .hsub .pill{background:var(--chip); border:1px solid var(--line); border-radius:20px; padding:2px 10px;}
   .pill.ok{color:var(--accent);} .pill.warn{color:var(--warn);} .pill.off{color:var(--muted);}
@@ -74,7 +74,7 @@
   .req{color:var(--accent);}
   .seg{display:flex; flex-wrap:wrap; gap:8px;}
   .seg button{background:var(--panel2); border:1px solid var(--line); color:var(--muted);
-    border-radius:20px; padding:8px 14px; cursor:pointer;}
+    border-radius:22px; padding:11px 16px; cursor:pointer;}   /* 手袋・雨天でも押せる約44px */
   .seg button.on{background:var(--accent2); border-color:var(--accent); color:#fff;}
   .two{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
 
@@ -86,6 +86,7 @@
   .act .ic{font-size:26px; display:block; margin-bottom:6px;}
   .act.primary{background:var(--accent2); border-color:var(--accent); color:#fff;}
   .act.wide{grid-column:1 / -1;}
+  .act.recing{border-color:var(--danger); background:#3a1d1d; color:#fff;}
 
   /* 検索候補 */
   .suggest{border:1px solid var(--line); border-radius:10px; margin-top:6px; overflow:hidden; max-height:280px; overflow-y:auto;}
@@ -94,7 +95,8 @@
   .suggest .item:active{background:var(--panel2);}
   .suggest .item .fam{font-size:12px; color:var(--muted);}
   .chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;}
-  .chips .c{background:var(--chip); border:1px solid var(--line); border-radius:16px; padding:5px 10px; font-size:13px; cursor:pointer;}
+  .chips .c{background:var(--chip); border:1px solid var(--line); border-radius:16px; padding:5px 10px; font-size:13px;}
+  .chips .c[onclick]{border-radius:20px; padding:10px 14px; font-size:15px; cursor:pointer;}   /* タップできるチップだけ大きく */
 
   /* 地図 */
   #map{height:calc(100vh - 220px); min-height:320px; border-radius:var(--radius); border:1px solid var(--line);}
@@ -130,8 +132,8 @@
   .mediathumb{position:relative; width:100%; aspect-ratio:1/1; background:var(--panel2);
     border:1px solid var(--line); border-radius:10px; overflow:hidden;}
   .mediael{width:100%; height:100%; object-fit:cover; display:block; background:#000;}
-  .mediadel{position:absolute; top:4px; right:4px; width:26px; height:26px; border-radius:50%;
-    background:rgba(0,0,0,.6); color:#fff; border:1px solid rgba(255,255,255,.5); font-size:16px;
+  .mediadel{position:absolute; top:4px; right:4px; width:40px; height:40px; border-radius:50%;
+    background:rgba(0,0,0,.6); color:#fff; border:1px solid rgba(255,255,255,.5); font-size:18px;
     line-height:1; cursor:pointer; z-index:2;}
   .mediacap{margin-top:3px; text-align:center;}
   /* メディア一覧（ギャラリー）・拡大表示 */
@@ -139,6 +141,14 @@
     color:#fff; font-size:26px; text-shadow:0 1px 6px rgba(0,0,0,.8); pointer-events:none;}
   .galaudio{width:100%; height:100%; display:flex; flex-direction:column; align-items:center;
     justify-content:center; gap:4px; font-size:26px; color:var(--muted);}
+  /* 保存バー（長いフォームでも保存ボタンが常に画面下に見える） */
+  .savebar{position:sticky; bottom:0; z-index:60; padding:10px 0 calc(8px + env(safe-area-inset-bottom, 0px));
+    background:linear-gradient(to top, var(--bg) 70%, transparent);}
+  details.fold summary{cursor:pointer; padding:12px; background:var(--panel2);
+    border:1px solid var(--line); border-radius:10px; font-weight:600; list-style:none;}
+  details.fold summary::before{content:'▸ ';}
+  details.fold[open] summary::before{content:'▾ ';}
+  details.fold[open] summary{margin-bottom:8px;}
   .lightbox{position:fixed; inset:0; background:rgba(0,0,0,.92); z-index:1500;
     display:flex; flex-direction:column; align-items:center; justify-content:center; padding:14px;}
   .lightbox-media{max-width:100%; max-height:68vh; object-fit:contain; border-radius:8px; background:#000;}
@@ -184,7 +194,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v58（2026-07-29 現場データ保護：GPS精度の保存漏れ・古い位置の自動使用・入力/録音中の離脱警告・書きかけ記録の始末・密度計算を修正）';
+const APP_VERSION = 'v59（2026-07-29 操作を速く：一覧さらに表示・要確認絞り込み・保存バー常時表示・ボタン拡大・すぐ録音・天候の途中編集・ホームに同期状態）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -855,7 +865,8 @@ const DISCARDED=new Set();
 // 保存フローは保存成功時に SCREENS._dirty=false にしてから遷移するので、ここには引っかからない
 function leaveGuardOk(){
   const cur=STACK[STACK.length-1]||{};
-  const editScreen=(cur.name==='obsEdit'||cur.name==='noteEdit'||cur.name==='flightEdit');
+  const editScreen=(cur.name==='obsEdit'||cur.name==='noteEdit'||cur.name==='flightEdit'
+    ||(cur.name==='surveyEdit' && SCREENS._editing));   // 既存調査の途中編集も保護（新規は下書き自動保存があるので対象外）
   const dirty=editScreen && SCREENS._dirty;
   const ghost=dirty ? SCREENS._ghost : null;   // 写真・録音を先に付けてDBに仮保存された未保存の新規記録
   if(!REC && !dirty) return true;
@@ -885,7 +896,9 @@ function reset(name,arg){ SCREENS._sel=null; STACK=[{name,arg}]; render(); }
 
 const SCREENS = {}; // name -> function(arg) -> returns {title, sub[], html, onMount}
 
+let _navGen=0;   // 画面世代。マイク許可待ち中に画面が変わったら録音を開始させないための照合番号
 function render(){
+  _navGen++;
   if(REC) recAbort(); // 画面を離れたら録音を中断（保存はしない。離脱前の確認は leaveGuardOk が担当）
   SCREENS._dirty=false; SCREENS._ghost=null;   // 新しい画面は未編集状態から始まる（編集画面の操作でtrueになる）
   if(PDFCTX){ try{ PDFCTX.doc.destroy(); }catch(e){} PDFCTX=null; } // PDF閲覧の後始末
@@ -949,6 +962,8 @@ SCREENS.home = ()=>{
         : `<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="startSelect('home')">☑ 選択して削除</button>`):''}
     </div>`;
 
+  const gLast=gdriveLast();
+  const gAgo=gLast?Math.max(0,Math.round((Date.now()-new Date(gLast))/60000)):null;
   return {
     title:'鳥類調査記録',
     html:`
@@ -982,6 +997,7 @@ SCREENS.home = ()=>{
         <button class="btn" onclick="nav('trash',null)">🗑 ごみ箱</button>
         <button class="btn" onclick="nav('cloud',null)">☁ クラウド保存</button>
       </div>
+      ${(gdriveSignedIn()||GUSER)?`<div class="tiny muted" style="margin-top:6px;">☁ 前回のドライブ保存: ${gAgo!=null?(gAgo+'分前'):'まだ'}<span id="homePending"></span></div>`:''}
       ${(gdriveCfg().clientId && GUSER && !gdriveSignedIn())?`<div class="tiny muted" style="margin-top:6px;">☁ ドライブ同期を続けるにはサインインが必要です（上の「クラウド保存」から）</div>`:''}
       <div class="sp"></div>
       <div class="note">観察記録の合計個体数は延べ数です。同一個体を重複して数えている可能性があるため、生息個体数とは限りません。</div>
@@ -990,7 +1006,16 @@ SCREENS.home = ()=>{
         <span class="tiny muted">バージョン ${APP_VERSION}</span>
         <button class="btn ghost" style="width:auto; padding:6px 12px; font-size:13px;" onclick="forceUpdate()">↻ 最新に更新</button>
       </div>
-    `
+    `,
+    onMount:()=>{ if(gdriveSignedIn()||GUSER){
+      const el=document.getElementById('homePending');   // この画面の要素を先に掴む（古い非同期結果が新しい画面に混ざらないように）
+      syncPendingCounts().then(c=>{
+        if(!el||!el.isConnected) return;
+        if(!c){ el.textContent=' ／ 未送信件数を確認できません'; return; }
+        const parts=[]; if(c.photo) parts.push('写真'+c.photo); if(c.audio) parts.push('録音'+c.audio); if(c.video) parts.push('動画'+c.video+'(手動)');
+        if(parts.length) el.textContent=' ／ 未送信: '+parts.join('・');
+      }).catch(()=>{});
+    } }
   };
 };
 // アプリ本体のプログラムだけを最新に読み込み直す（記録データは消さない）
@@ -1086,7 +1111,7 @@ function collectSurveyForm(){
     season:otherMerge(seg('season'),'season'), round_no:g('round_no'),
     purpose:g('purpose'), pre_survey_notes:g('pre_survey_notes'), pre_hypothesis:g('pre_hypothesis') };
 }
-function draftSave(){ if(SCREENS._editing) return; // 新規のみ下書き
+function draftSave(){ if(SCREENS._editing){ SCREENS._dirty=true; return; } // 既存調査の編集は下書きにせず未保存扱いに（離脱ガード対象）
   const base={uuid:SCREENS._editUuid, status:'未開始'};
   localStorage.setItem(DRAFT_KEY, JSON.stringify(Object.assign(base, collectSurveyForm()))); }
 function saveSurvey(u, editing){
@@ -1096,6 +1121,7 @@ function saveSurvey(u, editing){
   const rec = Object.assign({}, cur, data);
   if(!DB.upsertSurvey(rec)) return;   // 保存失敗なら下書きも消さず遷移もしない
   if(!editing) localStorage.removeItem(DRAFT_KEY);
+  SCREENS._dirty=false;   // 保存済みなので離脱ガード対象から外す
   toast('保存しました');
   reset('home'); nav('survey', u);
 }
@@ -1115,8 +1141,10 @@ function deleteSurvey(u){
 
 /* ---------- 選択削除（一覧から複数まとめて削除） ---------- */
 // SCREENS._sel = { scope:'obs'|'home', sv:uuid|null, set:Set<uuid> }
-function startSelect(scope, sv){ SCREENS._sel={ scope, sv:sv||null, set:new Set() }; render(); }
-function endSelect(){ SCREENS._sel=null; render(); }
+function startSelect(scope, sv){ if(recBusy()){ toast('録音を停止してから操作してください'); return; }
+  SCREENS._sel={ scope, sv:sv||null, set:new Set() }; render(); }
+function endSelect(){ if(recBusy()){ toast('録音を停止してから操作してください'); return; }
+  SCREENS._sel=null; render(); }
 function toggleSel(uuid, card){
   const sel=SCREENS._sel; if(!sel) return;
   if(sel.set.has(uuid)){ sel.set.delete(uuid); card.classList.remove('selected'); }
@@ -1163,6 +1191,7 @@ SCREENS.survey = (u)=>{
   const actions = running ? `
     <div class="actions">
       <div class="act primary wide" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🐦</span>観察を追加</div>
+      <div class="act wide" id="quickRecBtn" onclick="quickRec('${u}')"><span class="ic">🎤</span>すぐ録音（種名はあとで）</div>
       <div class="act wide" onclick="nav('obsBatch','${u}')"><span class="ic">🐦🐦</span>まとめて記録（複数種）</div>
       <div class="act wide" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🛩</span>飛翔経路を記録（地図に描く）</div>
       <div class="act wide" onclick="nav('routeEdit','${u}')"><span class="ic">🧭</span>調査ルートを記録（描く／歩いて記録）</div>
@@ -1170,11 +1199,19 @@ SCREENS.survey = (u)=>{
       <div class="act" onclick="nav('hypotheses','${u}')"><span class="ic">💡</span>仮説を見る</div>
       <div class="act" onclick="nav('map','${u}')"><span class="ic">🗺</span>地図を見る</div>
       <div class="act" onclick="nav('summary','${u}')"><span class="ic">📊</span>集計を見る</div>
+      <div class="act" onclick="nav('surveyEdit','${u}')"><span class="ic">✎</span>調査情報（天候）</div>
       <div class="act" onclick="nav('surveyEnd','${u}')"><span class="ic">⏹</span>調査を終了</div>
     </div>` : '';
 
   const selMode = !!(SCREENS._sel && SCREENS._sel.scope==='obs' && SCREENS._sel.sv===u);
-  const recent = obs.slice().sort((a,b)=>(b.observed_at||'').localeCompare(a.observed_at||'')).slice(0,50);
+  // 一覧の表示件数と「要確認のみ」絞り込み（別の調査に移ったらリセット）
+  if(SCREENS._obsListSv!==u){ SCREENS._obsListSv=u; SCREENS._obsLimit=50; SCREENS._obsReviewOnly=false; }
+  const reviewCount=obs.filter(o=>o.needs_review).length;
+  const listSrc=SCREENS._obsReviewOnly ? obs.filter(o=>o.needs_review) : obs;
+  const sorted=listSrc.slice().sort((a,b)=>(b.observed_at||'').localeCompare(a.observed_at||''));
+  const recent=sorted.slice(0, SCREENS._obsLimit||50);
+  const moreBtn=sorted.length>recent.length
+    ? `<div class="sp"></div><button class="btn" onclick="obsMore()">さらに50件表示（残り${sorted.length-recent.length}件）</button>` : '';
   const obsInner = o=>`
     <div class="grow">
       <div style="font-weight:700;">${esc(o.species_name_snapshot||'（未同定）')}
@@ -1191,9 +1228,10 @@ SCREENS.survey = (u)=>{
     : `<div class="card tap" onclick="nav('obsEdit', JSON.stringify({sv:'${u}',id:'${o.uuid}'}))">
         <div class="row">${obsInner(o)}</div></div>`;
   const obsList = recent.length ? recent.map(obsCard).join('')
-    : '<div class="empty small">まだ観察記録がありません。</div>';
-  const obsHeader = `<div class="row" style="align-items:center;">
+    : `<div class="empty small">${SCREENS._obsReviewOnly?'要確認の記録はありません。':'まだ観察記録がありません。'}</div>`;
+  const obsHeader = `<div class="row" style="align-items:center; flex-wrap:wrap; gap:6px;">
       <h3 class="grow" style="margin:0;">観察記録 <span class="muted small">(${obs.length})</span></h3>
+      ${(reviewCount||SCREENS._obsReviewOnly)? `<button class="btn ghost" style="width:auto; padding:6px 12px; ${SCREENS._obsReviewOnly?'border-color:var(--warn); color:var(--warn);':''}" onclick="obsReviewToggle()">⚠ 要確認のみ(${reviewCount})</button>`:''}
       ${obs.length? (selMode
         ? `<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="endSelect()">キャンセル</button>`
         : `<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="startSelect('obs','${u}')">☑ 選択して削除</button>`):''}
@@ -1226,6 +1264,7 @@ SCREENS.survey = (u)=>{
       <div class="divider"></div>
       ${obsHeader}
       ${obsList}
+      ${moreBtn}
       ${selBar}
       <div class="divider"></div>
       <div class="row" style="align-items:center;">
@@ -1243,6 +1282,63 @@ SCREENS.survey = (u)=>{
     onMount:()=>{ if(running) startGpsIndicator(); }
   };
 };
+// 一覧の「さらに表示」「要確認のみ」。録音中は再描画で録音が中断されるため操作を保留してもらう
+function recBusy(){ return !!REC || _recStarting; }   // 録音中＋マイク許可待ち中
+function obsMore(){ if(recBusy()){ toast('録音を停止してから操作してください'); return; }
+  SCREENS._obsLimit=(SCREENS._obsLimit||50)+50; render(); }
+function obsReviewToggle(){ if(recBusy()){ toast('録音を停止してから操作してください'); return; }
+  SCREENS._sel=null;   // 絞り込みで見えなくなった記録が選択されたまま削除されるのを防ぐ（選択は解除）
+  SCREENS._obsReviewOnly=!SCREENS._obsReviewOnly; SCREENS._obsLimit=50; render(); }
+/* ---------- すぐ録音（調査中画面からワンタップ・種名は後付け） ----------
+   押した瞬間に観察レコード（未同定・要確認・現在地・今の時刻・確認方法=鳴き声）を本保存して録音の帰属先にし、
+   既存の録音機構（recToggle）をそのまま使う。停止で音声が自動添付される */
+let QUICKREC=null;   // すぐ録音セッション中の観察uuid
+async function quickRec(svUuid){
+  if(REC){ recStop(); return; }   // 録音中に押したら停止＝保存
+  if(_recStarting) return;        // マイク許可待ち中の連打は無視（空レコードの量産・録音先の取り違え防止）
+  if(!recSupported()){ toast('この端末では録音を利用できません（ホーム画面のアイコンから起動してください）'); return; }
+  const fx=freshFix();
+  const rec={ uuid:uuid(), survey_uuid:svUuid, observed_at:nowISO(),
+    latitude:fx?fx.lat.toFixed(6):'', longitude:fx?fx.lon.toFixed(6):'', gps_accuracy:fx?Math.round(fx.acc):'',
+    species_id:'', species_name_snapshot:'', count:1, detection_method:'鳴き声',
+    behavior:'', habitat:'', age_class:'不明', sex:'不明', distance_band:'', direction:'',
+    target_latitude:'', target_longitude:'', perch_size:'', perch_class:'',
+    nest_tree_species:'', nest_tree_height:'', nest_state:'',
+    identification_status:'未同定', confidence:'中', needs_review:true,
+    note:'', external_photo_reference:'', audio:[], media:[] };
+  if(!DB.upsertObs(rec)) return;
+  SCREENS._mediaCtx={ kind:'obs', uuid:rec.uuid, sv:svUuid };
+  QUICKREC=rec.uuid;
+  await recToggle();
+  if(REC && REC.target && REC.target.uuid===rec.uuid){ quickRecUi(true); }
+  else{ // マイク不可・許可待ち中の画面移動などで開始できなかった→空レコードを片付け
+    if(QUICKREC===rec.uuid) QUICKREC=null;
+    if(SCREENS._mediaCtx && SCREENS._mediaCtx.uuid===rec.uuid) SCREENS._mediaCtx=null;   // 別画面が設定したctxは触らない
+    DB.hardDelete(DB.key.ob, rec.uuid);
+  }
+}
+function quickRecUi(on){
+  const b=document.getElementById('quickRecBtn'); if(!b) return;
+  if(on){ b.classList.add('recing'); b.innerHTML='<span class="ic"><span class="recdot"></span></span>録音中… タップで停止 <span id="recTime">0:00</span>'; }
+  else{ b.classList.remove('recing'); b.innerHTML='<span class="ic">🎤</span>すぐ録音（種名はあとで）'; }
+}
+// 録音の停止処理（recToggleのonstop）から呼ばれる。すぐ録音セッションの後始末。
+// finは音声保存のPromise（成功=true）。保存が終わってから成功表示と一覧更新を行う
+function quickRecEnded(wasAbort, fin){
+  if(!QUICKREC) return;
+  const u=QUICKREC; QUICKREC=null;
+  if(SCREENS._mediaCtx && SCREENS._mediaCtx.uuid===u) SCREENS._mediaCtx=null;   // 別画面が設定し直したctxは触らない
+  quickRecUi(false);
+  if(wasAbort) return;   // 画面遷移で破棄（レコードは音声なし・要確認付きで残るので後から見つけられる）
+  const done=(ok)=>{
+    if(!ok) return;   // 失敗トーストはrecFinalize側で表示済み（レコード自体は残る）
+    toast('録音を記録として保存しました。一覧から開いて種名を書けます', 3000);
+    const cur=STACK[STACK.length-1]||{};
+    if(cur.name==='survey' && !REC) render();   // 一覧に今の記録を🎤付きで出す
+  };
+  if(fin && fin.then) fin.then(done).catch(()=>{});
+  else done(false);
+}
 function startSurvey(u){ const s=DB.survey(u); if(!s) return;
   s.status='調査中'; if(!s.start_datetime) s.start_datetime=nowISO(); DB.upsertSurvey(s);
   toast('調査を開始しました'); render(); }
@@ -1346,6 +1442,8 @@ SCREENS.obsEdit = (argStr)=>{
             <input id="lonIn" inputmode="decimal" placeholder="経度" value="${esc(o.longitude)}" oninput="posManualEdit()">
           </div>
         </div>
+        <details class="fold" ${(o.target_latitude||o.target_longitude||o.perch_size||o.perch_class||o.nest_tree_species||o.nest_tree_height||o.nest_state)?'open':''}>
+        <summary>🪵 対象の位置・とまり木・巣（猛禽などで必要なとき）</summary>
         <div class="card" style="background:var(--panel2);">
           <div class="row"><div class="grow small muted">対象の位置（止まり木・巣など・任意）：<span id="otLabel">${o.target_latitude?esc(o.target_latitude)+', '+esc(o.target_longitude):'未指定'}</span></div></div>
           <div class="tiny muted" style="margin:4px 0 8px;">観察者の位置（上）とは別に、鳥が止まっている木や巣の場所を地図で指定できます。</div>
@@ -1367,13 +1465,13 @@ SCREENS.obsEdit = (argStr)=>{
           </div>
           <label class="field"><span class="lab">巣の状態（営巣段階・任意）</span>${seg('nest_state',OPT.nestState,true)}</label>
         </div>
+        </details>
       </form>
-      <div class="sp"></div>
-      <button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing},false)">保存する</button>
       ${!editing?`<div class="sp"></div><button class="btn" onclick="saveObs('${o.uuid}','${svUuid}',${editing},true)">＋ 保存して続けて別の種を追加</button>`:''}
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteObs('${o.uuid}')">この記録を削除</button>`:''}
       <div class="sp"></div>
       <div class="note">種名が未入力なら「未同定」として保存されます。同じ場所で何種も見たときは「保存して続けて別の種を追加」で位置を引き継いで連続入力できます。</div>
+      <div class="savebar"><button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing},false)">保存する</button></div>
     `,
     onMount:()=>{ SCREENS._obs=o; SCREENS._mediaCtx={kind:'obs', uuid:o.uuid, sv:o.survey_uuid}; SCREENS._audio=(o.audio||[]).slice(); SCREENS._media=(o.media||[]).slice();
       SCREENS._chosenId=o.species_id||''; SCREENS._obsEditing=editing;
@@ -1861,18 +1959,28 @@ function mimeExt(m){ m=m||''; if(m.includes('webm'))return 'webm'; if(m.includes
   if(m.includes('aac'))return 'aac'; if(m.includes('ogg'))return 'ogg'; return 'bin'; }
 function fmtDur(s){ s=Math.max(0,Math.round(+s||0)); const m=Math.floor(s/60); return `${m}:${String(s%60).padStart(2,'0')}`; }
 
+let _recStarting=false;   // マイク許可待ち中の連打・並行開始を防ぐ（複数の録音が走ると停止できないものが残る）
 async function recToggle(){
   if(REC){ recStop(); return; }
+  if(_recStarting) return;
   if(!recSupported()){ toast('この端末では録音を利用できません（httpsで開いてください）'); return; }
+  const targetAtCall=mediaTarget();   // 呼び出し時点の対象を固定（許可待ち中に画面が変わったら開始しない）
+  const genAtCall=_navGen;            // 呼び出し時点の画面世代（_mediaCtxが残っていても画面が変わっていれば開始しない）
+  _recStarting=true;
   let stream;
   try{ stream=await navigator.mediaDevices.getUserMedia({audio:true}); }
-  catch(e){ toast('マイクを使えません（許可を確認してください）'); return; }
+  catch(e){ _recStarting=false; toast('マイクを使えません（許可を確認してください）'); return; }
+  // 許可待ちの間に別の録音が始まった／画面が変わった／対象が変わった場合は開始しない
+  //（停止ボタンの無い画面で録音が始まるのを防ぐ。プライバシー保護のため世代照合は必須）
+  const now=mediaTarget();
+  if(REC || genAtCall!==_navGen || now.kind!==targetAtCall.kind || now.uuid!==targetAtCall.uuid){
+    stream.getTracks().forEach(t=>t.stop()); _recStarting=false; return; }
   const mime=pickRecMime();
   let mr;
   try{ mr=new MediaRecorder(stream, mime?{mimeType:mime}:undefined); }
-  catch(e){ stream.getTracks().forEach(t=>t.stop()); toast('録音を開始できませんでした'); return; }
+  catch(e){ stream.getTracks().forEach(t=>t.stop()); _recStarting=false; toast('録音を開始できませんでした'); return; }
   const ctx={ mr, stream, t0:Date.now(), chunks:[], timer:null, abort:false,
-    target:mediaTarget() };   // 録音開始時点の対象を固定（停止・保存完了までに画面が変わっても取り違えない）
+    target:targetAtCall };
   // 未保存の新規記録なら、保存完了を待たずこの時点で離脱ガード対象にする（写真の取り込みと同じ扱い）
   if((ctx.target.kind==='obs' && SCREENS._obsEditing===false && SCREENS._obs && SCREENS._obs.uuid===ctx.target.uuid) ||
      (ctx.target.kind==='flight' && SCREENS._flightEditing===false && SCREENS._flightSelf===ctx.target.uuid)){
@@ -1882,8 +1990,12 @@ async function recToggle(){
   mr.ondataavailable=e=>{ if(e.data && e.data.size) ctx.chunks.push(e.data); };
   mr.onstop=()=>{ clearInterval(ctx.timer); stream.getTracks().forEach(t=>t.stop());
     const wasAbort=ctx.abort; REC=null; renderRecPanel();
-    if(!wasAbort) recFinalize(ctx.chunks, mr.mimeType||mime, ctx.t0, ctx.target); };
-  REC=ctx; mr.start(); ctx.timer=setInterval(updateRecTimer,250); renderRecPanel();
+    const fin = wasAbort ? null : recFinalize(ctx.chunks, mr.mimeType||mime, ctx.t0, ctx.target);
+    if(typeof quickRecEnded==='function') quickRecEnded(wasAbort, fin); };   // すぐ録音の後始末（通常録音では何もしない）
+  REC=ctx; _recStarting=false;
+  try{ mr.start(); }
+  catch(e){ REC=null; stream.getTracks().forEach(t=>t.stop()); toast('録音を開始できませんでした'); return; }
+  ctx.timer=setInterval(updateRecTimer,250); renderRecPanel();
 }
 function recStop(){ if(REC){ clearInterval(REC.timer); try{ REC.mr.stop(); }catch(e){} } }
 function recAbort(){ if(REC){ REC.abort=true; clearInterval(REC.timer); try{ REC.mr.stop(); }catch(e){} } }
@@ -1891,14 +2003,17 @@ function updateRecTimer(){ const el=$('#recTime'); if(el && REC) el.textContent=
 
 function recFinalize(chunks, mime, t0, targetAtStart){
   const dur=Math.round((Date.now()-t0)/1000);
-  const blob=new Blob(chunks,{type:mime}); if(!blob.size){ toast('録音が空でした'); return; }
+  const blob=new Blob(chunks,{type:mime}); if(!blob.size){ toast('録音が空でした'); return Promise.resolve(false); }
   const meta={ id:uuid(), dur, size:blob.size, mime, ext:mimeExt(mime), created_at:nowISO() };
   const target=targetAtStart||mediaTarget();   // 録音開始時点の対象（引数）を優先
-  if(target.uuid && DISCARDED.has(target.uuid)){ return; }   // 破棄済みの記録の分は保存しない（実体も残さない）
+  if(target.uuid && DISCARDED.has(target.uuid)){ return Promise.resolve(false); }   // 破棄済みの記録の分は保存しない
   const owner = target.kind==='flight' ? { flight_uuid:target.uuid, obs_uuid:'' } : { obs_uuid:target.uuid };
-  AudioDB.put(Object.assign({}, meta, { blob }, owner)).then(()=>{
-    attachMediaMeta(target,'audio',meta); scheduleFolderFull(); toast('録音を保存しました');
-  }).catch(()=>toast('録音の保存に失敗しました'));
+  // 成否をPromiseで返す（すぐ録音が「保存できてから」成功表示・一覧更新するため）
+  return AudioDB.put(Object.assign({}, meta, { blob }, owner)).then(()=>{
+    if(!attachMediaMeta(target,'audio',meta)){   // 紐付け失敗（容量不足等）を成功扱いにしない
+      toast('録音の保存に失敗しました（空き容量を確認してください）'); return false; }
+    scheduleFolderFull(); toast('録音を保存しました'); return true;
+  }).catch(()=>{ toast('録音の保存に失敗しました'); return false; });
 }
 function delAudio(id){ const target=mediaTarget();
   AudioDB.del(id).catch(()=>{}).then(()=>{
@@ -1911,22 +2026,23 @@ function mediaTarget(){ const c=mediaCtx(); return { kind:c.kind, uuid:c.uuid, s
 // 対象レコード(target)へメディアmetaを追記。保存済みならDBへ直接反映し、
 // 現在画面が同じ対象の時だけ編集中配列とパネルを更新する（別記録への誤添付・誤表示を防ぐ）
 function attachMediaMeta(target, field, meta){
-  if(target.uuid && DISCARDED.has(target.uuid)) return;   // ユーザーが破棄した新規記録には、後から完了した保存分も付けない
+  if(target.uuid && DISCARDED.has(target.uuid)) return false;   // ユーザーが破棄した新規記録には、後から完了した保存分も付けない
+  let ok=true;   // 記録への紐付け保存の成否を返す（失敗を成功表示すると、音声・写真が一覧から参照できなくなるため）
   if(target.uuid){ const recKey=target.kind==='flight'?DB.key.fl:DB.key.ob;
     const list=DB.load(recKey); const i=list.findIndex(x=>x.uuid===target.uuid);
     if(i>=0){ list[i][field]=(list[i][field]||[]).concat([meta]);
-      if(target.kind==='flight') DB.upsertFlight(list[i]); else DB.upsertObs(list[i]); }
+      ok = target.kind==='flight' ? DB.upsertFlight(list[i]) : DB.upsertObs(list[i]); }
     else{
       // まだ保存されていない新規記録。参照を失わないよう、この場で仮保存する（後で本保存が上書き）
       const sv=target.sv||currentSurveyUuid;
-      if(target.kind==='flight') DB.upsertFlight({ uuid:target.uuid, survey_uuid:sv, path:[], species_name_snapshot:'',
+      if(target.kind==='flight') ok=DB.upsertFlight({ uuid:target.uuid, survey_uuid:sv, path:[], species_name_snapshot:'',
         start_time:'', end_time:'', height_class:'不明', age_class:'不明', individual_label:'', behavior:'', count:1, memo:'', needs_review:false, audio:[], media:[], [field]:[meta] });
-      else DB.upsertObs({ uuid:target.uuid, survey_uuid:sv, observed_at:nowISO(), latitude:'', longitude:'',
+      else ok=DB.upsertObs({ uuid:target.uuid, survey_uuid:sv, observed_at:nowISO(), latitude:'', longitude:'',
         species_id:'', species_name_snapshot:'', count:1, detection_method:'', behavior:'', habitat:'',
         identification_status:'未同定', confidence:'中', needs_review:false, note:'', external_photo_reference:'', audio:[], media:[], [field]:[meta] });
     } }
   const cur=mediaCtx();
-  if(cur.kind===target.kind && cur.uuid===target.uuid){
+  if(ok && cur.kind===target.kind && cur.uuid===target.uuid){
     // 「未保存の新規記録」への追加だけを離脱ガード対象にする（既存記録へのメディアは即DB保存済み＝離脱しても消えないため）
     const isNew = target.kind==='flight' ? (SCREENS._flightEditing===false && SCREENS._flightSelf===target.uuid)
                                          : (SCREENS._obsEditing===false && SCREENS._obs && SCREENS._obs.uuid===target.uuid);
@@ -1934,6 +2050,7 @@ function attachMediaMeta(target, field, meta){
       SCREENS._ghost={ key:(target.kind==='flight'?DB.key.fl:DB.key.ob), uuid:target.uuid }; }
     if(field==='audio'){ SCREENS._audio=(SCREENS._audio||[]).concat([meta]); renderRecPanel(); }
     else { SCREENS._media=(SCREENS._media||[]).concat([meta]); renderMediaPanel(); } }
+  return ok;
 }
 function detachMediaMeta(target, field, id){
   if(target.uuid){ const recKey=target.kind==='flight'?DB.key.fl:DB.key.ob;
@@ -1997,7 +2114,7 @@ function pickMedia(input){
     const meta={ id:uuid(), kind, mime:f.type||'', ext:fileExt(f.name,f.type), size:f.size, name:f.name||'', created_at:nowISO() };
     // 1件ずつ、成功したものだけ確実に反映（1件失敗しても成功分は残る）
     return PhotoDB.put(Object.assign({}, meta, { blob:f }, owner))
-      .then(()=>{ attachMediaMeta(target,'media',meta); ok++; })
+      .then(()=>{ if(attachMediaMeta(target,'media',meta)) ok++; else fail++; })   // 紐付け失敗も失敗として数える
       .catch(()=>{ fail++; });
   });
   Promise.all(jobs).then(()=>{
