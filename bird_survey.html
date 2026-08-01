@@ -209,7 +209,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v74（2026-08-01 入力チェックと入力ガイドを強化・アイコンをクマタカに刷新）';
+const APP_VERSION = 'v75（2026-08-01 観察位置を地図タップで指定できるように・緯度経度欄は折りたたみ）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1604,11 +1604,16 @@ SCREENS.obsEdit = (argStr)=>{
           <span class="lab" style="margin:0;">要確認フラグ（あとで見直す）</span></label>
         <div class="card" style="background:var(--panel2);">
           <div class="row"><div class="grow small muted">位置：<span id="posLabel">${o.latitude?esc(o.latitude)+', '+esc(o.longitude)+(o.gps_accuracy?` (±${esc(o.gps_accuracy)}m)`:''):'未取得'}</span></div>
-            <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="grabGps()">📍 現在地</button></div>
-          <div class="two" style="margin-top:8px;">
-            <input id="latIn" inputmode="decimal" placeholder="緯度" value="${esc(o.latitude)}" oninput="posManualEdit()">
-            <input id="lonIn" inputmode="decimal" placeholder="経度" value="${esc(o.longitude)}" oninput="posManualEdit()">
-          </div>
+            <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="grabGps()">📍 現在地</button>
+            <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="toggleObsPosMap()">🗺 地図で指定</button></div>
+          <div id="obsPosMap" style="height:240px; margin-top:8px; border-radius:var(--radius); border:1px solid var(--line); display:none;"></div>
+          <details class="fold" style="margin-top:8px;">
+            <summary class="small muted">緯度・経度を数値で直す（通常は不要）</summary>
+            <div class="two" style="margin-top:8px;">
+              <input id="latIn" inputmode="decimal" placeholder="緯度" value="${esc(o.latitude)}" oninput="posManualEdit()">
+              <input id="lonIn" inputmode="decimal" placeholder="経度" value="${esc(o.longitude)}" oninput="posManualEdit()">
+            </div>
+          </details>
         </div>
         <details class="fold" id="nestFold" ${(o.target_latitude||o.target_longitude||o.perch_size||o.perch_class||o.nest_tree_species||o.nest_tree_height||o.nest_state)?'open':''}>
         <summary>🪵 対象の位置・とまり木・巣（猛禽などで必要なとき）</summary>
@@ -1756,6 +1761,7 @@ function posManualEdit(){
   SCREENS._acc=''; SCREENS._dirty=true;
   const la=$('#latIn')?$('#latIn').value.trim():'', lo=$('#lonIn')?$('#lonIn').value.trim():'';
   const pl=$('#posLabel'); if(pl) pl.textContent=(la||lo)?(la+', '+lo):'未取得';
+  if(validLatLon(la,lo)) obsPosMarkerUpdate(parseFloat(la),parseFloat(lo));   // 観察位置マップが開いていれば追随
 }
 function grabGps(){
   if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
@@ -1767,6 +1773,9 @@ function grabGps(){
     $('#latIn').value=p.coords.latitude.toFixed(6); $('#lonIn').value=p.coords.longitude.toFixed(6);
     $('#posLabel').textContent=`${p.coords.latitude.toFixed(6)}, ${p.coords.longitude.toFixed(6)} (±${Math.round(p.coords.accuracy)}m)`;
     SCREENS._acc=Math.round(p.coords.accuracy); SCREENS._dirty=true;   // プログラムによる値変更はinput監視に乗らないため明示
+    // 観察位置マップが開いていればマーカーと表示位置を追随（精度は上で設定済みなので触らない）
+    obsPosMarkerUpdate(p.coords.latitude, p.coords.longitude);
+    if(mapObj && $('#obsPosMap') && $('#obsPosMap').style.display!=='none'){ try{ mapObj.setView([p.coords.latitude,p.coords.longitude],16); }catch(e){} }
     toast('位置を取得しました');
   }, e=>toast('位置を取得できませんでした'), {enableHighAccuracy:true, timeout:15000});
 }
@@ -1782,6 +1791,8 @@ let _compassReq=0;        // 許可待ちの世代番号。地図破棄で++し�
 // 地図の破棄はこの1本に集約（render・対象位置地図の開閉から使う）。コンパス監視・許可待ちも道連れで無効化
 function destroyMap(){
   if(mapObj){ try{ mapObj.remove(); }catch(e){} mapObj=null; }
+  // 地図上のマーカー参照もここでまとめて破棄する（古い参照が残ると、次に開いた別の地図と取り違える温床になる）
+  obsTargetMarker=null; obsPosMarker=null;
   compassStop(); _compassReq++;
 }
 function createBaseMap(elId, center, zoom, opts){
@@ -1890,7 +1901,11 @@ function compassToggle(btn){
 
 let obsTargetMarker=null;
 function toggleObsTargetMap(){ const el=$('#otMap'); if(!el) return;
-  if(el.style.display==='none'){ el.style.display='block'; initObsTargetMap(); }
+  if(el.style.display==='none'){
+    const op=$('#obsPosMap');
+    if(op && op.style.display!=='none'){ op.style.display='none'; obsPosMarker=null; }   // 観察位置側を閉じる（地図は同時に1枚）
+    el.style.display='block'; initObsTargetMap();
+  }
   else { el.style.display='none'; destroyMap(); obsTargetMarker=null; }
 }
 function initObsTargetMap(){
@@ -1933,6 +1948,49 @@ function clearObsTarget(){
   if($('#otLat').value || $('#otLon').value) SCREENS._dirty=true;   // 値が実際に消えるときだけ「未保存の変更」扱い
   $('#otLat').value=''; $('#otLon').value=''; $('#otLabel').textContent='未指定';
   if(mapObj&&obsTargetMarker){ try{ mapObj.removeLayer(obsTargetMarker); }catch(e){} obsTargetMarker=null; } }
+
+/* ---------- 観察者の位置を地図タップで指定（開閉式） ----------
+   対象位置マップと同じ型。地図インスタンスは mapObj 1本＝同時に開けるのは1枚のため、
+   対象位置マップとは相互排他にする（片方を開くともう片方は閉じる） */
+let obsPosMarker=null;
+function toggleObsPosMap(){
+  const el=$('#obsPosMap'); if(!el) return;
+  if(el.style.display==='none'){
+    const ot=$('#otMap');
+    if(ot && ot.style.display!=='none'){ ot.style.display='none'; obsTargetMarker=null; }   // 対象位置側を閉じる
+    el.style.display='block'; initObsPosMap();
+  } else { el.style.display='none'; destroyMap(); obsPosMarker=null; }
+}
+function initObsPosMap(){
+  const el=$('#obsPosMap'); if(!el) return;
+  destroyMap(); obsPosMarker=null;
+  // 初期表示も保存時と同じ validLatLon で判定する（parseFloatだけだと "43x" の部分読みや Infinity が通り、
+  // 入力値と違う地点の表示や地図初期化エラーになり得るため）
+  const laT=$('#latIn').value.trim(), loT=$('#lonIn').value.trim();
+  const okPos=validLatLon(laT,loT);
+  const la=okPos?parseFloat(laT):NaN, lo=okPos?parseFloat(loT):NaN;
+  let center=[43.06,141.35], zoom=13;
+  if(okPos){ center=[la,lo]; zoom=16; }
+  else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=16; }
+  mapObj=createBaseMap('obsPosMap', center, zoom, {});
+  if(okPos) obsPosMarkerUpdate(la,lo);   // 既存値の初期表示
+  mapObj.on('click', e=>setObsPos(e.latlng.lat, e.latlng.lng));
+}
+// 観察者位置マーカー（緑丸）の再描画のみ。値は書き換えない（GPS取得時の精度を消さないため分離）
+function obsPosMarkerUpdate(lat,lon){
+  const shown=$('#obsPosMap') && $('#obsPosMap').style.display!=='none';
+  if(!mapObj || !shown) return;
+  if(obsPosMarker){ try{ mapObj.removeLayer(obsPosMarker); }catch(e){} }
+  const icon=L.divIcon({className:'',html:`<div style="background:#3fb984;border:2px solid #fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">●</div>`,iconSize:[24,24],iconAnchor:[12,12]});
+  obsPosMarker=L.marker([lat,lon],{icon}).addTo(mapObj);
+}
+function setObsPos(lat,lon){
+  $('#latIn').value=lat.toFixed(6); $('#lonIn').value=lon.toFixed(6);
+  SCREENS._acc='';                     // 地図タップにGPS精度は無い（手入力と同じ「不明」扱い）
+  const pl=$('#posLabel'); if(pl) pl.textContent=lat.toFixed(6)+', '+lon.toFixed(6);
+  SCREENS._dirty=true;                 // 地図タップはinput監視に乗らないため明示
+  obsPosMarkerUpdate(lat,lon);
+}
 function saveObs(u, svUuid, editing, cont){
   const f=$('#obForm'); const g=n=>{const el=f.querySelector(`[name="${n}"]`); return el?el.value:'';};
   const name=$('#spInput').value.trim();
