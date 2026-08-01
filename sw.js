@@ -1,12 +1,13 @@
-const CACHE = 'bird-survey-v73';
+const CACHE = 'bird-survey-v74';
 // 必須資産（これが揃わないとアプリが成立しない）。install時に全部揃わなければ失敗させ、不完全キャッシュで有効化しない
 const CORE = [
   './bird_survey.html',
   './manifest.json',
   './leaflet.css',
   './leaflet.js',
-  './icon-192.svg',
-  './icon-512.svg'
+  './icon-192.png',
+  './icon-512.png',
+  './apple-touch-icon.png'
 ];
 // 任意資産（無くても主要機能は動く）。個別に失敗を許容する
 const OPTIONAL = [

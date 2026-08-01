@@ -8,7 +8,7 @@
 <meta name="theme-color" content="#0a0f0d">
 <title>鳥類調査記録</title>
 <link rel="manifest" href="./manifest.json">
-<link rel="apple-touch-icon" href="./icon-192.svg">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png"><!-- iOSはPNGのみ対応（SVG指定だと無視されスクリーンショットが使われる） -->
 <link rel="stylesheet" href="./leaflet.css">
 <style>
   :root{
@@ -209,7 +209,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v73（2026-08-01 保存済みデータの点検・修復機能を追加）';
+const APP_VERSION = 'v74（2026-08-01 入力チェックと入力ガイドを強化・アイコンをクマタカに刷新）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1202,7 +1202,7 @@ SCREENS.surveyEdit = (svUuid)=>{
         <label class="field"><span class="lab">調査名 <span class="req">*</span></span>
           <input name="name" value="${esc(s.name)}" placeholder="例：〇〇川 河畔林 定点調査"></label>
         <div class="two">
-          <label class="field"><span class="lab">調査日</span>
+          <label class="field"><span class="lab">調査日 <span class="req">*</span></span>
             <input type="date" name="survey_date" value="${esc(s.survey_date)}"></label>
           <label class="field"><span class="lab">気温(℃)</span>
             <input type="number" name="temperature" inputmode="decimal" value="${esc(s.temperature)}" placeholder="任意"></label>
@@ -1260,6 +1260,8 @@ function draftSave(){ if(SCREENS._editing){ SCREENS._dirty=true; return; } // �
 function saveSurvey(u, editing){
   const data=collectSurveyForm();
   if(!data.name.trim()){ toast('調査名を入力してください'); return; }
+  // 調査日は必須（新規は今日が自動で入るので手間なし。空だと集計・書き出し・観察日時の整合検査が働かない）
+  if(!data.survey_date){ toast('調査日を入力してください'); return; }
   const cur = editing ? DB.survey(u) : {uuid:u, status:'未開始'};
   const rec = Object.assign({}, cur, data);
   if(!DB.upsertSurvey(rec)) return;   // 保存失敗なら下書きも消さず遷移もしない
@@ -1581,10 +1583,12 @@ SCREENS.obsEdit = (argStr)=>{
           <label class="field"><span class="lab">確認方向（任意）</span>${seg('direction',OPT.direction,true)}</label>
         </div>
         <label class="field"><span class="lab">行動（複数選択可）</span>${segMulti('behavior',OPT.behavior)}</label>
+        <div id="breedHint" class="note" style="display:none; margin:2px 0 10px;"></div>
         <label class="field"><span class="lab">生息環境（複数選択可）</span>${segMulti('habitat',OPT.habitat)}</label>
         <label class="field"><span class="lab">年齢</span>${seg('age_class',OPT.obsAge)}</label>
         <label class="field"><span class="lab">性別</span>${seg('sex',OPT.sex)}</label>
         <label class="field"><span class="lab">同定状態</span>${seg('identification_status',OPT.idStatus)}</label>
+        <div id="idHint" class="note" style="display:none; margin:2px 0 10px;"></div>
         <label class="field"><span class="lab">信頼度</span>${seg('confidence',OPT.confidence)}</label>
         <label class="field"><span class="lab">観察メモ</span>
           <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
@@ -1606,7 +1610,7 @@ SCREENS.obsEdit = (argStr)=>{
             <input id="lonIn" inputmode="decimal" placeholder="経度" value="${esc(o.longitude)}" oninput="posManualEdit()">
           </div>
         </div>
-        <details class="fold" ${(o.target_latitude||o.target_longitude||o.perch_size||o.perch_class||o.nest_tree_species||o.nest_tree_height||o.nest_state)?'open':''}>
+        <details class="fold" id="nestFold" ${(o.target_latitude||o.target_longitude||o.perch_size||o.perch_class||o.nest_tree_species||o.nest_tree_height||o.nest_state)?'open':''}>
         <summary>🪵 対象の位置・とまり木・巣（猛禽などで必要なとき）</summary>
         <div class="card" style="background:var(--panel2);">
           <div class="row"><div class="grow small muted">対象の位置（止まり木・巣など・任意）：<span id="otLabel">${o.target_latitude?esc(o.target_latitude)+', '+esc(o.target_longitude):'未指定'}</span></div></div>
@@ -1643,12 +1647,43 @@ SCREENS.obsEdit = (argStr)=>{
       SCREENS._acc=(o.gps_accuracy===''||o.gps_accuracy==null)?null:o.gps_accuracy;
       const fEl=$('#obForm'); if(fEl){ ['input','change'].forEach(ev=>fEl.addEventListener(ev, ()=>{ SCREENS._dirty=true; })); }   // 文字・数値・日時・チェックの変更検知
       renderQuickSpecies(); renderRecPanel(); renderMediaPanel(); updateSpRefLinks(o.species_name_snapshot);
+      updateBreedHint(); updateIdHint();   // 編集で開いたときも選択済みの内容に合わせてヒントを出す
     }
   };
 };
-function pickObs(btn,field,val){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); syncOther(field); SCREENS._dirty=true; }
+function pickObs(btn,field,val){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); syncOther(field); SCREENS._dirty=true;
+  if(field==='identification_status') updateIdHint(); }
 function segVal(field){ const on=document.querySelector(`[data-seg="${field}"] button.on`); return on? (on.textContent==='なし'?'':on.textContent):''; }
 function segVals(field){ return [...document.querySelectorAll(`[data-seg="${field}"] button.on`)].map(b=>b.textContent).filter(t=>t!=='なし').join('・'); }
+
+/* ---------- 入力中のライブガイド（Survey123の「条件つき質問」に相当） ----------
+   render()は使わない（画面を作り直すと編集中の入力が全部消え、新規なら記録IDまで変わるため）。
+   HTMLに置いた非表示のヒント欄の文言と表示だけを書き換える。
+   各関数は冒頭の要素ガードが必須: 行動segは飛翔経路の入力画面にもあり、そこで誤動作させないため */
+const NEST_BEHAVIORS=['巣立ち雛','給餌','餌運び','餌渡し','巣材運搬'];   // 巣・対象位置の欄を自動で開く行動
+function updateBreedHint(){
+  const el=$('#breedHint'); if(!el) return;
+  const bs=segVals('behavior');
+  const rank=breedingRank(bs, true);
+  if(rank==='A' || rank==='B'){
+    el.style.display='';
+    el.textContent = rank==='A' ? '🐣 この行動は繁殖ランクA（繁殖を確認）に相当します'
+                                : '🐣 この行動は繁殖ランクB（繁殖の可能性）に相当します';
+  }else el.style.display='none';
+  // 巣に関わる行動なら、巣・対象位置の入力欄を自動で開く（開くだけで閉じない——入力済みかもしれないため）。
+  // 「さえずり」等のB該当だけでは開かない（最頻タグのため毎回開くと邪魔になる）
+  const fold=$('#nestFold');
+  if(fold && bs.split('・').some(b=>NEST_BEHAVIORS.includes(b))) fold.open=true;
+}
+function updateIdHint(){
+  const el=$('#idHint'); if(!el) return;
+  const v=segVal('identification_status');
+  if(v==='未同定' || v==='仮同定'){
+    el.style.display='';
+    // 自動付与は新規保存のみのため、断定しない文言にする（編集時は付かない——利用者の判断を尊重する仕様）
+    el.textContent='💡 録音・写真や根拠メモを残しておくと、あとで同定できます（新規の記録には保存時に「要確認」が自動で付きます）';
+  }else el.style.display='none';
+}
 
 /* ---------- 「その他」の記入欄 ----------
    「その他」ボタンを選ぶと記入欄が現れ、保存時は値の「その他」を「その他（記入内容）」に
@@ -1668,14 +1703,25 @@ function syncOther(field){
   const on=[...document.querySelectorAll(`[data-seg="${field}"] button.on`)].some(b=>b.textContent==='その他');
   inp.style.display=on?'':'none'; }
 function toggleMulti(btn){ btn.classList.toggle('on');
-  const seg=btn.closest('[data-seg]'); if(seg) syncOther(seg.dataset.seg); SCREENS._dirty=true; }
+  const seg=btn.closest('[data-seg]'); if(seg) syncOther(seg.dataset.seg); SCREENS._dirty=true;
+  if(seg && seg.dataset.seg==='behavior') updateBreedHint(); }
 
 /* 種名検索（ひらがな・カタカナどちらの入力でもヒット） */
 function toKata(s){ return String(s||'').replace(/[ぁ-ゖ]/g,c=>String.fromCharCode(c.charCodeAt(0)+0x60)); }
 function spSearch(q){
   const box=$('#spSuggest'); q=(q||'').trim();
   updateSpRefLinks(q);
-  if(!q){ box.innerHTML=''; return; }
+  if(!q){ box.innerHTML='';
+    // キーボードで種名を消した場合も、候補からの解除（chooseSpecies）と同じ扱いにする。
+    // 保存時は種名空＝未同定に強制されるため、画面の同定状態表示をそれに一致させる。
+    // 同定状態のボタン群は観察入力にしかないので、飛翔経路の種名入力では何も起きない
+    SCREENS._chosenId='';   // 内部に保持している種IDも消す（残すと「種名は空なのに前の鳥のIDが保存される」）
+    const seg=document.querySelector('[data-seg="identification_status"]');
+    if(seg){ [...seg.querySelectorAll('button')].forEach(b=>b.classList.toggle('on', b.textContent==='未同定')); updateIdHint(); }
+    return; }
+  // 内部の種IDを入力中の名前に常に追随させる（候補を選ばず別の種名へ直接書き換えたとき、
+  // 前の鳥のIDが残って「新しい種名＋旧ID」の不整合データになるのを防ぐ。候補選択時は chooseSpecies が上書きする）
+  SCREENS._chosenId=(speciesByName(q)||{}).species_id||'';
   const qk=toKata(q);
   const pre = SPECIES.filter(s=>toKata(s.japanese_name).startsWith(qk));
   const part = SPECIES.filter(s=>!toKata(s.japanese_name).startsWith(qk) && toKata(s.japanese_name).includes(qk));
@@ -1690,10 +1736,11 @@ function chooseSpecies(id,name){ $('#spInput').value=name; $('#spSuggest').inner
   if(!name){ document.querySelectorAll('[data-seg="identification_status"] button').forEach(b=>{
     b.classList.toggle('on', b.textContent==='未同定'); }); }
   else if(segVal('identification_status')==='未同定'){
-    // 「候補になし→未同定」の後に種を選び直したら「確定」へ戻す（「疑い」等の手動選択は上書きしない）
+    // 「候補になし→未同定」の後に種を選び直したら「確定」へ戻す（「仮同定」等の手動選択は上書きしない）
     document.querySelectorAll('[data-seg="identification_status"] button').forEach(b=>{
       b.classList.toggle('on', b.textContent==='確定'); });
   }
+  updateIdHint();   // 種名クリア→未同定など、ボタンをプログラムで書き換えた場合もヒントを追随させる
   SCREENS._chosenId=id; }
 function renderQuickSpecies(){
   const box=$('#spQuick'); const recent=DB.recentSpecies();
@@ -1890,20 +1937,39 @@ function saveObs(u, svUuid, editing, cont){
   const f=$('#obForm'); const g=n=>{const el=f.querySelector(`[name="${n}"]`); return el?el.value:'';};
   const name=$('#spInput').value.trim();
   const idStatus = segVal('identification_status') || (name?'確定':'未同定');
-  // 座標が不正な文字なら位置だけ空にして記録は守る（不正座標で地図が壊れるのを防ぐ）
+  const base = editing ? DB.observations().find(x=>x.uuid===u) : null;
+
+  /* --- 保存を止める検査（現地でもすぐ直せる最小限だけ） --- */
+  // 個体数: number入力は数値でない文字を入れると value が '' になり空欄と区別できないため validity.badInput で検知する
+  const cntEl=f.querySelector('[name="count"]');
+  if(cntEl && cntEl.validity && cntEl.validity.badInput){ toast('個体数は数値で入力してください'); return; }
+  const rawCnt=g('count').trim();
+  const count = rawCnt==='' ? 1 : Number(rawCnt);   // 空は1（入力欄の初期値と同じ。以前は黙って0になっていた）
+  // 切り捨てる前の値で検査する（Math.trunc(-0.5)は-0になり負数検査をすり抜け、9999.9は確認を回避するため）
+  if(!Number.isInteger(count) || count<0){ toast('個体数は0以上の整数で入力してください'); return; }
+  if(count>9999 && !confirm(`個体数が${count}と非常に大きいですが、このまま保存しますか？`)) return;
+  // 座標: 黙って捨てず、位置なしで保存してよいか確認する（キャンセルすれば戻って直せる）
   let lat=$('#latIn').value.trim(), lon=$('#lonIn').value.trim();
-  if((lat||lon) && !validLatLon(lat,lon)){ toast('⚠ 位置の数値が正しくないため、位置なしで保存します'); lat=''; lon=''; }
-  // 対象位置（止まり木・巣など）。不正なら位置なしで保存
+  if((lat||lon) && !validLatLon(lat,lon)){
+    if(!confirm('位置の数値が正しくありません。位置なしで保存しますか？\n（キャンセルすると入力に戻ります）')) return;
+    lat=''; lon='';
+  }
+  // 対象位置（止まり木・巣など）も同様
   let tlat=(($('#otLat')&&$('#otLat').value)||'').trim(), tlon=(($('#otLon')&&$('#otLon').value)||'').trim();
-  if((tlat||tlon) && !validLatLon(tlat,tlon)){ tlat=''; tlon=''; }
-  const rec = Object.assign({}, editing?DB.observations().find(x=>x.uuid===u):{uuid:u}, {
+  if((tlat||tlon) && !validLatLon(tlat,tlon)){
+    if(!confirm('対象位置（止まり木・巣）の数値が正しくありません。対象位置なしで保存しますか？')) return;
+    tlat=''; tlon='';
+  }
+
+  const rec = Object.assign({}, base||{uuid:u}, {
     uuid:u, survey_uuid:svUuid,
     observed_at: g('observed_at')? new Date(g('observed_at')).toISOString() : nowISO(),
     latitude: lat, longitude: lon,
     // 精度: 座標なしなら必ず空 / _acc===null は「この画面で位置に触れていない」＝既存値を維持 / ''や数値はその値
-    gps_accuracy: (!lat && !lon) ? '' : (SCREENS._acc===null ? ((DB.observations().find(x=>x.uuid===u)||{}).gps_accuracy||'') : SCREENS._acc),
-    species_id: (speciesByName(name)||{}).species_id || SCREENS._chosenId || '', species_name_snapshot: name,
-    count: parseInt(g('count'),10)||0, detection_method: segVal('detection_method'),
+    gps_accuracy: (!lat && !lon) ? '' : (SCREENS._acc===null ? ((base||{}).gps_accuracy||'') : SCREENS._acc),
+    // 種名が空なら種IDも必ず空にする（入力経路によらず「名無しなのに前の鳥のID」を残さない保証）
+    species_id: name ? ((speciesByName(name)||{}).species_id || SCREENS._chosenId || '') : '', species_name_snapshot: name,
+    count: count, detection_method: segVal('detection_method'),
     behavior: otherMerge(segVals('behavior'),'behavior'), habitat: otherMerge(segVals('habitat'),'habitat'),
     age_class: segVal('age_class'), sex: segVal('sex'),
     distance_band: segVal('distance_band'), direction: segVal('direction'),
@@ -1915,12 +1981,41 @@ function saveObs(u, svUuid, editing, cont){
     note: g('note'), external_photo_reference: g('external_photo_reference'),
     audio: SCREENS._audio||[], media: SCREENS._media||[],
   });
+
+  /* --- 警告して通す検査（怪しい入力は「要確認」を自動で付けて、記録自体は残す。鳥は待ってくれない） --- */
+  const reasons=[];
+  if(!name) reasons.push('種名なし');
+  else{
+    if(!speciesByName(name)) reasons.push('種名がマスタにありません');
+    if(rec.identification_status==='未同定' || rec.identification_status==='仮同定') reasons.push(rec.identification_status+'です');
+  }
+  // 日時の検査は変換前のローカル日時文字列（"YYYY-MM-DDTHH:mm"）で行う。
+  // ISO化した後の先頭10文字で比べると、日本時間の夜の記録がUTCで前日にずれて誤判定するため
+  const oa=g('observed_at');
+  if(oa){
+    if(oa > localDatetimeValue()) reasons.push('観察日時が未来です');
+    else{
+      const sv=DB.survey(svUuid);
+      if(sv && sv.survey_date && DATE_ONLY_RE.test(sv.survey_date)){
+        const d=(Date.parse(oa.slice(0,10))-Date.parse(sv.survey_date))/86400000;
+        if(!(d===0 || d===1)) reasons.push('観察日時が調査日と合いません');   // 翌日は夜間調査（日付またぎ）として許容
+      }
+    }
+  }
+  if(count===0 && rec.detection_method!=='痕跡') reasons.push('個体数が0です');   // 痕跡（羽毛・糞）は0でもあり得る
+  if(lat && lon && !inJapanBounds(lat,lon)) reasons.push('位置が日本の範囲外です');
+  // 自動付与は新規作成時のみ。編集時はチェックボックスの状態＝利用者の判断をそのまま尊重する
+  //（編集のたびに付け直すと「仮同定のまま様子見にしたいのに、開いて保存するたび要確認が復活して
+  //   永遠に外せない」ループになる。編集時も理由の警告トーストは出すので、見落としにはならない）
+  if(reasons.length && !rec.needs_review && !editing) rec.needs_review=true;
+
   if(!DB.upsertObs(rec)) return;   // 保存失敗(DB.saveが警告済み)。成功表示も画面遷移もしない
   if(name) DB.pushRecent(name);
   const keep={ lat:rec.latitude, lon:rec.longitude, acc:rec.gps_accuracy };   // 「続けて」用に、保存した位置と精度をそのまま引き継ぐ
   SCREENS._acc=null; SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
   SCREENS._dirty=false; SCREENS._ghost=null;   // 保存済みなので離脱ガード対象から外す
-  toast('保存しました');
+  if(reasons.length) toast((rec.needs_review?'保存しました ⚠ 要確認を付けました: ':'保存しました（⚠ ')+reasons.join('・')+(rec.needs_review?'':'）'), 4000);
+  else toast('保存しました');
   if(cont){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid, keep})); } // 位置を引き継いで次の種へ
   else goBack();
 }
@@ -2063,15 +2158,21 @@ SCREENS.obsBatch = (svUuid)=>{
 function batchAdd(){
   const inp=$('#batchSp'), cnt=$('#batchCnt');
   const name=((inp&&inp.value)||'').trim(); if(!name){ toast('種名を入れてください'); return; }
-  const count=parseInt(cnt&&cnt.value,10)||1;
+  if(cnt && cnt.validity && cnt.validity.badInput){ toast('個体数は数値で入力してください'); return; }
+  // 「||1」で補完すると 0 が黙って 1 に化けるため、空欄の補完と数値検査を分ける
+  const rawB=(cnt&&cnt.value||'').trim();
+  const count = rawB==='' ? 1 : Number(rawB);
+  if(!Number.isInteger(count) || count<1){ toast('個体数は1以上の整数で入力してください'); return; }
   SCREENS._batchItems=SCREENS._batchItems||[]; SCREENS._batchItems.push({name, count});
   if(inp) inp.value=''; if(cnt) cnt.value='1'; renderBatchList(); if(inp) inp.focus();
 }
 function batchRemove(i){ (SCREENS._batchItems||[]).splice(i,1); renderBatchList(); }
 function renderBatchList(){
   const box=$('#batchList'); if(!box) return; const items=SCREENS._batchItems||[];
+  // マスタ外の種名は追加時点で⚠を見せる（保存後に気付くより、その場で打ち直せる方が早い。保存自体は止めない）
   box.innerHTML = items.length ? items.map((it,i)=>`<div class="card"><div class="row">
-    <div class="grow"><b>${esc(it.name)}</b> <span class="muted small">${esc(it.count)}個体</span></div>
+    <div class="grow"><b>${esc(it.name)}</b> <span class="muted small">${esc(it.count)}個体</span>
+      ${speciesByName(it.name)?'':'<span class="small" style="color:var(--warn)">⚠ マスタにない種名（要確認が付きます）</span>'}</div>
     <button type="button" class="btn ghost danger" style="width:auto; padding:4px 10px;" onclick="batchRemove(${i})">×</button></div></div>`).join('')
     : '<div class="empty small">まだ追加されていません。上で種名と個体数を入れて「＋ この種を追加」。</div>';
   const btn=$('#batchSaveBtn'); if(btn){ btn.disabled=!items.length; btn.textContent=`${items.length}種をまとめて保存`; }
@@ -2090,20 +2191,27 @@ function batchGps(){
 function batchSave(svUuid){
   const items=SCREENS._batchItems||[]; if(!items.length) return;
   let lat=(($('#batchLat')&&$('#batchLat').value)||'').trim(), lon=(($('#batchLon')&&$('#batchLon').value)||'').trim();
-  if((lat||lon) && !validLatLon(lat,lon)){ toast('⚠ 位置の数値が正しくないため、位置なしで保存します'); lat=''; lon=''; }
+  // 観察入力と同じ扱い: 黙って捨てず、位置なしで保存してよいか確認する
+  if((lat||lon) && !validLatLon(lat,lon)){
+    if(!confirm('位置の数値が正しくありません。全件を位置なしで保存しますか？\n（キャンセルすると入力に戻ります）')) return;
+    lat=''; lon='';
+  }
   const method=segVal('detection_method')||'目視'; const habitat=otherMerge(segVals('habitat'),'habitat'); const when=nowISO();
   // 配列を一度だけ更新して一括保存する（途中まで保存＝部分保存を避け、全件成功か中止かにする）
   const arr=DB.load(DB.key.ob);
+  let flagged=0;
   items.forEach(it=>{ const sp=speciesByName(it.name);
+    if(!sp) flagged++;
     arr.push({ uuid:uuid(), survey_uuid:svUuid, observed_at:when, latitude:lat, longitude:lon,
       gps_accuracy: (!lat && !lon) ? '' : (SCREENS._batchAcc||''), species_id: sp?sp.species_id:'', species_name_snapshot:it.name,
       count: it.count, detection_method:method, behavior:'', habitat:habitat,
-      identification_status:'確定', confidence:'中', needs_review:false, note:'', external_photo_reference:'', audio:[], media:[],
+      // マスタ外の種名だけ行単位で「要確認」を付ける（同定状態は変えない。珍鳥・亜種名は正しくてもマスタ外のため）
+      identification_status:'確定', confidence:'中', needs_review:!sp, note:'', external_photo_reference:'', audio:[], media:[],
       created_at:when, updated_at:when });
   });
   if(!DB.save(DB.key.ob, arr)) return;   // 保存失敗なら成功表示も遷移もしない（DB.saveが警告済み）
   items.forEach(it=>DB.pushRecent(it.name));
-  toast(`${items.length}種を保存しました`);
+  toast(`${items.length}種を保存しました`+(flagged?`（うち${flagged}件はマスタにない種名のため要確認を付けました）`:''), flagged?4000:1800);
   SCREENS._batchItems=null; SCREENS._batchAcc=null; goBack();
 }
 function deleteObs(u){ if(!confirm('この観察記録を削除しますか？')) return;
@@ -2732,6 +2840,10 @@ function validLatLon(lat,lon){ const sa=String(lat).trim(), sb=String(lon).trim(
   if(!_numRe.test(sa)||!_numRe.test(sb)) return false;
   const a=parseFloat(sa), b=parseFloat(sb);
   return a>=-90&&a<=90&&b>=-180&&b<=180; }
+// 日本のおおよその範囲（緯度20〜46・経度122〜154）。国内調査前提の常識チェック用
+//（緯度と経度の取り違え・貼り付けミスの検出が目的。保存は止めず「要確認」を付けるだけ）
+function inJapanBounds(lat,lon){ const a=parseFloat(lat), b=parseFloat(lon);
+  return a>=20&&a<=46&&b>=122&&b<=154; }
 function validPathPt(p){ if(!Array.isArray(p)||p.length!==2) return false;
   const a=+p[0], b=+p[1];
   return Number.isFinite(a)&&Number.isFinite(b)&&a>=-90&&a<=90&&b>=-180&&b<=180; }
@@ -2800,12 +2912,18 @@ function saveFlight(u,svUuid,editing,cont){
   if(flightPath.length<2){ toast('地図を2点以上タップして経路を描いてください'); return; }
   const name=(($('#spInput')&&$('#spInput').value)||'').trim();
   const g=n=>{ const el=$(`#flForm [name="${n}"]`); return el?el.value:''; };
+  // 個体数: 観察入力と同じ検査（従来は文字列のまま無検証で保存され、書き出しにそのまま出ていた）。
+  // 切り捨てず元の値で検査する（-0.5→-0の負数すり抜けを防ぐ）
+  const fcEl=$('#flForm [name="count"]');
+  if(fcEl && fcEl.validity && fcEl.validity.badInput){ toast('個体数は数値で入力してください'); return; }
+  if(fcEl && fcEl.value.trim()!==''){ const fcN=Number(fcEl.value);
+    if(!Number.isInteger(fcN) || fcN<0){ toast('個体数は0以上の整数で入力してください'); return; } }
   const behSet=[...document.querySelectorAll('[data-seg="behavior"] button.on')].map(b=>b.textContent);
   const behavior=otherMerge(behSet.join('・'),'behavior');
   const prev=editing?DB.flight(u):{uuid:u};
   const age=segVal('age_class'), individual=(g('individual_label')||'').trim(), height=segVal('height_class');
   const rec=Object.assign({},prev,{ uuid:u, survey_uuid:svUuid,
-    species_id:SCREENS._chosenId||'', species_name_snapshot:name,
+    species_id: name ? (SCREENS._chosenId||'') : '', species_name_snapshot:name,   // 種名が空なら種IDも空（観察側と同じ保証）
     path:flightPath.slice(),
     start_time:g('start_time')||'', end_time:g('end_time')||'',
     height_class:height,
