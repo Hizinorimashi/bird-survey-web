@@ -209,7 +209,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v67（2026-08-01 飛翔経路の日時も日本標準時で固定・日付判定を厳密化）';
+const APP_VERSION = 'v72（2026-08-01 取り込み時のメディア要素の検査を厳格化）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -230,6 +230,62 @@ const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;   // 日付だけの項目（survey_
 const NAIVE_DT_RE = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
 // 時差またはZの付いた日時。観察日時は toISOString() でこの形になる
 const ZONED_DT_RE = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/;
+// 業務日時（観察日時・飛翔の開始終了・検証日など）として許す形。空・日付のみ・時差なし日時・時差付き日時の4種類。
+// 取込や同期でこれ以外が入ると isoLocal() が変換せず素通しし、書き出しに壊れた値がそのまま出るため入口で弾く。
+// 形が合っていても存在しない日時（2026-99-99 / 25:99 / +99:99 など）は Date.parse で弾く。
+// ただし Date.parse は 2026-02-30 を 3/2 に繰り上げて受け入れてしまうので、暦日は別に検査する。
+function validCalendarDate(s){
+  const y=+s.slice(0,4), m=+s.slice(5,7), d=+s.slice(8,10);
+  const t=new Date(Date.UTC(y,m-1,d));
+  if(y>=0 && y<=99) t.setUTCFullYear(y);   // Date.UTCは0〜99年を1900年代とみなすため戻す
+  return t.getUTCFullYear()===y && t.getUTCMonth()===m-1 && t.getUTCDate()===d; }
+function okStamp(v){ if(v==null || v==='') return true;
+  if(typeof v!=='string') return false;
+  if(!DATE_ONLY_RE.test(v) && !NAIVE_DT_RE.test(v) && !ZONED_DT_RE.test(v)) return false;
+  if(!validCalendarDate(v)) return false;
+  return !isNaN(Date.parse(v.replace(' ','T'))); }
+// 管理用日時（created_at / updated_at / deleted_at）。省略は許すが空文字は許さない。
+// 壊れた値は文字列比較で常に最新扱いになり、以後どの正しい更新にも勝ち続けて同期を恒久的に壊すため必ず弾く。
+function okTime(v){ return v==null || (typeof v==='string' && v!=='' && okStamp(v)); }
+// UUID・メディアIDは空文字を許さない。取込側の safeId は空を通すため、
+// 空IDのまま取り込めてしまうと同期側（非空を要求）が拒否し続ける状態を作れる
+function okUuid(v){ return typeof v==='string' && /^[\w-]+$/.test(v); }
+const okStrOpt=v=>v==null || typeof v==='string';
+// 記録に付く録音・写真の参照。取込・同期の両方がこれ1つを使う。
+// 片方だけ緩いと「取り込めるのに同期は拒否し続ける」データを作れてしまうため、条件を分けない。
+function okMediaList(a){ return a==null || (Array.isArray(a) && a.every(m=>
+  m && typeof m==='object' && !Array.isArray(m) && okUuid(m.id)
+  && okStrOpt(m.ext) && okStrOpt(m.mime) && okStrOpt(m.kind) && okStrOpt(m.name))); }
+// 削除記録の1件。at は省略・空を許さない（欠けると文字列比較で「最新」と判定され生きた記録が消える）
+function okTombstone(t){ return !!t && typeof t==='object' && !Array.isArray(t)
+  && okUuid(t.uuid) && typeof t.at==='string' && t.at!=='' && okStamp(t.at); }
+// 1レコードの共通検査（取込・同期で同じものを使う）。name は種別（業務日時の項目を引くため）
+function okRecord(name, x){
+  if(!x || typeof x!=='object' || Array.isArray(x)) return false;
+  if(!okUuid(x.uuid)) return false;
+  if(![x.id,x.survey_uuid,x.hypothesis_uuid,x.ref_id].every(safeId)) return false;
+  if(!okTime(x.created_at) || !okTime(x.updated_at) || !okTime(x.deleted_at)) return false;
+  if(badStampField(name, x)) return false;
+  return okMediaList(x.audio) && okMediaList(x.media);
+}
+// マイ図鑑の1件（ID＋管理用日時。両側で同じ条件にする）
+function okGuideItem(g){ return g==null || (g && typeof g==='object' && !Array.isArray(g)
+  && safeId(g.id) && safeId(g.ref_id)
+  && okTime(g.created_at) && okTime(g.updated_at) && okTime(g.deleted_at)); }
+// レコード種別ごとの業務日時項目（created_at 等の管理用日時は別途 okTime で検査）
+const STAMP_FIELDS = {
+  surveys:      ['survey_date','start_datetime','end_datetime'],
+  observations: ['observed_at'],
+  notes:        ['recorded_at'],
+  hypotheses:   [],
+  hyp_results:  ['verified_at'],
+  flights:      ['start_time','end_time'],
+};
+// 種別ごとに業務日時をまとめて検査する。不正な項目名を返す（問題なければ null）
+function badStampField(name, x){
+  for(const f of (STAMP_FIELDS[name]||[])){ if(!okStamp(x[f])) return f; }
+  return null;
+}
 // 日付表示。日付だけの項目はそのまま、日時はローカル時刻に直してから日付を取る。
 // UTCのまま切り出すと、夜明け前後の記録が前日として表示されてしまうため。
 // 日時と判別できない文字列は日付に変換しない（別物を日付として見せないため）。
@@ -4472,33 +4528,23 @@ async function gdrivePushMedia(token, opts){
 function validateBackupData(d){
   const bad=msg=>{ throw new Error('ドライブ上のデータ形式が不正です（'+msg+'）'); };
   const isPlain=x=>x && typeof x==='object' && !Array.isArray(x);
-  // 日時は「日付として読める文字列」だけを許す。壊れた日時（例:'zzzz'）は文字列比較で常に最新扱いになり、
-  // 以後どの正しい更新にも勝ち続けて同期を恒久的に壊すため、ここで必ず弾く
-  const okTime=v=>v==null || (typeof v==='string' && !isNaN(Date.parse(v)));
-  const okStr=v=>v==null || typeof v==='string';
-  const okMedia=a=>a==null || (Array.isArray(a) && a.every(m=>
-    isPlain(m) && typeof m.id==='string' && /^[\w-]+$/.test(m.id) && okStr(m.ext) && okStr(m.mime) && okStr(m.kind) && okStr(m.name)));
+  // レコードの検査は共通の okRecord を使う。取込側（importIdsOk）と同じ関数にすることで、
+  // 「取込では通るのに同期は拒否し続ける」データが作られる余地をなくす。
   if(!isPlain(d)) bad('全体');
   if(d.app!=='bird_survey') bad('種別');
   if(d.kind!=='records') bad('種類');
   if(d.version!==6) bad('版'+d.version+'。アプリを最新に更新してください');
   for(const name of ['surveys','observations','notes','hypotheses','hyp_results','flights']){
     if(!Array.isArray(d[name])) bad(name);
-    for(const x of d[name]){
-      if(!isPlain(x)) bad(name+'の要素');
-      if(typeof x.uuid!=='string' || !/^[\w-]+$/.test(x.uuid)) bad(name+'のID');
-      if(!safeId(x.survey_uuid) || !safeId(x.hypothesis_uuid)) bad(name+'の参照ID');
-      if(!okTime(x.created_at) || !okTime(x.updated_at) || !okTime(x.deleted_at)) bad(name+'の日時');
-      if(!okMedia(x.audio) || !okMedia(x.media)) bad(name+'のメディア参照');
-    }
+    for(const x of d[name]){ if(!okRecord(name, x)) bad(name+'の要素'); }
   }
   if(d.tombstones!=null){
     if(!Array.isArray(d.tombstones)) bad('削除記録');
-    for(const t of d.tombstones){ if(!isPlain(t) || typeof t.uuid!=='string' || !/^[\w-]+$/.test(t.uuid) || typeof t.at!=='string' || isNaN(Date.parse(t.at))) bad('削除記録の要素'); }
+    for(const t of d.tombstones){ if(!okTombstone(t)) bad('削除記録の要素'); }
   }
   if(d.myguide!=null){
     if(!Array.isArray(d.myguide)) bad('マイ図鑑');
-    for(const g of d.myguide){ if(g!=null && (!isPlain(g) || !safeId(g.id) || !safeId(g.ref_id))) bad('マイ図鑑の要素'); }
+    for(const g of d.myguide){ if(!okGuideItem(g)) bad('マイ図鑑の要素'); }   // 取込側と同じ関数
   }
   return true;
 }
@@ -5086,13 +5132,35 @@ SCREENS.importHub = ()=>({
 // null/undefined（省略）は許容。値がある場合は必ず「文字列 かつ 安全な文字だけ」でなければ弾く。
 // （旧実装は typeof!=='string' を無条件で安全扱いしており、配列を渡すと検査を素通りできた）
 function safeId(v){ return v==null || (typeof v==='string' && /^[\w-]*$/.test(v)); }
+// ID に加えて日時も検査する。ここを緩くすると、取込では保存できるのに他端末のドライブ同期
+// （validateBackupData）が拒否し続ける状態を作れてしまうため、同期側と同じ厳しさで揃える。
+// ・業務日時（観察日時など）: 壊れたまま取り込むと書き出し（CSV/GeoJSON）にそのまま出る
+// ・管理用日時（created_at 等）: 壊れた値は文字列比較で常に最新扱いになり同期を壊す
 function importIdsOk(d){
-  const arrs=[d.surveys,d.observations,d.notes,d.hypotheses,d.hyp_results,d.flights,d.myguide,d.audio,d.media,d.tombstones];
-  for(const a of arrs){ if(!Array.isArray(a)) continue;
-    for(const x of a){ if(!x) continue;
-      if(![x.uuid,x.id,x.survey_uuid,x.hypothesis_uuid,x.ref_id].every(safeId)) return false;
-      for(const m of [].concat(x.audio||[], x.media||[])){ if(m && !safeId(m.id)) return false; }
-    }
+  // 6種類の記録は同期側と同じ okRecord で検査する
+  for(const name of ['surveys','observations','notes','hypotheses','hyp_results','flights']){
+    const a=d[name]; if(a==null) continue;
+    if(!Array.isArray(a)) return false;
+    for(const x of a){ if(!okRecord(name, x)) return false; }
+  }
+  // マイ図鑑も同期側と同じ関数で
+  if(d.myguide!=null){
+    if(!Array.isArray(d.myguide)) return false;
+    for(const g of d.myguide){ if(!okGuideItem(g)) return false; }
+  }
+  // 実体（音声・写真）。IDが無い/空の要素は実体を保存できず参照だけが残るので弾く。
+  // ※ここは同期用データには無く、JSONバックアップにだけある項目（同期はメディアを別ファイルで持つ）
+  for(const a of [d.audio, d.media]){ if(a==null) continue;
+    if(!Array.isArray(a)) return false;
+    for(const m of a){
+      if(!m || typeof m!=='object' || Array.isArray(m)) return false;
+      if(!okUuid(m.id) || !okTime(m.created_at)) return false; }
+  }
+  // 削除記録は uuid・at とも必須（同期側 validateBackupData と同じ条件）。
+  // 空UUIDや壊れた at を取り込めると、同期側が拒否し続ける状態を作れてしまう
+  if(d.tombstones!=null){
+    if(!Array.isArray(d.tombstones)) return false;
+    for(const t of d.tombstones){ if(!okTombstone(t)) return false; }
   }
   return true;
 }
