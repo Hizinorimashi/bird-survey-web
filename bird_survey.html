@@ -209,7 +209,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v72（2026-08-01 取り込み時のメディア要素の検査を厳格化）';
+const APP_VERSION = 'v73（2026-08-01 保存済みデータの点検・修復機能を追加）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -259,15 +259,38 @@ function okMediaList(a){ return a==null || (Array.isArray(a) && a.every(m=>
 // 削除記録の1件。at は省略・空を許さない（欠けると文字列比較で「最新」と判定され生きた記録が消える）
 function okTombstone(t){ return !!t && typeof t==='object' && !Array.isArray(t)
   && okUuid(t.uuid) && typeof t.at==='string' && t.at!=='' && okStamp(t.at); }
-// 1レコードの共通検査（取込・同期で同じものを使う）。name は種別（業務日時の項目を引くため）
-function okRecord(name, x){
-  if(!x || typeof x!=='object' || Array.isArray(x)) return false;
-  if(!okUuid(x.uuid)) return false;
-  if(![x.id,x.survey_uuid,x.hypothesis_uuid,x.ref_id].every(safeId)) return false;
-  if(!okTime(x.created_at) || !okTime(x.updated_at) || !okTime(x.deleted_at)) return false;
-  if(badStampField(name, x)) return false;
-  return okMediaList(x.audio) && okMediaList(x.media);
+// 1レコードの不正箇所を列挙する（点検・修復用）。name は種別（業務日時の項目を引くため）。
+// okRecord（取込・同期の合否）はこの結果が空かどうかで決める。判定を2か所に持つと
+// 「点検では正常なのに同期は拒否する」ずれが生じるため、必ずこの関数を唯一の正とする。
+const REF_ID_FIELDS = ['id','survey_uuid','hypothesis_uuid','ref_id'];
+function recordIssues(name, x){
+  if(!x || typeof x!=='object' || Array.isArray(x)) return ['record'];
+  const bad=[];
+  if(!okUuid(x.uuid)) bad.push('uuid');
+  for(const f of REF_ID_FIELDS){ if(!safeId(x[f])) bad.push(f); }
+  for(const f of ['created_at','updated_at','deleted_at']){ if(!okTime(x[f])) bad.push(f); }
+  for(const f of (STAMP_FIELDS[name]||[])){ if(!okStamp(x[f])) bad.push(f); }
+  if(!okMediaList(x.audio)) bad.push('audio');
+  if(!okMediaList(x.media)) bad.push('media');
+  // 修復メモ（点検・修復機能が元の値を控える欄）。細工バックアップで巨大な文字列を
+  // 持ち込まれて保存領域やメモリを圧迫されないよう、正式な検査項目として上限を課す
+  if(!(x.repair_note==null || (typeof x.repair_note==='string' && x.repair_note.length<=REPAIR_NOTE_MAX))) bad.push('repair_note');
+  // 1記録の大きさの上限。検査対象外の項目（メモ・種名など将来の項目も含めて許容している）に
+  // 巨大な文字列を仕込んだ細工データが、検査を素通りして保存領域を食い潰すのを防ぐ。
+  // 上限は正当な最大級の記録（長時間の飛翔経路のGPS点列など）より十分大きく取る
+  try{ if(JSON.stringify(x).length>REC_JSON_MAX) bad.push('size'); }catch(e){ bad.push('size'); }
+  return bad;
 }
+const REPAIR_NOTE_MAX = 500;       // 修復メモの上限文字数（取込・同期・点検で共通）
+const REC_JSON_MAX = 4000000;      // 1記録のJSON上限文字数（約4百万字＝保存領域全体の大半。正当な記録はまず届かない）
+// 手動取込の上限は「細工・破損データを弾く」ためのもので、端末のメモリ保護のためではない。
+// 監査（2026-08-01 4巡目）でより小さい上限が提案されたが、動画入りのフルバックアップは正当に
+// 数百MBになり得て、上限を下げると機種変時の復元が失敗する。取込は利用者自身のバックアップを
+// 選ぶ操作（信頼済み）であり、復元を壊さないことを優先してこの値を維持する（設計判断）
+const IMPORT_FILE_MAX = 1073741824;   // 手動取込ファイルの上限（1GB）
+const MEDIA_B64_MAX = 400000000;      // メディア1件のbase64上限文字数（実体約300MB。これを超える1件は細工か破損とみなす）
+// 1レコードの共通検査（取込・同期で同じものを使う）
+function okRecord(name, x){ return recordIssues(name, x).length===0; }
 // マイ図鑑の1件（ID＋管理用日時。両側で同じ条件にする）
 function okGuideItem(g){ return g==null || (g && typeof g==='object' && !Array.isArray(g)
   && safeId(g.id) && safeId(g.ref_id)
@@ -281,11 +304,6 @@ const STAMP_FIELDS = {
   hyp_results:  ['verified_at'],
   flights:      ['start_time','end_time'],
 };
-// 種別ごとに業務日時をまとめて検査する。不正な項目名を返す（問題なければ null）
-function badStampField(name, x){
-  for(const f of (STAMP_FIELDS[name]||[])){ if(!okStamp(x[f])) return f; }
-  return null;
-}
 // 日付表示。日付だけの項目はそのまま、日時はローカル時刻に直してから日付を取る。
 // UTCのまま切り出すと、夜明け前後の記録が前日として表示されてしまうため。
 // 日時と判別できない文字列は日付に変換しない（別物を日付として見せないため）。
@@ -1088,6 +1106,11 @@ SCREENS.home = ()=>{
         ブラウザのタブのまま使うと、iPhoneでは<b>約1週間使わないと記録・写真・録音が自動で消される</b>ことがあります。共有ボタンから<b>「ホーム画面に追加」</b>して、そのアイコンから使うと消えなくなります。<br>
         さらに念のため、ときどき下の<b>「⤓ エクスポート → JSONバックアップ」</b>で保存しておくと安心です。
       </div><div class="sp"></div>`:''}
+      ${repairProblemCount()?`<div class="note" style="border-color:var(--warn);">
+        <b>⚠ 保存済みデータに壊れた記録があります（${repairProblemCount()}件）</b><br>
+        そのままだと他の端末への同期が止まり、書き出しにも不正な値が出ます。壊れた記録はドライブ同期から除外されています。
+        <div class="sp"></div><button class="btn" onclick="nav('repair',null)">🩺 点検・修復を開く</button>
+      </div><div class="sp"></div>`:''}
       <button class="btn primary big" onclick="nav('surveyEdit',null)">＋ 新しい調査を作成</button>
       <div class="sp"></div>
       <div class="btn-grid">
@@ -1113,6 +1136,8 @@ SCREENS.home = ()=>{
         <button class="btn" onclick="nav('trash',null)">🗑 ごみ箱</button>
         <button class="btn" onclick="nav('cloud',null)">☁ クラウド保存</button>
       </div>
+      <div class="sp"></div>
+      <button class="btn ghost" onclick="nav('repair',null)">🩺 データ点検・修復</button>
       ${(gdriveSignedIn()||GUSER)?`<div class="tiny muted" style="margin-top:6px;">☁ 前回のドライブ保存: ${gAgo!=null?(gAgo+'分前'):'まだ'}<span id="homePending"></span></div>`:''}
       ${(gdriveCfg().clientId && GUSER && !gdriveSignedIn())?`<div class="tiny muted" style="margin-top:6px;">☁ ドライブ同期を続けるにはサインインが必要です（上の「クラウド保存」から）</div>`:''}
       <div class="sp"></div>
@@ -4088,13 +4113,48 @@ function coreCollectionsRaw(){
   return { surveys:DB.loadRaw(DB.key.sv), observations:DB.loadRaw(DB.key.ob), notes:DB.loadRaw(DB.key.nt),
     hypotheses:DB.loadRaw(DB.key.hy), hyp_results:DB.loadRaw(DB.key.hr), flights:DB.loadRaw(DB.key.fl) };
 }
-// 記録のみ（軽い・base64なし）。頻繁な自動バックアップ用。読取失敗時は例外を投げて中止させる
-function buildRecordsBackup(){
+// 記録のみ（軽い・base64なし）。頻繁な自動バックアップ用。読取失敗時は例外を投げて中止させる。
+// opts.onlyValid: ドライブ同期用。壊れた記録・削除記録・図鑑項目を含めない。
+// 受信側（validateBackupData）は1件でも不正だと全体を拒否するため、壊れたデータを配ると
+// 他端末の同期を丸ごと止めてしまう。除外した分はホームの警告カードで知らせ、修復すれば次回から同期に載る。
+// フォルダ自動保存・手動バックアップは全件のまま（壊れたデータの救出経路を塞がない）
+function buildRecordsBackup(opts){
+  opts=opts||{};
   const c=coreCollectionsRaw();
+  let recent=DB.recentSpecies(), guide=myguideList(), tombs=tombstonesList();
+  if(opts.onlyValid){
+    // 除外した親のuuid。親の種類別に持つ（共通の集合にすると、偶然同じIDを持つ別種類の記録が
+    // 除外されただけで、正常な親を参照する子まで巻き添えで除外されるため）。
+    // 数値uuidの親（旧データ）は文字列化した値で登録する（子の参照は文字列で残っていることがある）
+    const dropped={ surveys:new Set(), hypotheses:new Set() };
+    const idOf=x=>{ if(!x || typeof x!=='object') return null;
+      if(typeof x.uuid==='string' && x.uuid) return x.uuid;
+      if(typeof x.uuid==='number' && isFinite(x.uuid)) return String(x.uuid);
+      return null; };
+    for(const name of ['surveys','observations','notes','hypotheses','hyp_results','flights']){
+      // 入れ物ごと壊れている場合は部分的に配らず中止（点検・修復へ誘導）
+      if(!Array.isArray(c[name])) throw new Error('「'+name+'」のデータが壊れています。ホームの「データ点検・修復」で直してください');
+      c[name]=c[name].filter(x=>{ if(okRecord(name,x)) return true;
+        const iv=idOf(x); if(iv && dropped[name]) dropped[name].add(iv);
+        return false; });
+    }
+    // 親が除外された子は一緒に除外する。子だけ配ると、受け取り側に「どの一覧からも
+    // たどれない記録」が固定化されるため。親を修復すれば次回から親子そろって同期される
+    for(const n of ['observations','notes','hypotheses','flights']){
+      c[n]=c[n].filter(x=>{ if(x.survey_uuid && dropped.surveys.has(x.survey_uuid)){
+        if(n==='hypotheses'){ const iv=idOf(x); if(iv) dropped.hypotheses.add(iv); }   // 仮説の道連れは検証結果へ連鎖
+        return false; } return true; });
+    }
+    c.hyp_results=c.hyp_results.filter(x=>!(x.hypothesis_uuid && dropped.hypotheses.has(x.hypothesis_uuid)));
+    // tombstonesListは型しか検査しないため、日時が壊れた削除記録（受信側が拒否する）をここで確実に除く
+    tombs=tombs.filter(okTombstone);
+    guide=Array.isArray(guide)?guide.filter(g=>g!=null && okGuideItem(g)):[];
+    recent=Array.isArray(recent)?recent.filter(s=>typeof s==='string'):[];
+  }
   return { app:'bird_survey', kind:'records', version:6, exported_at:nowISO(),
     surveys:c.surveys, observations:c.observations, notes:c.notes,
     hypotheses:c.hypotheses, hyp_results:c.hyp_results, flights:c.flights,
-    recent:DB.recentSpecies(), myguide:myguideList(), tombstones:tombstonesList() };
+    recent, myguide:guide, tombstones:tombs };
 }
 // 全部（録音・写真をbase64同梱）。重い。メディア読取や記録読取に失敗したら例外を投げて中止（空上書き防止）
 async function buildFullBackup(){
@@ -4289,7 +4349,7 @@ async function gdriveUpsertFile(folderId, name, contentStr, token){
 // 「検索→無い→作成」が二重に起きて同名フォルダ/ファイルを重複生成するため。
 let _gdriveChain=Promise.resolve();
 function gdriveSerial(fn){ const run=_gdriveChain.then(fn, fn); _gdriveChain=run.catch(()=>{}); return run; }
-async function gdrivePush(kind, dataObj, token){
+async function gdrivePush(kind, dataObj, token, dailyObj){
   return gdriveSerial(async ()=>{
     const folderId=await gdriveEnsureFolder(token);
     const json=JSON.stringify(dataObj);
@@ -4297,8 +4357,10 @@ async function gdrivePush(kind, dataObj, token){
     if(kind==='records'){
       // 同期用: 自分専用ファイルだけを上書き（他端末の保存を消す事故を構造的に防ぐ）＋人が復元に使う日次控え
       //（日次控えも端末別の名前にして、同じ日に2台が保存し合っても互いに上書きしないようにする）
+      // dailyObj指定時は日次控えだけ別内容にする（同期用は壊れた記録を除外しても、控えには全件残すため）
       const up=await gdriveUpsertFile(folderId, syncFileName(), json, token);
-      await gdriveUpsertFile(folderId, 'birdsurvey_records_'+ymd+'_'+deviceId().slice(0,8)+'.json', json, token);
+      await gdriveUpsertFile(folderId, 'birdsurvey_records_'+ymd+'_'+deviceId().slice(0,8)+'.json',
+        dailyObj?JSON.stringify(dailyObj):json, token);
       // 自分が保存したファイルは「確認済み」にする（新着チェックが自分の保存に反応しないように）
       if(up && up.id && up.modifiedTime) syncSeenMark(up.id, up.modifiedTime);
     }else{
@@ -4315,16 +4377,19 @@ async function gdriveBackupRecords(){
   // 別端末の未取り込み保存があれば先に合体する。書き込みは自分専用ファイルにしか行わないため、
   // この取り込みに失敗しても自分の保存で他端末のデータが消えることはない（保存は続行してよい）
   try{
-    const targets=unseenSyncFiles(await gdriveListSyncFiles(token));
+    const targets=unseenSyncFiles(await gdriveListSyncFiles(token))
+      .filter(f=>!syncInvalidHas(f.id, f.modifiedTime));   // 検査不合格の同じ版は自動経路では再取得しない
     if(targets.length){
       const r=await gdrivePullAll(targets, token);
-      if(r && (r.changed||r.media.done)) toast(`別の端末の記録を取り込みました（記録${r.changed}件・写真/録音${r.media.done}件）`);
+      if(r && (r.changed||r.media.done)) toast(`別の端末の記録を取り込みました（記録${r.changed}件・写真/録音${r.media.done}件）`
+        +(r.skipped?`※${r.skipped}ファイルは壊れているためスキップ`:''));
     }
   }catch(e){}
   // 写真・録音を先に置き、その後で参照する記録JSONを上げる（動画は手動のみ）。失敗は黙らせず知らせる
   try{ await gdrivePushMedia(token, {}); }
   catch(e){ try{ toast('写真・録音のアップロードに一部失敗しました（次の保存時に自動で再試行します）'); }catch(_){} }
-  await gdrivePush('records', buildRecordsBackup(), token);
+  // 同期用は壊れた記録を除外、日次控え（人が復元に使う）は全件のまま（原本を失わせない）
+  await gdrivePush('records', buildRecordsBackup({onlyValid:true}), token, buildRecordsBackup());
 }
 async function gdriveSignIn(){
   try{
@@ -4353,7 +4418,7 @@ async function gdriveSyncFull(){
     if(dropped) await syncMapSave(map);
     const extra=await gdrivePullMedia(token, {});   // 新着が無くても、過去に取りこぼした写真・録音を再取得
     const up=await gdrivePushMedia(token, {});      // 写真・録音を先に上げてから、参照する記録JSONを上げる
-    await gdrivePush('records', buildRecordsBackup(), token);
+    await gdrivePush('records', buildRecordsBackup({onlyValid:true}), token, buildRecordsBackup());
     const got=(pulled?pulled.media.done:0)+extra.done;
     const miss=(pulled?pulled.media.miss:0)+extra.miss;
     // 何がどれだけ保存されたかを具体的に示す（調査・観察の件数はこの端末の現在数）
@@ -4363,6 +4428,7 @@ async function gdriveSyncFull(){
     if(up.done) parts.push(`写真・録音のアップロード${up.done}件`);
     let msg='同期しました：'+parts.join('／');
     if(miss) msg+=`（未受信${miss}件は相手の端末の同期待ち）`;
+    if(pulled && pulled.skipped) msg+=`※${pulled.skipped}ファイルは壊れているためスキップ（保存した端末での点検・修復が必要）`;
     toast(msg, 4000); render();
   }catch(e){ toast('同期に失敗: '+(e.message||e)); }
 }
@@ -4401,7 +4467,7 @@ async function gdriveConfirmOwner(token){
   GUSER=email; try{ localStorage.setItem('bs_gdrive_user', email); }catch(e){}
   const owner=(gdriveCfg().clientId||'')+'|'+email;
   if((localStorage.getItem('bs_sync_owner')||'')!==owner){
-    localStorage.removeItem('bs_sync_seen'); localStorage.removeItem('bs_sync_declined');
+    localStorage.removeItem('bs_sync_seen'); localStorage.removeItem('bs_sync_declined'); localStorage.removeItem('bs_sync_invalid');
     try{ await kvPut('gdrive_media_map', {audio:{},media:{}}); }catch(e){ return false; }
     try{ localStorage.setItem('bs_sync_owner', owner); }catch(e){ return false; }
   }
@@ -4413,6 +4479,15 @@ function syncSeenLoad(){ try{ const m=JSON.parse(localStorage.getItem('bs_sync_s
   return (m && typeof m==='object' && !Array.isArray(m))?m:{}; }catch(e){ return {}; } }
 function syncSeenMark(fileId, modifiedTime){ try{ const m=syncSeenLoad(); m[fileId]=modifiedTime;
   localStorage.setItem('bs_sync_seen', JSON.stringify(m)); }catch(e){} }
+// 検査不合格の同期ファイル {fileId: modifiedTime}。既読とは別管理（既読=取り込み済みの意味を守る）。
+// 同じ版について起動のたびに確認ダイアログや再取得を繰り返さないための印。
+// ファイルが更新されれば（相手端末が修復すれば）modifiedTimeが変わるので自動で再試行される。手動の「今すぐ同期」は印を無視して再試行する
+function syncInvalidLoad(){ try{ const m=JSON.parse(localStorage.getItem('bs_sync_invalid')||'{}');
+  return (m && typeof m==='object' && !Array.isArray(m))?m:{}; }catch(e){ return {}; } }
+function syncInvalidMark(fileId, modifiedTime){ try{ const m=syncInvalidLoad(); m[fileId]=modifiedTime||'';
+  localStorage.setItem('bs_sync_invalid', JSON.stringify(m)); }catch(e){} }
+function syncInvalidHas(fileId, modifiedTime){ const m=syncInvalidLoad();
+  return Object.prototype.hasOwnProperty.call(m, fileId) && m[fileId]===(modifiedTime||''); }
 
 // ドライブ上の同期ファイル一覧（全端末分）。旧形式 birdsurvey_records_latest.json も取り込み対象に含める（v50以前との互換）
 async function gdriveListSyncFiles(token){
@@ -4504,7 +4579,9 @@ async function gdriveUploadBlob(folderId, name, blob, mime, token){
 async function gdrivePushMedia(token, opts){
   opts=opts||{};
   return gdriveSerial(async ()=>{
-    const refs=collectMediaRefs().filter(r=> opts.videoOnly ? r.kind==='video' : r.kind!=='video');
+    // 不正なIDの参照はドライブのファイル名・検索クエリに使えないため除外（修復すれば次回から対象になる）
+    const refs=collectMediaRefs().filter(r=>okUuid(r.id))
+      .filter(r=> opts.videoOnly ? r.kind==='video' : r.kind!=='video');
     const map=await syncMapLoad();
     const todo=refs.filter(r=>!syncMapHas(map,r.store,r.id));
     if(!todo.length) return {done:0, skip:0};
@@ -4565,7 +4642,8 @@ async function gdriveListMediaFiles(token){
 // 端末に実体が無い録音・写真をドライブから取り込む。既定は動画以外、videoOnly:trueで動画だけ
 async function gdrivePullMedia(token, opts){
   opts=opts||{};
-  const refs=collectMediaRefs().filter(r=> opts.videoOnly ? r.kind==='video' : r.kind!=='video');
+  const refs=collectMediaRefs().filter(r=>okUuid(r.id))   // 不正IDはファイル名を組めないため対象外（修復後に取得される）
+    .filter(r=> opts.videoOnly ? r.kind==='video' : r.kind!=='video');
   const missing=[];
   for(const r of refs){
     const rec=await (r.store==='audio'?AudioDB:PhotoDB).get(r.id).catch(()=>null);
@@ -4644,6 +4722,7 @@ function mergeRemoteRecords(d){
     rollback(); throw new Error('保存できませんでした（空き容量を確認してください）');
   }
   // recent(最近使った種)は端末ごとでよいので同期しない
+  try{ rescanLocalData(); }catch(e){}   // 取り込んだ結果でホームの警告カードを最新にする
   return changed;
 }
 // ドライブから未読の同期ファイルを全部取り込み、足りない写真・録音も取り込む。
@@ -4653,15 +4732,32 @@ async function gdrivePullAll(files, token){
   return gdriveSerial(async ()=>{
     const targets=files || unseenSyncFiles(await gdriveListSyncFiles(token));
     if(!targets.length) return null;
-    let changed=0;
+    let changed=0, skipped=0, lastErr=null;
     for(const f of targets){
-      const d=await (await gdriveFetchRaw('drive/v3/files/'+f.id+'?alt=media', token)).json();
-      validateBackupData(d);                        // 不正なら1件でも全体を拒否（例外）
-      changed+=mergeRemoteRecords(d);
-      syncSeenMark(f.id, f.modifiedTime||'');       // 1ファイル取り込むごとに既読化（途中失敗でも続きから）
+      // ファイル単位で検証・取り込み。壊れたファイル（修復前の端末が上げた等）はそのファイルだけスキップし、
+      // 他の端末の正常な保存まで巻き添えで止めない。既読にはしない（相手が修復すれば次回取り込める）
+      let txt;
+      try{ txt=await (await gdriveFetchRaw('drive/v3/files/'+f.id+'?alt=media', token)).text(); }
+      catch(e){ skipped++; lastErr=e; continue; }   // 通信の失敗は印を付けず、次回そのまま再試行
+      // ここから先の失敗は「ファイルの中身の異常」なので不合格の印を付け、
+      // 同じ版について確認・再取得を繰り返さない（相手が修復・更新すれば自動で再試行される）
+      let d;
+      try{
+        // 記録のみの同期ファイルの上限（メディアは別ファイルなので正当なファイルはこの大きさに届かない）
+        if(txt.length>20000000) throw new Error('同期ファイルが大きすぎます');
+        d=JSON.parse(txt);
+        validateBackupData(d);                      // 1ファイル内で1件でも不正ならそのファイルを拒否（例外）
+      }catch(e){ skipped++; lastErr=e;
+        syncInvalidMark(f.id, f.modifiedTime||'');
+        continue; }
+      try{
+        changed+=mergeRemoteRecords(d);
+        syncSeenMark(f.id, f.modifiedTime||'');     // 1ファイル取り込むごとに既読化（途中失敗でも続きから）
+      }catch(e){ skipped++; lastErr=e; }            // 保存失敗（容量等）は印を付けない（データは正常なため）
     }
+    if(skipped===targets.length && lastErr) throw lastErr;   // 全滅なら従来どおり失敗として知らせる
     const md=await gdrivePullMedia(token, {}).catch(()=>({done:0,miss:0}));
-    return {changed, media:md};
+    return {changed, media:md, skipped};
   });
 }
 // 起動時：別端末からの新しい保存が無いか確認して、あれば取り込みを提案する（サインイン中だけ・失敗は静かに）。
@@ -4670,7 +4766,8 @@ async function gdriveStartupCheck(){
   try{
     if(!gdriveCfg().clientId || !gdriveSignedIn()) return;
     const token=await gdriveGetToken(false);
-    const targets=unseenSyncFiles(await gdriveListSyncFiles(token));
+    const targets=unseenSyncFiles(await gdriveListSyncFiles(token))
+      .filter(f=>!syncInvalidHas(f.id, f.modifiedTime));   // 検査不合格の同じ版は繰り返し聞かない（手動同期では再試行できる）
     let pulledNow=false;
     const declined=localStorage.getItem('bs_sync_declined')||'';
     const mark=targets.map(f=>f.id+'@'+f.modifiedTime).sort().join(',');
@@ -4680,7 +4777,8 @@ async function gdriveStartupCheck(){
         // ユーザーがOKした後の失敗は黙らず知らせる（確認前の通信エラー等は外側のcatchで静かに流す）
         try{
           const r=await gdrivePullAll(targets, token);
-          if(r) toast(`ドライブから読み込みました：記録の取り込み${r.changed}件／写真・録音${r.media.done}件`, 4000);
+          if(r) toast(`ドライブから読み込みました：記録の取り込み${r.changed}件／写真・録音${r.media.done}件`
+            +(r.skipped?`（${r.skipped}ファイルは壊れているためスキップ。保存した端末での点検・修復が必要です）`:''), r.skipped?6000:4000);
           pulledNow=true;
           // 取り込み中に入力・録音を始めていたら画面を作り直さない（未保存の内容が消えるため）
           if(!SCREENS._dirty && !REC) reset('home');
@@ -5154,7 +5252,9 @@ function importIdsOk(d){
     if(!Array.isArray(a)) return false;
     for(const m of a){
       if(!m || typeof m!=='object' || Array.isArray(m)) return false;
-      if(!okUuid(m.id) || !okTime(m.created_at)) return false; }
+      if(!okUuid(m.id) || !okTime(m.created_at)) return false;
+      // b64は文字列かつ上限内であること（1件に巨大データを仕込んで保存領域・メモリを潰す細工を弾く）
+      if(m.b64!=null && (typeof m.b64!=='string' || m.b64.length>MEDIA_B64_MAX)) return false; }
   }
   // 削除記録は uuid・at とも必須（同期側 validateBackupData と同じ条件）。
   // 空UUIDや壊れた at を取り込めると、同期側が拒否し続ける状態を作れてしまう
@@ -5166,6 +5266,8 @@ function importIdsOk(d){
 }
 function doImport(){
   const f=$('#impFile').files[0]; if(!f){ toast('ファイルを選んでください'); return; }
+  // 読み込む前にファイルの大きさを確認（巨大ファイルの読み込み・解析で画面が固まるのを防ぐ）
+  if(f.size>IMPORT_FILE_MAX){ toast('ファイルが大きすぎるため取り込めません（上限1GB）'); return; }
   const rd=new FileReader();
   rd.onload=async ()=>{ try{
     const d=JSON.parse(rd.result);
@@ -5207,10 +5309,549 @@ function doImport(){
     if(!saveOk) toast('一部の記録を保存できませんでした（空き容量を確認してください）');
     else if(fail) toast(`取り込みました（メディア ${ok}/${total}件成功・${fail}件は実体が無いため参照を除外）`);
     else toast(total? `取り込みました（記録＋メディア${total}件）` : '取り込みました');
+    rescanLocalData();
     reset('home');
   }catch(e){ toast('読み込みに失敗しました（ファイル形式を確認）'); } };
   rd.readAsText(f);
 }
+
+/* ============================================================
+   保存済みデータの点検・修復
+   取込・同期は入口で検査する（okRecord等）が、過去の版やコピペ事故で
+   既に端末へ保存されてしまった壊れたデータは入口検査では直らない。
+   壊れた記録が1件でもあると他端末がこの端末の同期ファイルを全体拒否し続け、
+   書き出し（CSV/GeoJSON）にも壊れた値がそのまま出るため、ここで見つけて直す。
+   原則: 黙って消さない。修復の前に必ず「修復前の控え」を生文字列で保存する。
+   ============================================================ */
+const SCAN_COLS = [
+  ['surveys',     DB.key.sv, '調査'],
+  ['observations',DB.key.ob, '観察'],
+  ['notes',       DB.key.nt, 'メモ'],
+  ['hypotheses',  DB.key.hy, '仮説'],
+  ['hyp_results', DB.key.hr, '仮説の検証'],
+  ['flights',     DB.key.fl, '飛翔経路'],
+];
+const SCAN_AUX = [
+  ['tombstones', 'bs_tombstones', '削除記録'],
+  ['myguide',    'bs_myguide',    'マイ図鑑'],
+  ['recent',     DB.key.recent,   '最近使った種'],
+];
+// 点検結果の表示用。recordIssuesが返す項目名を平易な言葉にする
+const FIELD_LABELS = { record:'記録全体', size:'記録の大きさ（上限超え）', repair_note:'修復メモ', uuid:'記録ID', id:'旧ID', survey_uuid:'調査への参照',
+  hypothesis_uuid:'仮説への参照', ref_id:'図鑑参照', created_at:'作成日時', updated_at:'更新日時',
+  deleted_at:'削除日時', audio:'録音の参照', media:'写真・動画の参照',
+  survey_date:'調査日', start_datetime:'開始日時', end_datetime:'終了日時', observed_at:'観察日時',
+  recorded_at:'記録日時', verified_at:'検証日', start_time:'開始時刻', end_time:'終了時刻' };
+// 孤児記録（調査への参照が壊れて元が分からない記録）の受け皿調査のID。
+// 固定文字列にすることで、複数端末が別々に修復しても同期のマージ（uuid単位）で1つに収束する
+const REPAIR_ORPHAN_UUID = 'repair-orphan-parent';
+
+let _scanCache=null;        // 起動時と修復・取込・同期の後に更新（ホーム描画のたびに全件parseしないため）
+let _lastRepairReport=null; // 直近の修復内容（点検画面に表示）
+function repairProblemCount(){ return _scanCache ? _scanCache.problems : 0; }
+function rescanLocalData(){ try{ _scanCache=scanLocalData(); }catch(e){ _scanCache=null; } return _scanCache; }
+
+// 全保存データを検査する（変更はしない）。cols/auxの state: ok / unreadable(JSONとして読めない) / nonarray(配列でない)
+function scanLocalData(){
+  const res={ cols:{}, aux:{}, problems:0, info:[] };
+  const uuidOwner=Object.create(null);   // uuid -> 最初に見たコレクションのラベル（区分をまたぐ重複IDの検出用）
+  const uuidSets={};                     // name -> そのコレクションのuuid集合（孤立参照の検出用。調査→観察の順に処理される前提）
+  for(const [name,key,label] of SCAN_COLS){
+    const c={ label, key, state:'ok', bad:0, dupes:0, total:0, fields:{} };
+    res.cols[name]=c;
+    let raw;
+    try{ raw=DB.loadRaw(key); }
+    catch(e){ c.state='unreadable'; res.problems++; continue; }
+    if(!Array.isArray(raw)){
+      c.state='nonarray';
+      // オブジェクトなら Object.values で中身を救出し、壊れた記録は通常の記録修復に回せる
+      c.rescuable = !!raw && typeof raw==='object';
+      res.problems++; continue;
+    }
+    c.total=raw.length;
+    const seen=new Set();
+    // 参照先の実在確認（形式は正常なのに親が見つからない記録は「情報」として知らせる。
+    // 他端末にだけ親がある正常な状態もあり得るため、自動修復はしない）
+    const refField = name==='hyp_results' ? 'hypothesis_uuid' : (name!=='surveys' ? 'survey_uuid' : null);
+    const parentName = name==='hyp_results' ? 'hypotheses' : 'surveys';
+    let dangling=0;
+    for(const x of raw){
+      const issues=recordIssues(name,x);
+      if(issues.length){ c.bad++; issues.forEach(f=>{ c.fields[f]=(c.fields[f]||0)+1; }); }
+      if(x && typeof x==='object' && typeof x.uuid==='string' && x.uuid){
+        if(seen.has(x.uuid)) c.dupes++;
+        else{ seen.add(x.uuid);
+          if(uuidOwner[x.uuid] && uuidOwner[x.uuid]!==label)
+            res.info.push(`同じ記録ID（${x.uuid.slice(0,8)}…）が「${uuidOwner[x.uuid]}」と「${label}」の両方にあります。完全削除が両方に効くため注意（自動修復はしません）`);
+          else uuidOwner[x.uuid]=label; }
+      }
+      if(refField && uuidSets[parentName] && x && typeof x==='object'
+        && typeof x[refField]==='string' && x[refField] && safeId(x[refField])
+        && !uuidSets[parentName].has(x[refField])) dangling++;
+    }
+    uuidSets[name]=seen;
+    if(dangling) res.info.push(`${label}: 参照先の${parentName==='surveys'?'調査':'仮説'}が見つからない記録が${dangling}件あります（他の端末に親の記録がある場合は同期で解消します）`);
+    res.problems += c.bad + c.dupes;
+  }
+  for(const [name,key,label] of SCAN_AUX){
+    const a={ label, key, state:'ok', bad:0 };
+    res.aux[name]=a;
+    let raw;
+    try{ raw=DB.loadRaw(key); }
+    catch(e){ a.state='unreadable'; res.problems++; continue; }
+    if(!Array.isArray(raw)){ a.state='nonarray'; res.problems++; continue; }
+    if(name==='tombstones') a.bad=raw.filter(t=>!okTombstone(t)).length;
+    else if(name==='myguide') a.bad=raw.filter(g=>g==null || typeof g!=='object' || Array.isArray(g) || !okGuideItem(g)).length;
+    else a.bad=raw.filter(s=>typeof s!=='string').length;
+    res.problems+=a.bad;
+  }
+  return res;
+}
+
+// 修復案を計算する（この時点では何も保存しない）。メディア実体の有無を調べるため async。
+// 日時は捏造しない方針: 壊れた管理用日時は「削除」して古い扱いにする。nowISO()を入れると
+// 修復した劣化版が他端末に残る正常版へ文字列比較で勝ってしまい、正しいデータを潰すため。
+async function buildRepairPlan(){
+  const plan={ cols:{}, tombstones:null, myguide:null, recent:null,
+    actions:[], buried:[], mediaMoves:[], baseline:{} };
+  // 計算開始時点の生文字列を控える。適用直前に一致を確認し、計算中（メディア確認のawait中や
+  // 確認ダイアログ待ちの間）に同期・保存で内容が変わっていたら適用せず中止する（古い修復案での上書き防止）
+  REPAIR_KEYS.forEach(k=>{ plan.baseline[k]=localStorage.getItem(k); });
+  const acts=Object.create(null);
+  const act=msg=>{ acts[msg]=(acts[msg]||0)+1; };
+  // 元の値を記録内に控える（同期・取込・書き出しは repair_note を見ないため安全に持ち回れる）
+  const showVal=v=>{ let s; try{ s=JSON.stringify(v); }catch(e){ s=String(v); }
+    s=String(s==null?'':s); return s.length>120 ? s.slice(0,120)+'…' : s; };
+  const note=(x,msg)=>{ const t=(typeof x.repair_note==='string'&&x.repair_note ? x.repair_note+' / ' : '')+msg;
+    x.repair_note = t.length>REPAIR_NOTE_MAX ? t.slice(0,REPAIR_NOTE_MAX-1)+'…' : t; };
+
+  // 1周目: 読める区分を集め、壊れた記録IDを振り直して旧値→新値の対応表を作る
+  const data={};                        // name -> {key,label,arr,changed}
+  // 対応表はコレクション別（uuidMap[コレクション名][旧値] -> [新uuid,...]）。
+  // 全種類共通にすると、偶然同じ旧IDを持つ別種類の記録へ誤ってつなぎ直す恐れがある。
+  // 同じ旧値が同一コレクションに複数あると一意に決められないため、つなぎ直しはしない
+  const uuidMap={};
+  const lowered=new Set();              // 修復で「新しさ」が下がった記録（墓標に負けて消える警告の対象）
+  for(const [name,key,label] of SCAN_COLS){
+    let raw;
+    try{ raw=DB.loadRaw(key); }catch(e){ continue; }   // 読取不能はここでは触らない（個別の「空にする」で対応）
+    if(!Array.isArray(raw)){
+      if(raw && typeof raw==='object'){
+        // 中身を取り出して一覧に直し、壊れた記録はこのあとの通常修復に回す
+        data[name]={key,label,arr:Object.values(raw),changed:true};
+        act(`${label}: 入れ物が一覧の形でなかったため直しました`);
+      }
+      continue;                                        // 文字列・数値など救出できない非配列は個別対応
+    }
+    data[name]={key,label,arr:raw,changed:false};      // loadRawは毎回新しく読むため、この配列を直接直してよい
+  }
+  // 上限を超える巨大な記録は、どの項目を削れば安全か機械では判断できないため最初に除去する
+  //（正当な記録はこの大きさに届かない。原本は修復前の控えファイルに丸ごと残る）。
+  // ID振り直し・実在親の集合（liveIds）・重複整理のどれよりも先に行う。後で除去すると、
+  // 「巨大な親を実在すると判定して子をつなぎ、その後に親だけ消えて参照切れになる」不整合や、
+  // 「巨大な新しい重複が正常な古い記録を潰してから自分も消える」二重消失が起こる
+  for(const name in data){ const d=data[name];
+    const before=d.arr.length;
+    d.arr=d.arr.filter(x=>{ try{ return JSON.stringify(x).length<=REC_JSON_MAX; }catch(e){ return false; } });
+    if(d.arr.length!==before){ d.changed=true;
+      for(let i=0;i<before-d.arr.length;i++) act(`${d.label}: 大きすぎて保存領域を圧迫する記録を除去しました（原本は控えファイルにあります）`); }
+  }
+  for(const name in data){ const d=data[name];
+    for(const x of d.arr){
+      if(!x || typeof x!=='object' || Array.isArray(x)) continue;   // 除去は2周目で
+      if(!okUuid(x.uuid)){
+        const nu=uuid();
+        // 旧値は文字列・数値とも対応表に載せる（数値ID時代の親子関係も参照のつなぎ直しで維持するため）。
+        // キーは型付き（'s:'=文字列 / 'n:'=数値）。数値親 123 と文字列親 "123" が共存しても参照を取り違えないため
+        const tk=(typeof x.uuid==='string' && x.uuid!=='') ? 's:'+x.uuid
+          : (typeof x.uuid==='number' && isFinite(x.uuid)) ? 'n:'+String(x.uuid) : null;
+        if(tk!=null){ const m=(uuidMap[name]||(uuidMap[name]=Object.create(null)));
+          (m[tk]||(m[tk]=[])).push(nu); }
+        note(x,'記録IDが不正だったため振り直し（元の値: '+showVal(x.uuid)+'）');
+        x.uuid=nu; d.changed=true;
+        act(`${d.label}: 記録IDを振り直しました`);
+      }
+    }
+  }
+
+  // つなぎ直しの前に、現時点で実在する親のuuid集合を作る。
+  // 対応表より実在する親を優先することで、「正常な親 "123" と数値IDの親 123 が同じ区分に共存」した場合でも、
+  // 正しい親につながっている参照を対応表の偶然一致で別の親へ付け替えない
+  const liveIds={};
+  for(const pn of ['surveys','hypotheses']){
+    if(data[pn]) liveIds[pn]=new Set(data[pn].arr.filter(x=>x && typeof x==='object').map(x=>x.uuid));
+  }
+
+  // 2周目: 記録ごとの修復
+  const canOrphan = !!data.surveys;   // 調査の区分が読めないときは受け皿を作れない
+  let needOrphanParent=false;
+  for(const name in data){ const d=data[name];
+    const before=d.arr.length;
+    d.arr=d.arr.filter(x=>x && typeof x==='object' && !Array.isArray(x));
+    if(d.arr.length!==before){ d.changed=true;
+      for(let i=0;i<before-d.arr.length;i++) act(`${d.label}: 記録の形をしていない要素を除去しました`); }
+    for(const x of d.arr){
+      // 修復メモ自体が不正（非文字列・上限超え）なら先に整える（このあと note() で追記するため）
+      if(!(x.repair_note==null || (typeof x.repair_note==='string' && x.repair_note.length<=REPAIR_NOTE_MAX))){
+        d.changed=true;
+        x.repair_note=(typeof x.repair_note==='string' ? x.repair_note : showVal(x.repair_note)).slice(0,REPAIR_NOTE_MAX-1)+'…';
+        act(`${d.label}: 長すぎる修復メモを切り詰めました`);
+      }
+      // 参照ID（旧ID・調査/仮説への参照・図鑑参照）
+      for(const f of REF_ID_FIELDS){
+        const v=x[f];
+        const relational=(f==='survey_uuid' || f==='hypothesis_uuid');
+        // 調査・仮説への参照のつなぎ直し。id/ref_id は記録間の参照ではないため対象外（偶然の一致で書き換えない）
+        if(relational){
+          const pn=(f==='survey_uuid') ? 'surveys' : 'hypotheses';
+          const pm=uuidMap[pn];
+          // 「候補なし(null)」「一意({id})」「複数({many})」を区別する。同じ型の候補が複数あるのに
+          // 次の手段へ進むと、つなぎ先を決められない参照を偶然同じ値の別型の親へ誤接続してしまう。
+          // 複数のときは未解決として扱う（受け皿・解除、または形式が正常なら現状維持）
+          const pick=k=>{ const a=pm && pm[k]; if(!a || !a.length) return null;
+            return a.length===1 ? {id:a[0]} : {many:true}; };
+          if(typeof v==='number' && isFinite(v)){
+            const s=String(v);
+            // 数値参照: まず「旧IDが数値だった親」の振り直し先（型の由来が一致する方が本来の親）。
+            // 候補が無い場合に限り、同じ値の文字列IDの親が実在するならそこへ（数値→文字列化のみで接続が保てる）
+            const r=pick('n:'+s);
+            if(r){ if(r.id){ x[f]=r.id; d.changed=true;
+              act(`${d.label}: ${FIELD_LABELS[f]}を振り直し後のIDへつなぎ直しました`); continue; } }
+            else if(liveIds[pn] && liveIds[pn].has(s)){ x[f]=s; d.changed=true;
+              act(`${d.label}: ${FIELD_LABELS[f]}が数値だったため文字列にしました（実在する親につなぎ直し）`); continue; }
+          }else if(typeof v==='string' && v!==''){
+            // 文字列参照: 実在する親が最優先（正しくつながっている参照を対応表の偶然一致で書き換えない）。
+            // 実在しない場合のみ対応表でつなぎ直す（旧IDが文字列だった親を先に、その候補が皆無のときだけ数値だった親）。
+            // 参照の形式が正常でも旧IDと同じ値（例: 数値ID時代の親 123 を参照する "123"）はつなぎ直しの対象
+            if(liveIds[pn] && liveIds[pn].has(v)) continue;   // 実在する親のIDは振り直し後の正常なIDなのでそのまま
+            const rs=pick('s:'+v);
+            if(rs){ if(rs.id){ if(x[f]!==rs.id){ x[f]=rs.id; d.changed=true;
+              act(`${d.label}: ${FIELD_LABELS[f]}を振り直し後のIDへつなぎ直しました`); } continue; } }
+            else{ const rn=pick('n:'+v);
+              if(rn && rn.id){ x[f]=rn.id; d.changed=true;
+                act(`${d.label}: ${FIELD_LABELS[f]}を振り直し後のIDへつなぎ直しました`); continue; } }
+          }
+        }
+        if(safeId(v)) continue;
+        d.changed=true;
+        // 数値の参照でも、調査・仮説への参照でつなぎ直せなかったものは単純な文字列化をしない
+        //（"123" のような「形式は正常だがどこにもつながらない」参照を作らず、受け皿・解除へ回す）
+        if(typeof v==='number' && isFinite(v) && !relational){ x[f]=String(v);
+          act(`${d.label}: ${FIELD_LABELS[f]}が数値だったため文字列にしました`); continue; }
+        note(x, FIELD_LABELS[f]+'が不正（元の値: '+showVal(v)+'）');
+        if(f==='survey_uuid' && name!=='surveys' && canOrphan){
+          x.survey_uuid=REPAIR_ORPHAN_UUID; needOrphanParent=true;
+          act(`${d.label}: 調査への参照が壊れていたため「（修復）元の調査が不明な記録」へ移しました`); }
+        else{ x[f]=null;
+          act(`${d.label}: ${FIELD_LABELS[f]}が不正だったため外しました`); }
+      }
+      // 管理用日時（作成・更新）: 壊れていたら削除（マージは 更新日時→作成日時→最弱 の順で自然に判断する）
+      for(const f of ['created_at','updated_at']){
+        if(okTime(x[f])) continue;
+        d.changed=true; lowered.add(x);
+        note(x, FIELD_LABELS[f]+'が不正（元の値: '+showVal(x[f])+'）');
+        delete x[f];
+        act(`${d.label}: ${FIELD_LABELS[f]}が不正だったため外しました`);
+      }
+      // 削除日時: 不正ならフィールドを外して「生きている」扱いに戻す（削除日時を捏造しない）。
+      // 現在時刻を入れて削除済み扱いを保つ案は、マージ判定（updated_at基準）を更新しない限り
+      // 他端末の生存版に負けて復活し「直したつもりで直っていない」状態を作る。かといって
+      // updated_at まで現在時刻にすると、他端末の正しい生存版を修復側の削除が潰す。
+      // どちらも危険なため復元を選び、利用者に「不要なら削除し直して」と知らせる（黙って消さない原則とも一致）
+      if(!okTime(x.deleted_at)){
+        d.changed=true;
+        note(x,'削除日時が不正（元の値: '+showVal(x.deleted_at)+'）');
+        const wasTrash=!!x.deleted_at;
+        delete x.deleted_at;
+        act(wasTrash ? `${d.label}: 削除日時が壊れていたため、ごみ箱の記録を復元しました（不要なら削除し直してください）`
+                     : `${d.label}: 空の削除日時を外しました（記録は残ります）`);
+      }
+      // 業務日時（観察日時など）: 正しい値は推測できないため空にし、元の値は記録内に控える
+      for(const f of (STAMP_FIELDS[name]||[])){
+        if(okStamp(x[f])) continue;
+        d.changed=true;
+        note(x, FIELD_LABELS[f]+'が不正（元の値: '+showVal(x[f])+'）');
+        x[f]='';
+        act(`${d.label}: ${FIELD_LABELS[f]}を空にしました（元の値は記録内に控えあり）`);
+      }
+      // 録音・写真・動画の参照
+      for(const f of ['audio','media']){
+        if(okMediaList(x[f])) continue;
+        d.changed=true;
+        if(!Array.isArray(x[f])){
+          note(x, FIELD_LABELS[f]+'が一覧の形でない（元の値: '+showVal(x[f])+'）');
+          delete x[f];
+          act(`${d.label}: ${FIELD_LABELS[f]}が壊れていたため外しました`); continue;
+        }
+        const keep=[]; const seenIds=new Set();
+        for(const m of x[f]){
+          if(!m || typeof m!=='object' || Array.isArray(m)){
+            act(`${d.label}: ${FIELD_LABELS[f]}の壊れた要素を除去しました`); continue; }
+          if(!okUuid(m.id)){
+            const store=(f==='audio')?'audio':'media';
+            let moved=false;
+            if(typeof m.id==='string' && m.id!==''){
+              // 実体がこの端末にあれば、正しいIDへ付け直して実体ごと引き継ぐ（実体は消さない）
+              const rec=await (store==='audio'?AudioDB:PhotoDB).get(m.id).catch(()=>null);
+              if(rec && rec.blob){ const nid=uuid();
+                plan.mediaMoves.push({store, oldId:m.id, newId:nid,
+                  ownerType:(name==='flights'?'flight':'obs'), ownerUuid:x.uuid});
+                m.id=nid; moved=true;
+                act(`${d.label}: ${FIELD_LABELS[f]}のIDが不正だったため付け直しました（録音・写真の実体は保持）`); }
+            }
+            if(!moved){
+              note(x, FIELD_LABELS[f]+'の不正な参照を除去（元の値: '+showVal(m.id)+'）');
+              act(`${d.label}: 実体の無い${FIELD_LABELS[f]}を除去しました`); continue; }
+          }
+          for(const p of ['ext','mime','kind','name']){ if(m[p]!=null && typeof m[p]!=='string') delete m[p]; }
+          if(seenIds.has(m.id)){ act(`${d.label}: 重複した${FIELD_LABELS[f]}を整理しました`); continue; }
+          seenIds.add(m.id); keep.push(m);
+        }
+        x[f]=keep;
+      }
+    }
+    // 同一IDの重複: 更新日時が最新の1件を残す（同期のマージと同じ収束結果になる）
+    //（巨大記録は計算の最初に除去済みのため、ここで正常な記録が巨大な重複に潰されることはない）
+    const byId=Object.create(null); const stamp=x=>String(x.updated_at||x.created_at||'');
+    let dupCut=0, dupDiff=0;
+    for(const x of d.arr){
+      const cur=byId[x.uuid];
+      if(!cur){ byId[x.uuid]=x; continue; }
+      dupCut++; d.changed=true;
+      let same=false; try{ same=JSON.stringify(cur)===JSON.stringify(x); }catch(e){}
+      if(!same) dupDiff++;
+      if(stamp(x)>stamp(cur)) byId[x.uuid]=x;
+    }
+    if(dupCut){ d.arr=Object.values(byId);
+      act(`${d.label}: 同じ記録IDの重複を整理しました`+(dupDiff?`（内容が異なるものを含む。原本は控えファイルにあります）`:''));
+    }
+  }
+  // 受け皿を使う条件: 今回の修復で孤児を移す場合に加え、過去の修復で受け皿を参照した記録が
+  // 既にある場合も対象（受け皿だけが削除・墓標化されると、その孤児記録が二度と見えなくなるため）
+  const usesOrphan = needOrphanParent || Object.keys(data).some(n=>
+    n!=='surveys' && data[n].arr.some(x=>x.survey_uuid===REPAIR_ORPHAN_UUID));
+  // 孤児記録の受け皿調査（まだ無ければ作る。削除済みで残っていたら復元する——受け皿が消えていると孤児が二度と見えなくなるため）
+  if(usesOrphan && data.surveys){
+    const ex=data.surveys.arr.find(s=>s.uuid===REPAIR_ORPHAN_UUID);
+    if(!ex){
+      data.surveys.arr.push({ uuid:REPAIR_ORPHAN_UUID, name:'（修復）元の調査が不明な記録',
+        survey_date:'', status:'終了', created_at:nowISO(), updated_at:nowISO(),
+        repair_note:'データ修復で元の調査が分からなくなった記録の受け皿' });
+      data.surveys.changed=true;
+      act('調査: 受け皿「（修復）元の調査が不明な記録」を作成しました');
+    }else if(ex.deleted_at){
+      delete ex.deleted_at; ex.updated_at=nowISO(); data.surveys.changed=true;
+      act('調査: 削除されていた受け皿「（修復）元の調査が不明な記録」を復元しました');
+    }
+  }
+
+  // 削除記録（墓標）の修復
+  let liveUuids=null;
+  const getLive=()=>{ if(liveUuids) return liveUuids; liveUuids=new Set();
+    for(const n in data) data[n].arr.forEach(x=>liveUuids.add(x.uuid)); return liveUuids; };
+  let tombsOut=null;
+  try{
+    const rawT=DB.loadRaw('bs_tombstones');
+    const arr=Array.isArray(rawT)?rawT:[];
+    let changed=!Array.isArray(rawT);
+    if(changed) act('削除記録: 入れ物が壊れていたため作り直しました');
+    const out=[];
+    for(const t of arr){
+      // 受け皿を使う修復では、受け皿宛ての削除記録を外す（残すと受け皿が同期で消され、孤児記録が見えなくなる）
+      if(usesOrphan && t && t.uuid===REPAIR_ORPHAN_UUID){ changed=true;
+        act('削除記録: 受け皿調査あての削除記録を解除しました'); continue; }
+      if(okTombstone(t)){ out.push(t); continue; }
+      changed=true;
+      if(!t || typeof t!=='object' || Array.isArray(t) || !okUuid(t.uuid)){
+        act('削除記録: 壊れた項目を除去しました'); continue; }
+      // 日時だけが壊れている場合: 壊れた日時は文字列比較で常に「最新」となり、同じIDの生きた記録を
+      // 同期のたびに消し続ける。記録が生きていれば墓標側を外し、無ければ完全削除の意図を維持する
+      if(getLive().has(t.uuid)){ act('削除記録: 生きた記録を消し続ける壊れた削除記録を解除しました（記録は残ります）'); continue; }
+      out.push({uuid:t.uuid, at:nowISO()});
+      act('削除記録: 日時が壊れていたため現在時刻に直しました（完全削除のまま）');
+    }
+    if(changed) tombsOut=out;
+  }catch(e){ tombsOut=[];
+    act('削除記録: 読み取れなかったため空にしました（完全削除の伝達情報のみで、観察記録そのものは消えません）'); }
+  plan.tombstones=tombsOut;
+
+  // マイ図鑑の修復
+  try{
+    const rawG=DB.loadRaw('bs_myguide');
+    const arr=Array.isArray(rawG)?rawG:[];
+    let changed=!Array.isArray(rawG);
+    if(changed) act('マイ図鑑: 入れ物が壊れていたため作り直しました');
+    const out=[];
+    for(const g of arr){
+      if(g==null || typeof g!=='object' || Array.isArray(g)){ changed=true;
+        act('マイ図鑑: 壊れた項目を除去しました（図鑑から再登録できます）'); continue; }
+      for(const f of ['created_at','updated_at','deleted_at']){
+        if(!okTime(g[f])){ delete g[f]; changed=true; act('マイ図鑑: 壊れた日時を外しました'); } }
+      if(!okGuideItem(g)){ changed=true;
+        act('マイ図鑑: 壊れた項目を除去しました（図鑑から再登録できます）'); continue; }
+      out.push(g);
+    }
+    if(changed) plan.myguide=out;
+  }catch(e){ plan.myguide=[];
+    act('マイ図鑑: 読み取れなかったため空にしました（図鑑から再登録できます）'); }
+
+  // 最近使った種の修復
+  try{
+    const rawR=DB.loadRaw(DB.key.recent);
+    if(!Array.isArray(rawR)){ plan.recent=[]; act('最近使った種: 壊れていたため空にしました'); }
+    else{ const out=rawR.filter(s=>typeof s==='string');
+      if(out.length!==rawR.length){ plan.recent=out; act('最近使った種: 壊れた項目を除去しました'); } }
+  }catch(e){ plan.recent=[]; act('最近使った種: 読み取れなかったため空にしました'); }
+
+  // 修復で「新しさ」が下がった記録が、既存の削除記録（墓標）に負けて次回同期で消えないか事前に洗い出す。
+  // 黙って消さない原則のため、該当があれば実行前の確認画面で必ず知らせる
+  const ts=Object.create(null);
+  (plan.tombstones || tombstonesList()).forEach(t=>{ ts[t.uuid]=t.at; });
+  for(const name in data){ const d=data[name];
+    for(const x of d.arr){
+      if(!lowered.has(x)) continue;
+      const at=ts[x.uuid];
+      if(at && String(at)>=String(x.updated_at||x.created_at||'')){
+        const label=(x.name||x.species_name_snapshot||'').toString().slice(0,20);
+        plan.buried.push(`${d.label}: ${label || 'ID '+String(x.uuid).slice(0,8)+'…'}`);
+      }
+    }
+  }
+
+  for(const name in data){ const d=data[name]; if(d.changed) plan.cols[d.key]=d.arr; }
+  plan.actions=Object.keys(acts).map(m=>acts[m]>1?`${m}（${acts[m]}件）`:m);
+  return plan;
+}
+
+// 修復前の控え。localStorageの生文字列をそのまま保存する（JSONとして読めない状態でも原本を保全できる）
+const REPAIR_KEYS = SCAN_COLS.map(c=>c[1]).concat(SCAN_AUX.map(a=>a[1]));
+function downloadRepairRescue(){
+  const raw={}; REPAIR_KEYS.forEach(k=>{ raw[k]=localStorage.getItem(k); });
+  const d=new Date(); const p=n=>String(n).padStart(2,'0');
+  download(`bird_survey_repair_backup_${dateValue().replace(/-/g,'')}_${p(d.getHours())}${p(d.getMinutes())}.json`,
+    JSON.stringify({app:'bird_survey', kind:'repair_rescue', exported_at:nowISO(), app_version:APP_VERSION, raw}),
+    'application/json');
+}
+
+// 修復案を実際に適用する。順序が重要:
+// 1) メディア実体のコピー（先。途中で失敗したら中止——コピー済みの新実体は起動時の掃除が回収する）
+// 2) localStorage一括保存（1つでも失敗したら全部巻き戻し）
+// 3) 旧実体の削除と、アップ済み控えの旧ID掃除（失敗しても孤児として掃除される・実害なし）
+async function applyRepairPlan(plan){
+  // 点検時点から保存内容が変わっていないか確認（変わっていたら古い修復案で新しいデータを潰さない）。
+  // メディアコピー後の中止では、新IDへの複製だけが残る（記録は無傷・複製は起動時の掃除が回収）ため、文言を実態に合わせる
+  const assertUnchanged=(afterMedia)=>{ for(const k of REPAIR_KEYS){
+    if(localStorage.getItem(k)!==plan.baseline[k])
+      throw new Error('点検のあとにデータが更新されたため、修復を中止しました'
+        +(afterMedia?'（記録は変更していません。作成済みの録音・写真の複製は起動時の掃除で回収されます）':'（何も変更していません）')
+        +'。もう一度「修復する」を押してください'); } };
+  assertUnchanged(false);
+  for(const mv of plan.mediaMoves){
+    const store=(mv.store==='audio')?AudioDB:PhotoDB;
+    const rec=await store.get(mv.oldId);
+    if(!rec || !rec.blob) throw new Error('録音・写真の実体を読み取れませんでした（修復は保存していません）');
+    const copy=Object.assign({}, rec, {id:mv.newId});
+    if(mv.ownerType==='flight') copy.flight_uuid=mv.ownerUuid; else copy.obs_uuid=mv.ownerUuid;
+    await store.put(copy);
+  }
+  assertUnchanged(true);   // メディアコピー（await）の間に変わっていないか、保存直前にもう一度確認
+  const touched=Object.keys(plan.cols).slice();
+  if(plan.tombstones) touched.push('bs_tombstones');
+  if(plan.myguide) touched.push('bs_myguide');
+  if(plan.recent) touched.push(DB.key.recent);
+  const before={}; touched.forEach(k=>{ before[k]=localStorage.getItem(k); });
+  const rollback=()=>{ touched.forEach(k=>{ try{ if(before[k]==null) localStorage.removeItem(k); else localStorage.setItem(k,before[k]); }catch(e){} }); };
+  const failSave=()=>{ rollback();
+    // 巻き戻し自体が失敗していないか検証する（部分適用のまま「適用していません」と誤って断定しない）
+    const broken=touched.some(k=>localStorage.getItem(k)!==before[k]);
+    throw new Error(broken
+      ? '⚠ 保存に失敗し、巻き戻しも完全ではありません。ダウンロード済みの「修復前の控え」ファイルを必ず保管し、空き容量を確保してからホーム「⤒ インポート」等で復元してください'
+      : '保存できませんでした（空き容量を確認してください。修復は適用していません）'); };
+  for(const k in plan.cols){ if(!DB.save(k, plan.cols[k])) failSave(); }
+  if(plan.tombstones && !tombstonesSave(plan.tombstones)) failSave();
+  if(plan.myguide && !myguideSave(plan.myguide)) failSave();
+  if(plan.recent && !DB.save(DB.key.recent, plan.recent)) failSave();
+  for(const mv of plan.mediaMoves){
+    try{ await ((mv.store==='audio')?AudioDB:PhotoDB).del(mv.oldId); }catch(e){}
+  }
+  if(plan.mediaMoves.length){
+    try{ const map=await syncMapLoad();
+      plan.mediaMoves.forEach(mv=>{ if(map[mv.store]) delete map[mv.store][mv.oldId]; });
+      await syncMapSave(map);
+    }catch(e){}
+  }
+}
+
+let _repairBusy=false;
+async function runRepair(){
+  if(_repairBusy) return; _repairBusy=true;
+  try{
+    const plan=await buildRepairPlan();
+    if(!plan.actions.length){ toast('修復が必要な箇所はありませんでした'); rescanLocalData(); render(); return; }
+    downloadRepairRescue();
+    const head=plan.actions.slice(0,15);
+    let msg='修復前の控えファイルをダウンロードしました。\n保存されたことを確認してからOKを押してください。\n\n【修復内容】\n・'+head.join('\n・')
+      +(plan.actions.length>15?`\n…ほか${plan.actions.length-15}件`:'');
+    if(plan.buried.length) msg+='\n\n⚠ 次の記録は修復後、過去の完全削除の記録に基づき同期時に消えます（原本は控えファイルにあります）:\n・'+plan.buried.slice(0,10).join('\n・')
+      +(plan.buried.length>10?`\n…ほか${plan.buried.length-10}件`:'');
+    if(!confirm(msg)){ toast('修復を中止しました（何も変更していません）'); return; }
+    await applyRepairPlan(plan);
+    _lastRepairReport=plan.actions.slice();
+    rescanLocalData();
+    toast('修復しました。他の端末を使っている場合は、その端末でも点検・修復を実行してください', 5000);
+    render();
+  }catch(e){ toast('修復に失敗しました: '+(e.message||e), 5000); }
+  finally{ _repairBusy=false; }
+}
+
+// JSONとして読み取れない（＝修復もできない）区分を、控えを保存したうえで空にする。
+// 空にしても削除記録（墓標）は作らないため、他の端末に同じ記録があれば次回の同期で戻る
+function resetBrokenCollection(key,label){
+  if(_repairBusy) return;
+  downloadRepairRescue();
+  if(!confirm(`「${label}」のデータは壊れていて読み取れないため、修復できません。\n控えファイルの保存を確認してからOKを押すと、この区分を空にします。\n（他の端末に同じ記録があれば、次回の同期で戻ります）`)){
+    toast('中止しました（何も変更していません）'); return; }
+  if(!DB.save(key,[])){ toast('空にできませんでした（空き容量を確認してください）'); return; }
+  rescanLocalData(); toast(`「${label}」を空にしました`); render();
+}
+
+SCREENS.repair = ()=>{
+  const sc=rescanLocalData() || {cols:{},aux:{},problems:0,info:[]};
+  const fieldTxt=f=>Object.entries(f).map(([k,n])=>`${FIELD_LABELS[k]||k} ${n}件`).join('・');
+  let rows=''; let total=0;
+  for(const name in sc.cols){ const c=sc.cols[name]; total+=c.total||0;
+    if(c.state==='unreadable' || (c.state==='nonarray' && !c.rescuable)){
+      rows+=`<div class="card"><b>${esc(c.label)}</b><div class="small" style="color:var(--warn)">データが壊れていて読み取れません（自動修復は不可）</div>
+        <div class="sp"></div><button class="btn danger" onclick="resetBrokenCollection('${c.key}','${esc(c.label)}')">控えを保存してこの区分を空にする</button></div>`;
+      continue; }
+    if(c.state==='nonarray'){
+      rows+=`<div class="card"><b>${esc(c.label)}</b><div class="small" style="color:var(--warn)">入れ物の形が壊れています（下の「修復する」で直せます）</div></div>`;
+      continue; }
+    if(c.bad||c.dupes) rows+=`<div class="card"><b>${esc(c.label)}</b>: ${c.bad}件に問題${c.dupes?`・記録IDの重複 ${c.dupes}件`:''}
+      <div class="small muted">${esc(fieldTxt(c.fields))}</div></div>`;
+  }
+  for(const name in sc.aux){ const a=sc.aux[name];
+    if(a.state!=='ok') rows+=`<div class="card"><b>${esc(a.label)}</b><div class="small" style="color:var(--warn)">データが壊れています（下の「修復する」で直せます）</div></div>`;
+    else if(a.bad) rows+=`<div class="card"><b>${esc(a.label)}</b>: ${a.bad}件に問題</div>`;
+  }
+  const infoHtml = (sc.info&&sc.info.length)
+    ? `<div class="note">参考情報（自動修復はしません）:<br>${sc.info.map(esc).join('<br>')}</div><div class="sp"></div>` : '';
+  return { title:'データ点検・修復', html:`
+    ${sc.problems===0
+      ? `<div class="note">✅ 問題は見つかりませんでした。保存済みの記録 ${total}件はすべて正常です。</div>`
+      : `<div class="note" style="border-color:var(--warn);"><b>⚠ ${sc.problems}件の問題が見つかりました</b><br>
+          壊れた記録があると、他の端末への同期が止まったり、CSVなどの書き出しに不正な値が出たりします。下の「修復する」で直せます。</div>
+        <div class="sp"></div>
+        ${rows}
+        <div class="sp"></div>
+        ${infoHtml}
+        <button class="btn primary big" onclick="runRepair()">🩺 控えを保存して修復する</button>
+        <div class="sp"></div>
+        <div class="note">修復の前に「修復前の控え」ファイルが自動でダウンロードされます。元の値は控えファイルと記録内のメモ（repair_note）に残るので、あとから確認できます。<br>
+        <b>他の端末でも</b>この画面から点検・修復を実行してください（他の端末で保存された壊れた記録は、その端末でしか直せません）。</div>`}
+    ${_lastRepairReport ? `<div class="sp"></div><div class="card"><h3>今回の修復内容</h3><div class="small">${_lastRepairReport.map(esc).join('<br>')}</div></div>` : ''}
+  `};
+};
 
 /* ============================================================
    起動
@@ -5233,6 +5874,7 @@ function applyTheme(){
 }
 function toggleTheme(){ try{ localStorage.setItem('bs_theme', themeMode()==='light'?'dark':'light'); }catch(e){} applyTheme(); render(); }
 applyTheme();
+rescanLocalData();   // 保存済みデータの点検（問題があればホームに警告カードを出す）
 reset('home');
 // 掃除が終わってから同期チェック（並行させると、取り込んだ直後の録音・写真を「参照なし」と誤判定して消す恐れがある）
 mediaGcAll().catch(()=>{}).then(()=>gdriveStartupCheck()); // ドライブに別端末の新しい保存があれば取り込みを提案
