@@ -120,6 +120,15 @@
     background:var(--panel); color:var(--fg); border:1px solid var(--line);
     border-radius:10px; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
   .locate-btn:active{background:var(--panel2);}
+  /* 位置指定マップの中心十字（指で目標が隠れないよう、地図の方を動かして狙う） */
+  .map-cross{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:800;
+    pointer-events:none; font-size:36px; font-weight:700; color:#d33;
+    text-shadow:0 0 3px #fff, 0 0 6px #fff, 0 0 9px #fff; line-height:1;}
+  .map-drop-btn{width:auto; padding:9px 14px; font-size:14px; font-weight:700;
+    background:var(--accent); color:#0a0f0d; border:none; border-radius:10px;
+    cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
+  .map-drop-btn:active{opacity:.85;}
+  @media (max-width:420px){ .map-drop-btn{margin-bottom:22px;} }   /* 狭い画面で右下の出典表示と重ならないよう一段上げる */
   .north-needle{display:inline-block; line-height:1.05; font-size:13px; font-weight:700; transition:transform .15s;}
 
   /* 集計テーブル */
@@ -209,7 +218,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v75（2026-08-01 観察位置を地図タップで指定できるように・緯度経度欄は折りたたみ）';
+const APP_VERSION = 'v76（2026-08-02 位置指定マップに中心十字＋「この位置に印」ボタンを追加）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1899,6 +1908,24 @@ function compassToggle(btn){
   else toast('この端末では方位センサーを利用できません');
 }
 
+/* 位置指定マップ共通: 地図中心の十字＋「この位置に印」ボタン。
+   タップ指定だと指で目標地点が隠れるため、「地図を動かして十字を合わせ→ボタンで落とす」置き方を用意する。
+   従来のタップ指定もそのまま使える（Leafletはドラッグ後にclickを発火しないため誤発火しない） */
+function addCrosshairControl(m, onDrop){
+  const cross=L.DomUtil.create('div','map-cross', m.getContainer());
+  cross.textContent='＋';
+  m.once('unload', ()=>{ try{ cross.remove(); }catch(e){} });   // 十字はLeaflet管理外のため、地図破棄時に自分で片付ける
+  const C=L.Control.extend({ onAdd:function(){
+    const b=L.DomUtil.create('button','map-drop-btn');
+    b.type='button'; b.textContent='◎ 十字の位置に印';
+    L.DomEvent.disableClickPropagation(b);
+    L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>{
+      try{ m.stop(); }catch(e){}   // 慣性移動を止めてから中心を読む（動いている最中に押すと十字とズレた座標が入るため）
+      const c=m.getCenter(); onDrop(c.lat,c.lng); });
+    return b; }});
+  new C({position:'bottomleft'}).addTo(m);
+}
+
 let obsTargetMarker=null;
 function toggleObsTargetMap(){ const el=$('#otMap'); if(!el) return;
   if(el.style.display==='none'){
@@ -1922,6 +1949,7 @@ function initObsTargetMap(){
   if(!isNaN(ola)&&!isNaN(olo)) L.circleMarker([ola,olo],{radius:5,color:'#fff',weight:1,fillColor:'#3fb984',fillOpacity:.9}).addTo(mapObj).bindPopup('観察者の位置');
   if(!isNaN(lat)&&!isNaN(lon)) setObsTarget(lat,lon,true);   // 既存値の初期表示は変更扱いにしない
   mapObj.on('click', e=>setObsTarget(e.latlng.lat, e.latlng.lng));
+  addCrosshairControl(mapObj, (la,lo)=>setObsTarget(la,lo));
 }
 function setObsTarget(lat,lon,silent){
   $('#otLat').value=lat.toFixed(6); $('#otLon').value=lon.toFixed(6);
@@ -1975,6 +2003,7 @@ function initObsPosMap(){
   mapObj=createBaseMap('obsPosMap', center, zoom, {});
   if(okPos) obsPosMarkerUpdate(la,lo);   // 既存値の初期表示
   mapObj.on('click', e=>setObsPos(e.latlng.lat, e.latlng.lng));
+  addCrosshairControl(mapObj, (la2,lo2)=>setObsPos(la2,lo2));
 }
 // 観察者位置マーカー（緑丸）の再描画のみ。値は書き換えない（GPS取得時の精度を消さないため分離）
 function obsPosMarkerUpdate(lat,lon){
