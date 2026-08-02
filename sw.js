@@ -1,4 +1,4 @@
-const CACHE = 'bird-survey-v76';
+const CACHE = 'bird-survey-v78';
 // 必須資産（これが揃わないとアプリが成立しない）。install時に全部揃わなければ失敗させ、不完全キャッシュで有効化しない
 const CORE = [
   './bird_survey.html',
@@ -21,6 +21,9 @@ const OPTIONAL = [
 // タイルが写真・録音の保存を圧迫しないようにする。
 const TILE_CACHE = 'bird-map-tiles-v1';
 const MAX_TILES = 3000;
+// 「オフライン地図の保存」で明示的に保存したタイル。利用者が消すまで自動では消さない
+//（上限・間引きなし。activateの掃除・アプリ側の「最新に更新」からも保護する）
+const PACK_CACHE = 'bird-map-pack-v1';
 
 // URLの拡張子から期待するContent-Typeを検査する。
 // HTTP 200でも認証画面・メンテHTMLなどをJS/CSS/JSONとして保存しないため。
@@ -51,11 +54,15 @@ self.addEventListener('install', e => {
 
 // 旧キャッシュ削除は「このアプリのキャッシュ」だけに限定する。
 // 同一オリジンに別アプリ(別PWA)がある場合、そのキャッシュまで消さないため。
-function isOwnCache(k){ return k === CACHE || k === TILE_CACHE || k.startsWith('bird-survey-') || k.startsWith('bird-map-tiles-'); }
+function isOwnCache(k){ return k === CACHE || k === TILE_CACHE || k === PACK_CACHE
+  || k.startsWith('bird-survey-') || k.startsWith('bird-map-tiles-') || k.startsWith('bird-map-pack-'); }
 self.addEventListener('activate', e => {
   e.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.filter(k => isOwnCache(k) && k !== CACHE && k !== TILE_CACHE).map(k => caches.delete(k)));
+    // bird-map-pack-* は利用者が保存した地図なので、版の掃除では絶対に消さない
+    //（現行名だけでなくprefix全体を除外: 将来PACK_CACHE名を変えたとき旧パックが巻き添えで消えないように。
+    //  旧パックの移行・削除は明示的な処理でのみ行う）
+    await Promise.all(keys.filter(k => isOwnCache(k) && k !== CACHE && k !== TILE_CACHE && !k.startsWith('bird-map-pack-')).map(k => caches.delete(k)));
     await self.clients.claim();   // 開いている画面への適用も完了待ちに含める
   })());
 });
@@ -73,6 +80,10 @@ function isHtmlShell(url){
   return url.endsWith('/bird_survey.html') || url.endsWith('/') || url.endsWith('/manifest.json');
 }
 async function handleTile(request){
+  // 明示保存分（パック）を最優先。命中すればネットにも行かない＝圏外でも確実に表示できる
+  const pack = await caches.open(PACK_CACHE);
+  const packed = await pack.match(request.url);
+  if (packed) return packed;
   const cache = await caches.open(TILE_CACHE);
   const cached = await cache.match(request);
   if (cached) return cached;
@@ -92,6 +103,84 @@ async function handleTile(request){
     return new Response('', { status: 408 });
   }
 }
+
+// ページからの依頼を受ける（オフライン地図の保存・実測・削除）。
+// ダウンロードのループはページ側で回し、ここは PACK_CACHE への出し入れだけを担う。
+// e.waitUntil で包み、チャンク処理中にSWが打ち切られないようにする
+// パック操作は到着順に1つずつ実行する（直列化）。
+// 応答待ちを打ち切られた savePackTiles がまだ動いている間に countPack が先回りして
+// 枚数を数えると、数えた後にタイルが増えて実態とずれるため、必ず順番待ちさせる
+let packChain = Promise.resolve();
+function packEnqueue(fn){ const p = packChain.then(fn, fn); packChain = p.catch(()=>{}); return p; }
+
+self.addEventListener('message', e => {
+  const m = e.data || {};
+  const reply = r => { try{ e.ports[0] && e.ports[0].postMessage(r); }catch(err){} };
+  if (m.type === 'ping'){
+    // 疎通確認（アプリ更新直後、旧SWが残っていて依頼に応答できない状態を保存前に検知するため）。
+    // feat はパック処理の機能改訂番号（2=15秒打ち切り・statsのerror応答あり）。v78内の改訂を区別する
+    reply({ v: 78, feat: 2 });
+  } else if (m.type === 'savePackTiles'){
+    e.waitUntil(packEnqueue(async () => {
+      let ok = 0, fail = 0;
+      try{
+        const pack = await caches.open(PACK_CACHE);
+        for (const url of (m.urls || [])){
+          const ac = new AbortController();
+          const tm = setTimeout(() => ac.abort(), 15000);   // 1枚あたり15秒で打ち切り（通信が固まっても待ち行列が無限に延びない）
+          try{
+            if (await pack.match(url)){ ok++; continue; }   // すでに保存済み（中断後の再開・差分保存になる）
+            const res = await fetch(url, { mode: 'cors', signal: ac.signal });
+            // 2xxでも中身が画像でないもの（障害時のHTML等）は保存しない。
+            // 一度パックに入ると match で再取得されなくなり、壊れた応答が永久に固定されるため
+            const ct = (res.headers.get('content-type') || '').toLowerCase();
+            if (res.ok && ct.startsWith('image/')){ await pack.put(url, res.clone()); ok++; } else fail++;
+          }catch(err){ fail++; }
+          finally{ clearTimeout(tm); }
+        }
+      }catch(err){ fail += Math.max(0, (m.urls||[]).length - ok - fail); }   // caches.open等の失敗でも必ず応答を返す
+      reply({ ok, fail });
+    }));
+  } else if (m.type === 'countPack'){
+    // 指定URLのうちパックに実在する枚数（保存後の結果照合用。本文は読まないため軽い）
+    e.waitUntil(packEnqueue(async () => {
+      try{
+        const pack = await caches.open(PACK_CACHE);
+        const have = new Set((await pack.keys()).map(r => r.url));
+        let n = 0;
+        for (const u of (m.urls || [])) if (have.has(u)) n++;
+        reply({ count: n });
+      }catch(err){ reply({ count: -1 }); }
+    }));
+  } else if (m.type === 'packStats'){
+    e.waitUntil(packEnqueue(async () => {
+      try{
+        const pack = await caches.open(PACK_CACHE);
+        const keys = await pack.keys();
+        // 全タイルの本文を読むと数万枚では重すぎるため、200枚の実測平均×枚数で概算する
+        const SAMPLE = 200;
+        let bytes = 0, sampled = 0;
+        const step = Math.max(1, keys.length / SAMPLE);   // 実数刻みで全体から等間隔に抽出（先頭偏重を避ける）
+        for (let f = 0; f < keys.length && sampled < SAMPLE; f += step){
+          const r = await pack.match(keys[Math.floor(f)]);
+          try{ bytes += (await r.clone().blob()).size; sampled++; }catch(err){}
+        }
+        if (keys.length > 0 && sampled === 0){ reply({ error: true }); return; }   // 1枚も読めない＝計測失敗（0MBと区別）
+        const est = sampled ? Math.round(bytes / sampled * keys.length) : 0;
+        reply({ count: keys.length, bytes: est, sampled: sampled < keys.length });
+      }catch(err){ reply({ error: true }); }   // 「0MB」と「計測失敗」を区別する（0MB扱いだと容量判定が過少になる）
+    }));
+  } else if (m.type === 'deletePack'){
+    e.waitUntil(packEnqueue(async () => {
+      try{
+        const pack = await caches.open(PACK_CACHE);
+        let n = 0;
+        for (const url of (m.urls || [])){ if (await pack.delete(url)) n++; }
+        reply({ deleted: n });
+      }catch(err){ reply({ error: true }); }
+    }));
+  }
+});
 
 // ネット優先＋タイムアウト。時間内に取れなければキャッシュへフォールバック。
 async function networkFirst(request){

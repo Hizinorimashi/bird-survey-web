@@ -120,10 +120,10 @@
     background:var(--panel); color:var(--fg); border:1px solid var(--line);
     border-radius:10px; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
   .locate-btn:active{background:var(--panel2);}
-  /* 位置指定マップの中心十字（指で目標が隠れないよう、地図の方を動かして狙う） */
+  /* 位置指定マップの中心十字（指で目標が隠れないよう、地図の方を動かして狙う）。
+     形は細い黒線のSVG（白フチ付き。航空写真の暗い場所でも見える） */
   .map-cross{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:800;
-    pointer-events:none; font-size:36px; font-weight:700; color:#d33;
-    text-shadow:0 0 3px #fff, 0 0 6px #fff, 0 0 9px #fff; line-height:1;}
+    pointer-events:none; line-height:0;}
   .map-drop-btn{width:auto; padding:9px 14px; font-size:14px; font-weight:700;
     background:var(--accent); color:#0a0f0d; border:none; border-radius:10px;
     cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
@@ -218,7 +218,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v76（2026-08-02 位置指定マップに中心十字＋「この位置に印」ボタンを追加）';
+const APP_VERSION = 'v78（2026-08-02 オフライン地図の保存を追加・十字を細い黒線に変更）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1178,6 +1178,8 @@ function forceUpdate(){
   // このアプリのSW・キャッシュだけを対象にする（同一オリジンの別アプリを壊さない）
   if('serviceWorker' in navigator){ tasks.push(navigator.serviceWorker.getRegistration()
     .then(r=>r?r.unregister():null).catch(()=>{})); }
+  // bird-map-pack-*（オフライン地図の保存分）は意図的に消さない。利用者が明示的に保存した地図で、
+  // アプリの更新とは無関係のため（消すのは保存画面の「削除」からのみ）
   if(window.caches){ tasks.push(caches.keys()
     .then(ks=>Promise.all(ks.filter(k=>k.startsWith('bird-survey-')||k.startsWith('bird-map-tiles-')).map(k=>caches.delete(k)))).catch(()=>{})); }
   Promise.all(tasks).then(reload, reload);
@@ -1415,6 +1417,7 @@ SCREENS.survey = (u)=>{
       ${actions}
       ${!running?`<div class="sp"></div><div class="btn-grid">
         <button class="btn" onclick="nav('map','${u}')">🗺 地図</button>
+        <button class="btn" onclick="nav('offlineMap','${u}')">💾 オフライン地図を保存</button>
         <button class="btn" onclick="nav('summary','${u}')">📊 集計</button>
         <button class="btn" onclick="nav('hypotheses','${u}')">💡 仮説・検証</button>
         <button class="btn" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))">🐦 観察を追加</button>
@@ -1809,7 +1812,9 @@ function createBaseMap(elId, center, zoom, opts){
   const rotatable=!!(L.Map && L.Map.prototype.setBearing);
   const m=L.map(elId, rotatable?{ rotate:true, rotateControl:false, touchRotate:true, shiftKeyRotate:true, bearing:mapBearing }:{}).setView(center, zoom);
   const gsiAttr='<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>';
-  const gsi=(name,ext,mx,opt)=>L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/'+name+'/{z}/{x}/{y}.'+ext, Object.assign({maxZoom:18, maxNativeZoom:mx||18, attribution:gsiAttr}, opt||{}));
+  // crossOrigin必須: 無指定だとタイル取得がno-cors＝応答がopaqueになり、Service Workerがキャッシュできず
+  // 圏外表示（受動キャッシュ・オフライン地図の保存）が全く効かない
+  const gsi=(name,ext,mx,opt)=>L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/'+name+'/{z}/{x}/{y}.'+ext, Object.assign({maxZoom:18, maxNativeZoom:mx||18, attribution:gsiAttr, crossOrigin:'anonymous'}, opt||{}));
   const bases={ '標準地図':gsi('std','png',18), '淡色地図':gsi('pale','png',18), '写真（航空・衛星）':gsi('seamlessphoto','jpg',18) };
   let savedBase=localStorage.getItem('bs_basemap'); if(!bases[savedBase]) savedBase='標準地図';
   bases[savedBase].addTo(m);
@@ -1911,13 +1916,21 @@ function compassToggle(btn){
 /* 位置指定マップ共通: 地図中心の十字＋「この位置に印」ボタン。
    タップ指定だと指で目標地点が隠れるため、「地図を動かして十字を合わせ→ボタンで落とす」置き方を用意する。
    従来のタップ指定もそのまま使える（Leafletはドラッグ後にclickを発火しないため誤発火しない） */
-function addCrosshairControl(m, onDrop){
+// 中心十字の実体（細い黒線＋白フチのSVG。中心はわずかに空けて目標を隠さない）
+const CROSS_SVG='<svg width="33" height="33" viewBox="0 0 33 33">'
+  +'<g fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"><path d="M16.5 3v9.5M16.5 20.5V30M3 16.5h9.5M20.5 16.5H30"/></g>'
+  +'<g fill="none" stroke="#111" stroke-width="1.6" stroke-linecap="round"><path d="M16.5 3v9.5M16.5 20.5V30M3 16.5h9.5M20.5 16.5H30"/></g></svg>';
+function makeCrossEl(m){
   const cross=L.DomUtil.create('div','map-cross', m.getContainer());
-  cross.textContent='＋';
+  cross.innerHTML=CROSS_SVG;
   m.once('unload', ()=>{ try{ cross.remove(); }catch(e){} });   // 十字はLeaflet管理外のため、地図破棄時に自分で片付ける
+  return cross;
+}
+function addCrosshairControl(m, onDrop, label){
+  makeCrossEl(m);
   const C=L.Control.extend({ onAdd:function(){
     const b=L.DomUtil.create('button','map-drop-btn');
-    b.type='button'; b.textContent='◎ 十字の位置に印';
+    b.type='button'; b.textContent=label||'◎ 十字の位置に印';
     L.DomEvent.disableClickPropagation(b);
     L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>{
       try{ m.stop(); }catch(e){}   // 慣性移動を止めてから中心を読む（動いている最中に押すと十字とズレた座標が入るため）
@@ -2853,7 +2866,7 @@ SCREENS.flightEdit = (argStr)=>{
   return {
     title: editing?'飛翔経路を編集':'飛翔経路を記録',
     html:`
-      <div class="note">地図を<b>タップ</b>すると、鳥が飛んだ順に点がつながります（緑「始」→赤「終」で向き）。間違えたら「↶ 1つ戻す」。<br>薄い線は同じ調査の他の経路です。別の個体・種を続けて描くときは「保存して続けて描く」。</div>
+      <div class="note"><span id="fHelpHow"></span>鳥が飛んだ順に点がつながります（緑「始」→赤「終」で向き）。間違えたら「↶ 1つ戻す」。<br>薄い線は同じ調査の他の経路です。別の個体・種を続けて描くときは「保存して続けて描く」。</div>
       <div id="fmap" style="height:calc(100vh - 520px); min-height:240px; border-radius:var(--radius); border:1px solid var(--line);"></div>
       <div class="sp"></div>
       <div class="btn-grid">
@@ -2959,13 +2972,54 @@ function flightColorIndex(mode, value){
     try{ localStorage.setItem('bs_flightcoloridx', JSON.stringify(all)); }catch(e){} }
   return m[value];
 }
+/* 飛翔経路の点の打ち方: タップ追加（速い）⇔ 十字追加（指で目標が隠れず精密）の切り替え。
+   経路は連続で何点も打つため、観察位置のような常時十字ではなくモード式にする。選んだモードは端末に記憶 */
+let flightCrossMode=false;
+try{ flightCrossMode = localStorage.getItem('bs_flight_cross')==='1'; }catch(e){}
+function addFlightCrosshair(m){
+  const cross=makeCrossEl(m);
+  const C=L.Control.extend({ onAdd:function(){
+    const box=L.DomUtil.create('div','');
+    box.style.cssText='display:flex; gap:8px; align-items:center;';
+    const tg=L.DomUtil.create('button','map-drop-btn',box); tg.type='button';
+    const add=L.DomUtil.create('button','map-drop-btn',box); add.type='button';
+    add.textContent='◎ 十字の位置に点を追加';
+    const sync=()=>{ cross.style.display=flightCrossMode?'':'none';
+      add.style.display=flightCrossMode?'':'none';
+      tg.textContent=flightCrossMode?'✋ タップ追加に戻す':'🎯 十字で追加';
+      // モード中は「点を追加」が主役なので、切替ボタンは控えめな見た目にする
+      tg.style.background=flightCrossMode?'var(--panel)':'';
+      tg.style.color=flightCrossMode?'var(--fg)':'';
+      tg.style.border=flightCrossMode?'1px solid var(--line)':'';
+      // 画面上部の案内文と空メッセージもモードに合わせる（タップ無効なのに「タップして」と案内しない）
+      const h=$('#fHelpHow'); if(h) h.innerHTML=flightCrossMode
+        ?'地図を動かして十字を合わせ<b>「点を追加」</b>を押すと、'
+        :'地図を<b>タップ</b>すると、';
+      const info=$('#fInfo'); if(info && !flightPath.length) redrawFlight(); };
+    L.DomEvent.disableClickPropagation(box);
+    L.DomEvent.on(tg,'click',L.DomEvent.stop).on(tg,'click',()=>{
+      flightCrossMode=!flightCrossMode;
+      try{ localStorage.setItem('bs_flight_cross', flightCrossMode?'1':'0'); }catch(e){}
+      sync();
+      toast(flightCrossMode?'十字モード: 地図を動かして「点を追加」で打ちます（タップでは追加されません）'
+                           :'タップで点を追加するモードに戻しました', 2600); });
+    L.DomEvent.on(add,'click',L.DomEvent.stop).on(add,'click',()=>{
+      try{ m.stop(); }catch(e){}   // 慣性移動を止めてから中心を読む（観察位置マップと同じ）
+      const c=m.getCenter(); flightPath.push([c.lat,c.lng]); SCREENS._dirty=true; redrawFlight(); });
+    sync();
+    return box; }});
+  new C({position:'bottomleft'}).addTo(m);
+}
 function initFlightMap(){
   const el=$('#fmap'); if(!el) return;
   let center=[43.06,141.35], zoom=13;
   if(flightPath.length){ center=flightPath[0]; zoom=15; }
   else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=15; }
   mapObj=createBaseMap('fmap', center, zoom, {});
-  mapObj.on('click', e=>{ flightPath.push([e.latlng.lat, e.latlng.lng]); SCREENS._dirty=true; redrawFlight(); });
+  // 十字モード中はタップでの追加を止める（地図を動かして狙う操作中の誤タップで点が増えないように）
+  mapObj.on('click', e=>{ if(flightCrossMode) return;
+    flightPath.push([e.latlng.lat, e.latlng.lng]); SCREENS._dirty=true; redrawFlight(); });
+  addFlightCrosshair(mapObj);
   // 同じ調査の他の飛翔経路を薄く重ねる（1画面で何本も見えるように）
   if(SCREENS._flightSv){ DB.flightsOf(SCREENS._flightSv).forEach(of=>{
     if(of.uuid===SCREENS._flightSelf) return;
@@ -2991,12 +3045,13 @@ function redrawFlight(){
   }
   const info=$('#fInfo');
   if(info){ let d=0; for(let i=1;i<flightPath.length;i++){ try{ d+=mapObj.distance(flightPath[i-1],flightPath[i]); }catch(e){} }
-    info.textContent = flightPath.length? `${flightPath.length}点 ・ 全長 約${d>=1000?(d/1000).toFixed(2)+'km':Math.round(d)+'m'}` : 'まだ点がありません。地図をタップして描いてください。'; }
+    info.textContent = flightPath.length? `${flightPath.length}点 ・ 全長 約${d>=1000?(d/1000).toFixed(2)+'km':Math.round(d)+'m'}`
+      : (flightCrossMode?'まだ点がありません。地図を動かして「点を追加」で描いてください。':'まだ点がありません。地図をタップして描いてください。'); }
 }
 function flightUndo(){ if(!flightPath.length) return; flightPath.pop(); SCREENS._dirty=true; redrawFlight(); }
 function flightClear(){ if(!flightPath.length) return; if(!confirm('描いた線を全部消しますか？')) return; flightPath=[]; SCREENS._dirty=true; redrawFlight(); }
 function saveFlight(u,svUuid,editing,cont){
-  if(flightPath.length<2){ toast('地図を2点以上タップして経路を描いてください'); return; }
+  if(flightPath.length<2){ toast('地図で2点以上の経路を描いてから保存してください'); return; }
   const name=(($('#spInput')&&$('#spInput').value)||'').trim();
   const g=n=>{ const el=$(`#flForm [name="${n}"]`); return el?el.value:''; };
   // 個体数: 観察入力と同じ検査（従来は文字列のまま無検証で保存され、書き出しにそのまま出ていた）。
@@ -3489,12 +3544,17 @@ function addCurrentPos(lat,lon,acc){
 function locateOnMap(group){
   if(!navigator.geolocation) return;
   const targetMap=mapObj;   // この地図に対する取得。画面を切り替えたら新しい地図を触らない
+  // 取得を待つ間に利用者が地図を動かしたら、視点の自動移動はしない
+  //（十字モードで狙いを合わせている最中に、遅れて届いた現在地へ勝手に飛ぶと誤指定になるため。現在地マーカーは出す）
+  let userMoved=false;
+  try{ targetMap.once('dragstart zoomstart', ()=>{ userMoved=true; }); }catch(e){}
   toast('現在地を取得中…');
   navigator.geolocation.getCurrentPosition(p=>{
     const lat=p.coords.latitude, lon=p.coords.longitude, acc=p.coords.accuracy;
     lastFix={lat,lon,acc,t:Date.now()};
     if(!mapObj || mapObj!==targetMap) return;
     addCurrentPos(lat,lon,acc);
+    if(userMoved) return;
     const all=(group||[]).concat([[lat,lon]]);
     if(all.length>1){ try{ mapObj.fitBounds(all,{padding:[40,40], maxZoom:17}); }catch(e){} }
     else { mapObj.setView([lat,lon],16); }
@@ -4064,6 +4124,423 @@ async function renderPdfPage(){
 function pdfPage(d){ if(!PDFCTX) return; const n=PDFCTX.page+d; if(n<1||n>PDFCTX.total) return; PDFCTX.page=n; renderPdfPage(); }
 function pdfJump(){ if(!PDFCTX) return; const el=$('#pdfJump'); const v=parseInt(el&&el.value,10);
   if(v>=1 && v<=PDFCTX.total){ PDFCTX.page=v; renderPdfPage(); } else toast('1〜'+PDFCTX.total+' のページ番号を入れてください'); }
+
+/* ============================================================
+   オフライン地図の保存（範囲を囲って先に落としておく）
+   スクロール任せの受動キャッシュだと「どこまで保存できたか」が分からないので、
+   多角形で範囲を決めて、その中のタイルをまとめて Service Worker の PACK_CACHE へ保存する。
+   保存分は自動では消えない（版の掃除・「最新に更新」からも保護）。産卵床調査アプリからの移植。
+   ============================================================ */
+const PACK_MAXZOOM = 16;     // これ以上は落とさない（枚数が急増するため）
+const PACK_MINZOOM = 12;     // 全体像が分かる粗さから
+// URLは createBaseMap の生成URLと文字列完全一致であること（キャッシュ照合はURL一致のため）
+const PACK_BASEMAPS = {
+  '標準地図':          { url:'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png' },
+  '淡色地図':          { url:'https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png' },
+  '写真（航空・衛星）': { url:'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg' },
+};
+const PACK_TILE_KB = { '標準地図':12, '淡色地図':10, '写真（航空・衛星）':20 };   // 見積り用の1枚あたりKB
+const PACK_WARN_TILES = 12000;   // これを超えたら強く警告（40000で拒否）
+
+// 緯度経度 → タイル番号
+function lon2tx(lon,z){ return Math.floor((lon+180)/360*Math.pow(2,z)); }
+function lat2ty(lat,z){ const r=lat*Math.PI/180;
+  return Math.floor((1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*Math.pow(2,z)); }
+// タイル番号 → そのタイルの北西角の緯度経度
+function tx2lon(x,z){ return x/Math.pow(2,z)*360-180; }
+function ty2lat(y,z){ const n=Math.PI-2*Math.PI*y/Math.pow(2,z);
+  return 180/Math.PI*Math.atan(0.5*(Math.exp(n)-Math.exp(-n))); }
+
+function polyBounds(poly){
+  let s=90,n=-90,w=180,e=-180;
+  poly.forEach(p=>{ s=Math.min(s,p[0]); n=Math.max(n,p[0]); w=Math.min(w,p[1]); e=Math.max(e,p[1]); });
+  return {s,n,w,e};
+}
+function pointInPoly(lat, lon, poly){
+  let inside=false;
+  for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+    const yi=poly[i][0], xi=poly[i][1], yj=poly[j][0], xj=poly[j][1];
+    if(((yi>lat)!==(yj>lat)) && (lon < (xj-xi)*(lat-yi)/(yj-yi)+xi)) inside=!inside;
+  }
+  return inside;
+}
+function tileHitsPoly(x,y,z,poly){
+  const latN=ty2lat(y,z), latS=ty2lat(y+1,z), lonW=tx2lon(x,z), lonE=tx2lon(x+1,z);
+  // タイルの4隅・中心のどれかが多角形内なら採用
+  const pts=[[latN,lonW],[latN,lonE],[latS,lonW],[latS,lonE],[(latN+latS)/2,(lonW+lonE)/2]];
+  if(pts.some(p=>pointInPoly(p[0],p[1],poly))) return true;
+  // 多角形の頂点がタイルの中に入る場合も採用
+  if(poly.some(p=>p[0]<=latN && p[0]>=latS && p[1]>=lonW && p[1]<=lonE)) return true;
+  // 細長い多角形が「隅も中心も外のままタイルを横切る」場合の取りこぼし防止:
+  // 多角形の辺がタイルと交差していれば採用（保存範囲の中に穴を作らない）
+  for(let i=0;i<poly.length;i++){
+    if(segIntersectsRect(poly[i], poly[(i+1)%poly.length], latS, latN, lonW, lonE)) return true;
+  }
+  return false;
+}
+// 線分p1-p2がタイル矩形と交わるか（端点が中、または矩形の4辺と交差）
+function segIntersectsRect(p1,p2,latS,latN,lonW,lonE){
+  const inR=p=>p[0]<=latN && p[0]>=latS && p[1]>=lonW && p[1]<=lonE;
+  if(inR(p1)||inR(p2)) return true;
+  const o=(a,b,c)=>Math.sign((b[1]-a[1])*(c[0]-a[0])-(b[0]-a[0])*(c[1]-a[1]));
+  const x=(a,b,c,d)=>o(a,b,c)!==o(a,b,d) && o(c,d,a)!==o(c,d,b);
+  const c1=[latS,lonW],c2=[latS,lonE],c3=[latN,lonE],c4=[latN,lonW];
+  return x(p1,p2,c1,c2)||x(p1,p2,c2,c3)||x(p1,p2,c3,c4)||x(p1,p2,c4,c1);
+}
+
+// 一覧の読み出しは型を検査し、壊れた項目は捨てる（v73点検の対象外キーのため自前で守る。画面が開けなくなるのを防ぐ）
+function packStore(){ try{ const a=JSON.parse(localStorage.getItem('bs_map_packs')||'[]');
+  if(!Array.isArray(a)) return [];
+  return a.filter(p=>p && typeof p==='object' && !Array.isArray(p)
+    && Array.isArray(p.poly) && p.poly.every(q=>Array.isArray(q) && q.length===2
+      && typeof q[0]==='number' && Number.isFinite(q[0]) && typeof q[1]==='number' && Number.isFinite(q[1]))
+    && Array.isArray(p.layers) && p.layers.every(s=>typeof s==='string')
+    && Number.isFinite(+p.count) && Number.isFinite(+p.mb));
+}catch(e){ return []; } }
+// 成否を返す（失敗を握りつぶすと「タイルは保存されたのに一覧に無い」隠れデータになるため）
+function packSave(list){ try{ localStorage.setItem('bs_map_packs', JSON.stringify(list)); return true; }catch(e){ return false; } }
+
+// 保存するタイルの (z,x,y) 一覧。poly の形にかかるマスだけを選ぶ
+function packTiles(area, zmax){
+  const zTop = Math.min(zmax, PACK_MAXZOOM);
+  const poly = (area && area.poly && area.poly.length>=3) ? area.poly : null;
+  const bb = poly ? polyBounds(poly) : area;
+  const out=[];
+  for(let z=PACK_MINZOOM; z<=zTop; z++){
+    const x0=lon2tx(bb.w,z), x1=lon2tx(bb.e,z);
+    const y0=lat2ty(bb.n,z), y1=lat2ty(bb.s,z);
+    for(let x=Math.min(x0,x1); x<=Math.max(x0,x1); x++)
+      for(let y=Math.min(y0,y1); y<=Math.max(y0,y1); y++)
+        if(!poly || tileHitsPoly(x,y,z,poly)) out.push([z,x,y]);
+  }
+  return out;
+}
+function packTileUrls(area, zmax, layers){
+  const tiles = packTiles(area, zmax);
+  const urls=[];
+  layers.forEach(name=>{
+    const b=PACK_BASEMAPS[name]; if(!b) return;
+    tiles.forEach(([z,x,y])=>urls.push(b.url.replace('{z}',z).replace('{x}',x).replace('{y}',y)));
+  });
+  return urls;
+}
+// 見積り（枚数と、種類ごとの重みで概算したMB）
+function packEstimate(area, zmax, layers){
+  const tiles = packTiles(area, zmax);
+  const urls = packTileUrls(area, zmax, layers);
+  const perZoom={};
+  tiles.forEach(([z])=>{ perZoom[z]=(perZoom[z]||0)+1; });
+  let kb=0;
+  layers.forEach(name=>{ const w=PACK_TILE_KB[name]||15;
+    Object.keys(perZoom).forEach(z=>{ kb += perZoom[z]*w; }); });
+  return { count:urls.length, mb: kb/1024, urls };
+}
+
+// Service Worker への依頼（保存・計測・削除・疎通確認）。返事を待つ。
+// SWが応答しない場合に永久に固まらないよう時間で打ち切る（既定120秒。低速回線の30枚直列でも収まる粒度）
+function swAsk(msg, timeoutMs){
+  return new Promise((res,rej)=>{
+    const sw = navigator.serviceWorker && navigator.serviceWorker.controller;
+    if(!sw){ rej(new Error('no-sw')); return; }
+    const ch = new MessageChannel();
+    const tm = setTimeout(()=>rej(new Error('sw-timeout')), timeoutMs||120000);
+    ch.port1.onmessage = e => { clearTimeout(tm); res(e.data); };
+    sw.postMessage(msg, [ch.port2]);
+  });
+}
+let PACK_DL = null;   // ダウンロード中の状態（中断・二重起動防止用）
+
+/* ---------- オフライン地図の保存画面 ---------- */
+let PK_PTS=[], PK_SHAPE=null, PK_DOTS=[];
+SCREENS.offlineMap = (sv)=>{
+  const s = DB.survey(sv); if(!s) return SCREENS.home();
+  const packs = packStore();
+  const curBase = (b=>PACK_BASEMAPS[b]?b:'標準地図')(localStorage.getItem('bs_basemap'));
+  const packCards = packs.map(p=>`
+    <div class="card">
+      <div class="row"><div class="grow"><b>${esc(p.name||'保存範囲')}</b>
+        <span class="small muted">${esc((p.layers||[]).join('・'))}</span></div>
+        <button class="btn ghost" style="width:auto; padding:4px 10px;" onclick="recallPack('${p.id}')">範囲を呼び出す</button>
+        <button class="btn ghost danger" style="width:auto; padding:4px 10px;" onclick="deleteMapPack('${p.id}')">削除</button></div>
+      <div class="small muted" style="margin-top:6px">
+        z${p.zmin}〜${p.zmax} ／ ${(+(p.ok!=null?p.ok:p.count)).toLocaleString()}枚 ／ 約${(+p.mb).toFixed(0)}MB ／ ${fmtDate(p.saved_at)}保存</div>
+      ${p.status==='partial'?`<div class="small" style="color:var(--warn); margin-top:4px">⚠ 一部のみ保存（予定 ${(+p.count).toLocaleString()} 枚のうち上記まで）。同じ範囲を保存し直すと補完されます</div>`:''}
+    </div>`).join('');
+  return {
+    title:'オフライン地図の保存',
+    sub:[`<span class="pill">${esc(s.name)}</span>`],
+    html:`
+      <div class="note">
+        <b>電波のあるうちに</b>、調査で使う範囲の地図を保存しておくと、圏外でも表示できます。<br>
+        ① 地図をタップ（または十字ボタン）で、囲みたい範囲の角を順に打つ<br>
+        ② 保存する地図の種類と細かさを選ぶ　③ 「この範囲を保存」<br>
+        <span class="tiny muted">※圏外で見られるのは z16（詳細）まで。それ以上拡大するとグレーになります。</span>
+      </div>
+      <div id="omap" style="height:320px; border-radius:var(--radius); border:1px solid var(--line);"></div>
+      <div class="btn-grid" style="margin-top:8px">
+        <button class="btn" onclick="offlineUndoCorner()">↶ 1つ戻す</button>
+        <button class="btn ghost" onclick="offlineClearRect()">囲みを消す</button>
+      </div>
+      <button class="btn ghost" style="margin-top:8px" onclick="offlineUseView()">今の表示範囲をそのまま使う</button>
+      <div class="tiny muted" style="margin:6px 0;">3点以上打つと範囲になります。谷筋・海岸線に沿ってL字などの自由な形で囲むと無駄が減ります。</div>
+
+      <label class="field"><span class="lab">保存する地図の種類（複数可）</span>
+        <div class="seg" data-seg="packLayers">
+          ${Object.keys(PACK_BASEMAPS).map(n=>`<button type="button" class="${n===curBase?'on':''}" onclick="togglePackLayer(this)">${esc(n)}</button>`).join('')}
+        </div></label>
+      <label class="field"><span class="lab">細かさ（拡大の上限。上げるほど枚数が増えます）</span>
+        <div class="seg" data-seg="packZoom">
+          ${['z14（広域）','z15（標準）','z16（詳細）'].map(v=>`<button type="button" class="${v.startsWith('z16')?'on':''}" onclick="pickPackZoom(this)">${esc(v)}</button>`).join('')}
+        </div></label>
+
+      <div class="card" id="omapEst"><div class="small muted">3点以上囲むと、枚数と容量の見積りが出ます。</div></div>
+      <button class="btn primary big" id="omapSaveBtn" onclick="offlineSave('${sv}')">💾 この範囲を保存</button>
+      <div class="sp"></div>
+      <div id="omapProg"></div>
+
+      ${ packs.length ? `<h3 class="muted small">保存済み（${packs.length}）</h3>${packCards}
+        <button class="btn ghost" onclick="offlineStats()">実際の保存量を確認</button>
+        <div class="tiny muted" id="omapStats" style="margin-top:6px"></div>` : '' }
+    `,
+    onMount:()=>initOfflineMap(sv)
+  };
+};
+
+function initOfflineMap(sv){
+  PK_PTS=[]; PK_SHAPE=null; PK_DOTS=[];   // 再入場時に前回の角が復活しないよう必ずリセット
+  if(typeof L==='undefined' || !$('#omap')) return;
+  // 記録済みの観察位置を薄く出して、どこを保存すればよいか分かるように
+  const pts=DB.obsOf(sv).map(o=>[parseFloat(o.latitude),parseFloat(o.longitude)])
+    .filter(p=>isFinite(p[0])&&isFinite(p[1]));
+  let center=[43.06,141.35], zoom=10;
+  if(pts.length){ const bb=polyBounds(pts); center=[(bb.s+bb.n)/2,(bb.w+bb.e)/2]; zoom=13; }
+  else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=13; }
+  mapObj=createBaseMap('omap', center, zoom, {});
+  pts.forEach(p=>L.circleMarker(p,{radius:4,color:'#9aa8b4',weight:1,fillOpacity:.4}).addTo(mapObj));
+  // 既に保存済みの範囲を緑の破線で見せる
+  packStore().forEach(p=>{
+    if(p.poly && p.poly.length>=3)
+      L.polygon(p.poly, {color:'#4ec38a',weight:1,fillOpacity:.05,dashArray:'4,4'}).addTo(mapObj);
+  });
+  mapObj.on('click', e=>offlineAddCorner(e.latlng.lat, e.latlng.lng));
+  addCrosshairControl(mapObj, (la,lo)=>offlineAddCorner(la,lo), '◎ 十字の位置に角を打つ');
+  // 保存の途中で画面を離れて戻ってきた場合は、進捗と「保存中」の状態を復元する
+  if(PACK_DL){ const btn=$('#omapSaveBtn'); if(btn){ btn.disabled=true; btn.textContent='保存中…'; }
+    const prog=$('#omapProg');
+    if(prog) prog.innerHTML=`<div class="card"><div class="small" id="omapProgTxt">保存中…（進捗は次の区切りで更新されます）</div>
+      <button class="btn ghost" style="margin-top:8px; width:auto; padding:6px 12px;" onclick="offlineAbort()">中断</button></div>`; }
+}
+function offlineAddCorner(lat, lon){
+  PK_PTS.push([lat,lon]);
+  offlineRedrawShape();
+  if(PK_PTS.length>=3) offlineEstimate();
+}
+function offlineUndoCorner(){ PK_PTS.pop(); offlineRedrawShape();
+  if(PK_PTS.length>=3) offlineEstimate(); else offlineClearEst(); }
+function currentPoly(){ return PK_PTS.length>=3 ? PK_PTS.slice() : null; }
+function offlineRedrawShape(){
+  if(!mapObj) return;
+  if(PK_SHAPE){ try{ mapObj.removeLayer(PK_SHAPE); }catch(e){} PK_SHAPE=null; }
+  PK_DOTS.forEach(d=>{ try{ mapObj.removeLayer(d); }catch(e){} }); PK_DOTS=[];
+  PK_PTS.forEach(p=>{ PK_DOTS.push(
+    L.circleMarker(p,{radius:5,color:'#e0a030',weight:2,fillColor:'#fff',fillOpacity:1}).addTo(mapObj)); });
+  if(PK_PTS.length>=3)
+    PK_SHAPE=L.polygon(PK_PTS,{color:'#e0a030',weight:2,fillOpacity:.12}).addTo(mapObj);
+  else if(PK_PTS.length===2)
+    PK_SHAPE=L.polyline(PK_PTS,{color:'#e0a030',weight:2,dashArray:'5,5'}).addTo(mapObj);
+}
+function offlineUseView(){
+  if(!mapObj) return;
+  const b=mapObj.getBounds();
+  PK_PTS=[[b.getNorth(),b.getWest()],[b.getNorth(),b.getEast()],
+          [b.getSouth(),b.getEast()],[b.getSouth(),b.getWest()]];
+  offlineRedrawShape(); offlineEstimate();
+}
+function offlineClearEst(){ const el=$('#omapEst');
+  if(el) el.innerHTML='<div class="small muted">3点以上囲むと、枚数と容量の見積りが出ます。</div>'; }
+function offlineClearRect(){ PK_PTS=[]; offlineRedrawShape(); offlineClearEst(); }
+// ズーム・種類の選択（選び直したら即・見積りし直す）
+function pickPackZoom(btn){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on'); offlineEstimate(); }
+function togglePackLayer(btn){ btn.classList.toggle('on'); offlineEstimate(); }
+function offlineZoomMax(){ const v=segVal('packZoom')||''; const m=v.match(/z(\d+)/); return m?+m[1]:PACK_MAXZOOM; }
+function offlineLayers(){ const l=segVals('packLayers').split('・').filter(Boolean);
+  return l.length?l:['標準地図']; }
+function offlineEstimate(){
+  const el=$('#omapEst'); if(!el) return;
+  const poly=currentPoly();
+  if(!poly){ offlineClearEst(); return; }
+  const est = packEstimate({poly}, offlineZoomMax(), offlineLayers());
+  const min = Math.max(1, Math.round(est.count/300));
+  const warn = est.count>PACK_WARN_TILES;
+  el.innerHTML = `<div class="small"><b>約 ${est.count.toLocaleString()} 枚 ／ 約 ${est.mb.toFixed(0)} MB</b>
+    <span class="muted">（ダウンロード目安 ${min}分前後）</span></div>
+    ${ warn ? `<div class="small" style="color:var(--warn); margin-top:6px">
+      範囲が広い／細かすぎます。囲みを小さくするか、細かさを下げると軽くなります。</div>` : '' }
+    <div class="tiny muted" style="margin-top:6px">${esc(offlineLayers().join('・'))}／z${PACK_MINZOOM}〜${offlineZoomMax()}</div>`;
+}
+async function offlineSave(sv){
+  if(PACK_DL){ toast('別の保存が進行中です'); return; }   // 二重起動防止
+  const poly=currentPoly();
+  if(!poly){ toast('先に地図で3点以上囲んでください'); return; }
+  if(!(navigator.serviceWorker && navigator.serviceWorker.controller)){
+    toast('この環境では保存できません（公開URLをホーム画面に追加して使ってください）'); return; }
+  const layers=offlineLayers(), zmax=offlineZoomMax();
+  const est=packEstimate({poly}, zmax, layers);
+  if(est.count > 40000){ alert('範囲が大きすぎます（約'+est.count.toLocaleString()+'枚）。囲みを小さくするか、細かさを下げてください。'); return; }
+  // 「実際に増える容量」を先に求める（新規範囲のうち保存済みタイルは増えない）。
+  // 空き容量・累積上限の両方の判定にこの差分を使う——全数保存済みの補完・再保存を誤って拒否しないため
+  let newMb=est.mb;
+  try{ const hc=await swAsk({type:'countPack', urls:est.urls}, 60000);
+    if(hc && typeof hc.count==='number' && hc.count>=0 && est.count>0)
+      newMb = est.mb * Math.max(0, est.count-hc.count) / est.count; }catch(e){}
+  // 端末の空き容量を確認する。タイルと写真・録音（IndexedDB）は同じ保存枠を使うため、
+  // 写真・録音のための余裕（300MB）を差し引いても収まるときだけ保存する
+  try{
+    if(navigator.storage && navigator.storage.estimate){
+      const es=await navigator.storage.estimate();
+      const free=(es.quota||0)-(es.usage||0);
+      if(free>0 && free < newMb*1024*1024 + 300*1024*1024){
+        alert(`端末の空き保存領域が足りません（この保存で増える約${newMb.toFixed(0)}MB＋写真・録音用の余裕300MBが必要）。\n囲みを小さくするか、古い保存範囲・不要な写真を整理してください。`); return; }
+    }
+  }catch(e){}
+  // 保存済みパックの累積上限（合計2GBまで）。1回の上限だけでは繰り返し保存で膨らむため。
+  // 合計は原則キャッシュの実測（範囲が重なって共有されるタイルを二重に数えない）。
+  // 実測できないとき（SW未制御など）だけメタ情報の合算で概算する（同一sig＝置き換え分は除外）
+  const sigKey=JSON.stringify({p:poly, z:zmax, l:layers});
+  const packSig=x=>JSON.stringify({p:x.poly, z:x.zmax, l:x.layers});
+  let totalMb;
+  try{
+    const st=await swAsk({type:'packStats'}, 60000);
+    if(!st || st.error || typeof st.bytes!=='number') throw new Error('stats-fail');
+    totalMb = st.bytes/1048576 + newMb;   // 実測＋実際に増える分（重なる範囲を二重に数えない）
+  }
+  // 実測できないときの代替は安全側（全量計上＝過大寄り）。newMbを使うと同一範囲の既存分が漏れて過少計上になり得る
+  catch(e){ totalMb = packStore().filter(x=>packSig(x)!==sigKey).reduce((a,p)=>a+(+p.mb||0), 0) + est.mb; }
+  if(totalMb > 2048){
+    alert(`オフライン地図の合計が約${Math.round(totalMb)}MBになり、上限（2GB）を超えます。先に使っていない保存範囲を削除してください。`); return; }
+  if(est.count > PACK_WARN_TILES && !confirm(`約 ${est.count.toLocaleString()} 枚（${est.mb.toFixed(0)}MB）を保存します。時間がかかり、端末の空きも使います。続けますか？`)) return;
+
+  // アプリ更新直後は旧SWが残っていて新しい依頼に応答できないことがある。先に疎通と対応版を確認する
+  try{ const pg=await swAsk({type:'ping'}, 3000);
+    if(!pg || !(+pg.v>=78) || !(+pg.feat>=2)) throw new Error('old-sw'); }
+  catch(e){ toast('地図保存の準備ができていません。アプリを一度閉じて、開き直してからお試しください', 5000); return; }
+
+  // ダウンロードを始める前に、まず「一部のみ・0枚」として一覧に登録しておく。
+  // こうすると (1)一覧に記録できない状態なら1枚も落とす前に止まる（隠れタイルの取り消し処理が不要）
+  // (2)保存中に再読み込み・アプリ終了しても、落ちた分は「一部のみ」カードから見えて削除・補完できる
+  const mine={ id:uuid(), name:(DB.survey(sv)||{}).name||'保存範囲',
+    poly, bbox:polyBounds(poly),
+    zmin:PACK_MINZOOM, zmax, layers, count:est.count,
+    mb:0, ok:0, status:'partial', saved_at:nowISO() };
+  {
+    // 仮登録の時点では同じ範囲の既存カードを消さない（保存中に落ちても、完全保存済みの記録を
+    // 「一部のみ・0枚」に後退させないため）。既存分の整理は完了確定のときに行う
+    const list=packStore();
+    list.unshift(mine);
+    if(!packSave(list)){
+      toast('端末の記録領域が足りず、保存の記録が作れません。空き容量を確保してからお試しください', 5000); return; }
+  }
+
+  const btn=$('#omapSaveBtn'); if(btn){ btn.disabled=true; btn.textContent='保存中…'; }
+  const prog=$('#omapProg');
+  PACK_DL={ abort:false };
+  // 7枚ずつ: SW側は1枚15秒打ち切りのため、1依頼は最悪でも 7×15=105秒 ＜ 応答待ち120秒。
+  // 「画面が打ち切ったのにSW側の処理が長く残って待ち行列が伸びる」状態を構造的に作らない
+  const urls=est.urls, CH=7; let done=0, ok=0, fail=0;
+  if(prog) prog.innerHTML=`<div class="card"><div class="small" id="omapProgTxt">準備中…</div>
+    <button class="btn ghost" style="margin-top:8px; width:auto; padding:6px 12px;" onclick="offlineAbort()">中断</button></div>`;
+  for(let i=0;i<urls.length && !PACK_DL.abort;i+=CH){
+    const chunk=urls.slice(i,i+CH);
+    try{ const r=await swAsk({type:'savePackTiles', urls:chunk}); ok+=r.ok||0; fail+=r.fail||0; }
+    catch(e){ fail+=chunk.length; }
+    done+=chunk.length;
+    const t=$('#omapProgTxt');
+    if(t) t.textContent=`${Math.min(done,urls.length).toLocaleString()} / ${urls.length.toLocaleString()} 枚`
+      + (fail?`（取れなかった ${fail} 枚）`:'');
+  }
+  const aborted=PACK_DL.abort; PACK_DL=null;
+  // 実際に保存できた枚数をキャッシュから数え直す。応答待ちを打ち切ったチャンクの分も
+  // SW側では保存が続いているため、途中経過の数字ではなく実態を最終結果にする。
+  // SWのタイル通信は1枚15秒で打ち切られるため待ち行列は必ず掃ける。5分×最大3回まで待つ
+  for(let attempt=0; attempt<3; attempt++){
+    try{ const rc=await swAsk({type:'countPack', urls}, 300000);
+      if(rc && typeof rc.count==='number' && rc.count>=0){ ok=rc.count; fail=urls.length-ok; }
+      break;
+    }catch(e){ /* 時間切れ→キューが掃けるのを待ってもう一度 */ }
+  }
+  if(btn){ btn.disabled=false; btn.textContent='💾 この範囲を保存'; }
+
+  // 事前登録した項目を最終結果で確定する（0枚なら登録ごと取り下げ）
+  {
+    let list=packStore();
+    const idx=list.findIndex(x=>x.id===mine.id);
+    if(ok<=0){
+      if(idx>=0){ list.splice(idx,1);
+        if(!packSave(list)) toast('⚠ 一覧の整理に失敗しました。「0枚」のカードが残った場合は削除してください', 5000); }
+      toast('保存できませんでした（電波状況と端末の空き容量を確認してください）', 4000);
+    }else{
+      // 中断しても実枚数が全数そろっていれば「完全」（既存full範囲の再保存を中断してもカードを後退させない）
+      const partial = fail>0 || (aborted && ok<urls.length);
+      const fin=Object.assign({}, mine, {
+        ok, status: partial?'partial':'full',
+        mb: est.count ? est.mb*ok/est.count : est.mb,   // 容量は実枚数比で補正
+        saved_at: nowISO() });
+      // 確定のタイミングで、同じ範囲・設定の古いカードを整理して置き換える（仮登録時は消していない）
+      list=list.filter(x=> x.id===mine.id || packSig(x)!==sigKey);
+      const idx2=list.findIndex(x=>x.id===mine.id);
+      if(idx2>=0) list[idx2]=fin; else list.unshift(fin);
+      if(!packSave(list)){
+        // 確定の書き込みに失敗しても、事前登録（一部のみ・0枚）が残っているので隠れタイルにはならない
+        toast('⚠ 保存はできましたが一覧の更新に失敗しました。一覧の枚数表示が実際より少ないことがあります（保存し直すと直ります）', 6000);
+      }else if(aborted && partial){
+        toast('中断しました（そこまでの分は「一部のみ」として一覧に残しました。保存し直すと続きから再開します）', 4000);
+      }else if(aborted){
+        toast(`保存しました（${ok.toLocaleString()}枚。中断前にすべて揃っていました）`, 3000);
+      }else if(fail>0){
+        toast(`一部のみ保存しました（${ok.toLocaleString()} / ${urls.length.toLocaleString()}枚）。電波の良い場所で同じ範囲を保存し直すと補完されます`, 5000);
+      }else{
+        toast(`保存しました（${ok.toLocaleString()}枚）`, 3000);
+      }
+    }
+  }
+  // 完了時の画面更新は、この画面を見ているときだけ（他画面で入力中に画面を作り直すと入力が消えるため）
+  if((STACK[STACK.length-1]||{}).name==='offlineMap') render();
+}
+function offlineAbort(){ if(PACK_DL) PACK_DL.abort=true; }
+// 保存済みカードの範囲・設定を画面に呼び出す（「一部のみ」の補完や設定を変えた保存し直しを、囲みを手で再現せずにできるように）
+function recallPack(id){
+  const p=packStore().find(x=>x.id===id); if(!p || !mapObj) return;
+  PK_PTS=(p.poly||[]).map(q=>[+q[0],+q[1]]);
+  document.querySelectorAll('[data-seg="packZoom"] button').forEach(b=>{
+    b.classList.toggle('on', b.textContent.startsWith('z'+p.zmax)); });
+  document.querySelectorAll('[data-seg="packLayers"] button').forEach(b=>{
+    b.classList.toggle('on', (p.layers||[]).includes(b.textContent)); });
+  offlineRedrawShape(); offlineEstimate();
+  try{ mapObj.fitBounds(p.poly, {padding:[30,30]}); }catch(e){}
+  toast('保存済みの範囲を呼び出しました。「💾 この範囲を保存」で補完・更新できます', 3500);
+}
+async function deleteMapPack(id){
+  const list=packStore(); const p=list.find(x=>x.id===id); if(!p) return;
+  if(!confirm(`「${p.name||'保存範囲'}」の地図（約${(+p.mb).toFixed(0)}MB）を消しますか？\n※範囲が重なっている他の保存分のタイルも一緒に消えることがあります（保存し直せば戻せます）`)) return;
+  const area = (p.poly && p.poly.length>=3) ? {poly:p.poly} : p.bbox;
+  // タイルの削除が成功したときだけ一覧から外す（失敗時に一覧だけ消すと、消せない隠れタイルが残るため）
+  let okDel=false;
+  try{ const r=await swAsk({type:'deletePack', urls:packTileUrls(area, p.zmax, p.layers)});
+    okDel = !!(r && typeof r.deleted==='number'); }catch(e){}
+  if(!okDel){ toast('削除に失敗しました（処理が混み合っている可能性）。少し待ってからもう一度お試しください', 4000); return; }
+  if(!packSave(list.filter(x=>x.id!==id))){
+    toast('⚠ タイルは削除しましたが一覧の更新に失敗しました。もう一度「削除」を押してください', 5000); return; }
+  toast('消しました');
+  if((STACK[STACK.length-1]||{}).name==='offlineMap') render();
+}
+async function offlineStats(){
+  const el=$('#omapStats'); if(el) el.textContent='確認中…';
+  try{ const r=await swAsk({type:'packStats'});
+    if(!r || r.error || typeof r.count!=='number') throw new Error('stats-fail');   // 計測失敗を0枚と誤表示しない
+    if(el) el.textContent=`実際の保存量：${r.count.toLocaleString()}枚 ／ 約${((r.bytes||0)/1024/1024).toFixed(0)}MB`;
+  }catch(e){ if(el) el.textContent='確認できませんでした'; }
+}
 
 /* ============================================================
    書き出し（CSV / GeoJSON / JSONバックアップ）
