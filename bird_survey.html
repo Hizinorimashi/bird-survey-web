@@ -218,7 +218,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v78（2026-08-02 オフライン地図の保存を追加・十字を細い黒線に変更）';
+const APP_VERSION = 'v79（2026-08-03 飛翔経路のロスト後続き描き＋ルート記録の中断通知）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2621,8 +2621,26 @@ function walkPillTap(){ if(!WALK) return; const cur=STACK[STACK.length-1]||{};
 function renderWalkPill(){
   const sub=$('#hSub'); if(!sub) return;
   const old=document.getElementById('walkPill'); if(old) old.remove();
-  if(WALK) sub.insertAdjacentHTML('afterbegin',
-    `<span class="pill ok" id="walkPill" style="cursor:pointer;" onclick="walkPillTap()">🚶 ルート記録中</span>`);
+  if(!WALK) return;
+  // 記録の状態でピルの見た目を変える（カメラ・別アプリ等での中断や、GPSの長い沈黙を見逃さないため）
+  const warnStyle='cursor:pointer; background:var(--warn); color:#0a0f0d;';
+  let cls='pill ok', style='cursor:pointer;', label='🚶 ルート記録中';
+  if(WALK.stale){ cls='pill'; style=warnStyle; label='🚶⚠ GPSを待っています'; }
+  else if(WALK.resumeWait){ cls='pill'; style=warnStyle; label='🚶⚠ GPS再開を確認中'; }
+  else if(WALK.warnUntil && Date.now()<WALK.warnUntil){ cls='pill'; style=warnStyle; label='🚶⚠ 中断あり→再開'; }
+  sub.insertAdjacentHTML('afterbegin',
+    `<span class="${cls}" id="walkPill" style="${style}" onclick="walkPillTap()">${label}</span>`);
+}
+// 中断（カメラ・動画撮影・別アプリ・画面ロック等で位置が途絶えていた時間）を、位置の再取得を確認した時点で知らせる。
+// その区間の軌跡は点が飛んで直線になるため、気付かず歩き続けないようピルとトーストで目立たせる
+function walkGapNotify(ms){
+  if(!WALK) return;
+  const sec=Math.round(ms/1000);
+  const dur = sec>=60 ? `約${Math.round(sec/60)}分` : `約${sec}秒`;
+  WALK.warnUntil=Date.now()+8000;
+  renderWalkPill();
+  setTimeout(()=>{ if(WALK && (!WALK.warnUntil || Date.now()>=WALK.warnUntil)) renderWalkPill(); }, 8200);
+  toast(`⚠ 位置の記録が${dur}中断していました（カメラ・別アプリ等）。いま再開しました。中断区間の軌跡は直線になります`, 5000);
 }
 // WakeLock取得（歩行中のみ）。バックグラウンド復帰時にも呼ばれ、取り直す。
 // 古いセッション・古いrequestの結果は必ず捨てる（同一セッション内の多重requestで参照が迷子にならないよう世代番号で照合）
@@ -2637,8 +2655,17 @@ function walkWakeLock(){
       walk.wakeLock=w;
     } else { try{ w.release(); }catch(e){} } }).catch(()=>{});
 }
-// 画面復帰時: 歩行記録中ならWakeLockを取り直す（バックグラウンドでOSが解放するため）
-document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && WALK) walkWakeLock(); });
+// 画面復帰時: 歩行記録中ならWakeLockを取り直す（バックグラウンドでOSが解放するため）。
+// カメラ・別アプリ・画面ロック等で裏に回っていた場合、位置が3秒以上途絶えていたら「GPS再開を確認中」にする。
+// 「中断→再開」の通知は次の位置が実際に届いた時点で出す（復帰しただけではGPSが再開したとは限らない。
+//  裏でも位置が届き続けていた端末は lastFixAt が新しいままなので中断扱いにしない）
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='hidden'){ if(WALK && !WALK.hiddenAt) WALK.hiddenAt=Date.now(); return; }
+  if(!WALK) return;
+  walkWakeLock();
+  if(WALK.hiddenAt){ WALK.hiddenAt=null;
+    if(WALK.hadFix && Date.now()-WALK.lastFixAt>=3000 && !WALK.resumeWait){ WALK.resumeWait=true; renderWalkPill(); } }
+});
 SCREENS.routeEdit = (svUuid)=>{
   const s=DB.survey(svUuid); if(!s) return SCREENS.home();
   // 別の調査を歩行記録中なら、この画面での編集は混線のもとなので案内だけ出す
@@ -2742,10 +2769,18 @@ function startWalk(){
   if(SCREENS._draftChecked!==sv){ maybeRestoreDraft(sv); redrawRoute(); }   // 画面表示時に確認済みなら二重確認しない
   _walkStarting=true;
   const walk={ sv, watchId:null, wakeLock:null, timer:null, lastSave:Date.now(), savedFp:'', wlReq:0, saveFailed:false,
+    lastFixAt:Date.now(), hiddenAt:null, warnUntil:0, stale:false, resumeWait:false, hadFix:false,   // 中断・GPS沈黙の検知用
     baseFp:JSON.stringify((DB.survey(sv)&&DB.survey(sv).route)||[]) };   // 開始時点の正規ルートの指紋（同期競合の検出用）
   // 先にwatchを張ってIDを確定（WakeLock取得のawait中に二度押しされてもリークしない）
   walk.watchId=navigator.geolocation.watchPosition(p=>{
     if(WALK!==walk) return;   // 停止済みセッションの遅延通知は無視（新しい記録に混入させない）
+    // 復帰確認中なら、この位置到達が「本当の再開」。中断時間＝位置が途絶えていた実時間で通知する
+    //（初回測位はまだ記録が始まっていないので中断扱いにしない＝hadFixが立ってからだけ通知）
+    if(walk.resumeWait){ const gap=Date.now()-walk.lastFixAt; walk.resumeWait=false;
+      if(walk.hadFix && gap>=3000) walkGapNotify(gap); else renderWalkPill(); }
+    walk.hadFix=true;
+    walk.lastFixAt=Date.now();
+    if(walk.stale){ walk.stale=false; renderWalkPill(); }   // GPS沈黙から回復したらピルを通常表示に戻す
     const pt=[p.coords.latitude, p.coords.longitude];
     lastFix={lat:pt[0],lon:pt[1],acc:p.coords.accuracy,t:Date.now()};
     // 歩行中はこのwatchがGPSインジケータも担う（インジケータ用watchと二重にしない＝電池対策）
@@ -2758,13 +2793,25 @@ function startWalk(){
     }
   }, e=>{
     if(WALK!==walk) return;   // 古いセッションの失敗通知で新しい記録を止めない
-    if(!stopWalk(true)){ toast('位置が取得できず、保存もできないため記録状態を保持しています（空き容量を確保してください）', 4000); return; }
-    toast('位置を取得できず記録を停止しました');
+    // 圏外・測位不能・タイムアウトは一時的な失敗。watchを維持すれば回復時に自動で続きが録れるため止めない
+    //（60秒以上沈黙が続けば下の監視タイマーがピル「GPSを待っています」で知らせる）
+    if(!e || e.code!==1){ const el=$('#pGps'); if(el){ el.textContent='GPS 再取得中…'; el.className='pill off'; } return; }
+    // 位置情報の許可が取り消された（回復不能）ときだけ停止する
+    if(!stopWalk(true)){ toast('位置情報が使えなくなり、保存もできないため記録状態を保持しています（空き容量を確保してください）', 4000); return; }
+    toast('位置情報が許可されていないため記録を停止しました。端末の設定を確認してください', 4000);
     const el=$('#pGps'); if(el){ el.textContent='GPS 取得不可'; el.className='pill off'; }
     const cur=STACK[STACK.length-1]||{}; if(cur.name==='survey') startGpsIndicator();   // 調査画面なら通常監視に復帰
   }, {enableHighAccuracy:true, maximumAge:1000, timeout:20000});
-  // 20秒ごとの下書き保存（静止中でも未保存の変更があれば保存する。点追加時だけの判定だと静止中に保存されない）
-  walk.timer=setInterval(()=>{ if(WALK===walk && routeTailFp()!==walk.savedFp) routeDraftSave(); }, 20000);
+  // 20秒ごとの下書き保存（静止中でも未保存の変更があれば保存する。点追加時だけの判定だと静止中に保存されない）。
+  // あわせてGPSの沈黙を監視: 画面が表のまま60秒以上位置が届かなければピルを「GPSを待っています」に変える
+  //（トーストは出さない——立ち止まり・樹冠下などで沈黙はあり得るため、控えめに色で知らせるだけ）
+  walk.timer=setInterval(()=>{ if(WALK!==walk) return;
+    if(routeTailFp()!==walk.savedFp) routeDraftSave();
+    if(document.visibilityState==='visible'){
+      const quiet=Date.now()-walk.lastFixAt>60000;
+      if(quiet!==walk.stale){ walk.stale=quiet; renderWalkPill(); }
+    }
+  }, 20000);
   WALK=walk;
   _walkStarting=false;
   if(routeDraftSave()) SCREENS._dirty=false;   // 開始時点の状態を下書き化。成功したら「描く」での未保存扱いも解除
@@ -2866,7 +2913,7 @@ SCREENS.flightEdit = (argStr)=>{
   return {
     title: editing?'飛翔経路を編集':'飛翔経路を記録',
     html:`
-      <div class="note"><span id="fHelpHow"></span>鳥が飛んだ順に点がつながります（緑「始」→赤「終」で向き）。間違えたら「↶ 1つ戻す」。<br>薄い線は同じ調査の他の経路です。別の個体・種を続けて描くときは「保存して続けて描く」。</div>
+      <div class="note"><span id="fHelpHow"></span>鳥が飛んだ順に点がつながります（緑「始」→赤「終」で向き）。間違えたら「↶ 1つ戻す」。<br>薄い線は同じ調査の他の経路です。見失った鳥をまた見つけたときは、同じ線に足さず「保存して続きを新しい経路で描く」で別の線として描いてください（種名・個体ラベルは引き継がれ、前後は開始時刻で分かります）。</div>
       <div id="fmap" style="height:calc(100vh - 520px); min-height:240px; border-radius:var(--radius); border:1px solid var(--line);"></div>
       <div class="sp"></div>
       <div class="btn-grid">
@@ -2904,7 +2951,10 @@ SCREENS.flightEdit = (argStr)=>{
       <div class="field"><span class="lab">録音</span><div id="recPanel"></div></div>
       <div class="field"><span class="lab">写真・動画</span><div id="mediaPanel"></div></div>
       <button class="btn primary big" onclick="saveFlight('${f.uuid}','${svUuid}',${editing},false)">保存する</button>
-      ${!editing?`<div class="sp"></div><button class="btn" onclick="saveFlight('${f.uuid}','${svUuid}',${editing},true)">＋ 保存して続けて描く（別の個体・種）</button>`:''}
+      <div class="sp"></div>
+      <button class="btn" onclick="saveFlight('${f.uuid}','${svUuid}',${editing},true)">${editing
+        ?'＋ 保存して続きを新しい経路で描く（ロスト後の再発見など）'
+        :'＋ 保存して続けて描く（別の個体・種／同じ個体の続き）'}</button>
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteFlight('${f.uuid}')">この飛翔経路を削除</button>`:''}
     `,
     onMount:()=>{ SCREENS._chosenId=f.species_id||''; flightPath=(f.path||[]).slice();
@@ -3051,6 +3101,8 @@ function redrawFlight(){
 function flightUndo(){ if(!flightPath.length) return; flightPath.pop(); SCREENS._dirty=true; redrawFlight(); }
 function flightClear(){ if(!flightPath.length) return; if(!confirm('描いた線を全部消しますか？')) return; flightPath=[]; SCREENS._dirty=true; redrawFlight(); }
 function saveFlight(u,svUuid,editing,cont){
+  // 録音中に保存→遷移すると離脱確認と衝突して履歴・録音状態が崩れるため、先に停止してもらう
+  if(REC){ toast('録音中です。録音を停止してから保存してください'); return; }
   if(flightPath.length<2){ toast('地図で2点以上の経路を描いてから保存してください'); return; }
   const name=(($('#spInput')&&$('#spInput').value)||'').trim();
   const g=n=>{ const el=$(`#flForm [name="${n}"]`); return el?el.value:''; };
@@ -3098,7 +3150,7 @@ function flightCard(u,f){ return `<div class="card tap" onclick="nav('flightEdit
         ${f.age_class&&f.age_class!=='不明'?`<span class="pill">${esc(f.age_class)}</span>`:''}
         ${f.individual_label?`<span class="pill">${esc(f.individual_label)}</span>`:''}
         ${f.needs_review?'<span class="badge warn">要確認</span>':''}</div>
-      <div class="small muted">${fmtTime(f.start_time)} ・ ${esc((f.path||[]).length)}点 ・ ${esc(f.height_class||'')}${f.behavior?' ・ '+esc(f.behavior):''}
+      <div class="small muted">${fmtTime(f.start_time)}${f.end_time?'→'+fmtTime(f.end_time):''} ・ ${esc((f.path||[]).length)}点 ・ ${esc(f.height_class||'')}${f.behavior?' ・ '+esc(f.behavior):''}
         <span class="tiny muted">${(f.audio&&f.audio.length)?' 🎤':''}${(f.media&&f.media.length)?' 📷':''}</span></div>
     </div></div></div>`; }
 
