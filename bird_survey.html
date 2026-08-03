@@ -218,7 +218,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v80（2026-08-03 飛翔経路のメモ欄を種名の直下に移動）';
+const APP_VERSION = 'v81（2026-08-03 観察入力の並び替え：録音・写真を先頭に、確認方法等をプルダウン化）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1571,11 +1571,29 @@ SCREENS.obsEdit = (argStr)=>{
     return `<div class="seg" data-seg="${field}">${opts.map(x=>
       `<button type="button" class="${set.has(x)?'on':''}" onclick="toggleMulti(this)">${esc(x)}</button>`).join('')}</div>${
       opts.includes('その他')?otherBox(field,oOther[field],set.has('その他')):''}`; };
+  // 単一選択のプルダウン版（画面をすっきりさせたい項目用）。値の読み取りは segVal が SELECT にも対応
+  // 保存済みの値が選択肢に無い場合（旧データ等）はその値の選択肢を足して黙って変わるのを防ぐ。
+  // 必須項目でも既存値が空なら「未設定」を足す（先頭の選択肢が黙って選ばれて保存が変わるのを防ぐ。監査Major対応）
+  const segSelect=(field,opts,allowEmpty)=>`<select data-seg="${field}">
+    ${allowEmpty?`<option value="" ${!o[field]?'selected':''}>なし</option>`:''}
+    ${(!allowEmpty && !o[field])?`<option value="" selected>未設定</option>`:''}
+    ${(o[field]&&!opts.includes(o[field]))?`<option value="${esc(o[field])}" selected>${esc(o[field])}</option>`:''}
+    ${opts.map(x=>`<option value="${esc(x)}" ${o[field]===x?'selected':''}>${esc(x)}</option>`).join('')}</select>`;
+  // 複数選択の折りたたみ版。閉じたままでも選択中の内容が見える（toggleMulti が segsum-* を更新）
+  const segFold=(field,label,opts)=>`<div class="field"><details class="fold">
+    <summary><span class="lab" style="display:inline; margin:0;">${esc(label)}</span>
+      <span class="small muted" id="segsum-${field}">${esc(String(o[field]||'').split('・').filter(Boolean).join('・')||'未選択')}</span></summary>
+    ${segMulti(field,opts)}
+  </details></div>`;
 
   return {
     title: editing?'観察を編集':'観察を追加',
     html:`
       <form id="obForm">
+        <div class="field"><span class="lab">録音メモ（鳴き声など）</span>
+          <div id="recPanel"></div></div>
+        <div class="field"><span class="lab">写真・動画（カメラで撮影／ライブラリから選択）</span>
+          <div id="mediaPanel"></div></div>
         <label class="field"><span class="lab">種名（未入力でも保存可）</span>
           <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
             placeholder="和名で検索…" oninput="spSearch(this.value)">
@@ -1583,31 +1601,27 @@ SCREENS.obsEdit = (argStr)=>{
           <div class="chips" id="spQuick"></div>
           <div class="chips" id="spRefLinks"></div>
         </label>
+        <label class="field"><span class="lab">観察メモ</span>
+          <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
         <div class="two">
           <label class="field"><span class="lab">個体数</span>
             <input type="number" name="count" inputmode="numeric" min="0" value="${esc(o.count!=null?o.count:1)}"></label>
           <label class="field"><span class="lab">観察日時</span>
             <input type="datetime-local" name="observed_at" value="${esc(o.observed_at)}"></label>
         </div>
-        <label class="field"><span class="lab">確認方法</span>${seg('detection_method',OPT.detection)}</label>
-        <div class="two">
-          <label class="field"><span class="lab">距離帯（ルート/定点から・任意）</span>${seg('distance_band',OPT.distBand,true)}</label>
-          <label class="field"><span class="lab">確認方向（任意）</span>${seg('direction',OPT.direction,true)}</label>
-        </div>
-        <label class="field"><span class="lab">行動（複数選択可）</span>${segMulti('behavior',OPT.behavior)}</label>
+        ${segFold('behavior','行動（複数選択可）',OPT.behavior)}
         <div id="breedHint" class="note" style="display:none; margin:2px 0 10px;"></div>
-        <label class="field"><span class="lab">生息環境（複数選択可）</span>${segMulti('habitat',OPT.habitat)}</label>
+        ${segFold('habitat','生息環境（複数選択可）',OPT.habitat)}
         <label class="field"><span class="lab">年齢</span>${seg('age_class',OPT.obsAge)}</label>
         <label class="field"><span class="lab">性別</span>${seg('sex',OPT.sex)}</label>
+        <div class="two">
+          <label class="field"><span class="lab">距離帯（ルート/定点から・任意）</span>${segSelect('distance_band',OPT.distBand,true)}</label>
+          <label class="field"><span class="lab">確認方法</span>${segSelect('detection_method',OPT.detection)}</label>
+        </div>
+        <label class="field"><span class="lab">確認方向（任意）</span>${seg('direction',OPT.direction,true)}</label>
         <label class="field"><span class="lab">同定状態</span>${seg('identification_status',OPT.idStatus)}</label>
         <div id="idHint" class="note" style="display:none; margin:2px 0 10px;"></div>
         <label class="field"><span class="lab">信頼度</span>${seg('confidence',OPT.confidence)}</label>
-        <label class="field"><span class="lab">観察メモ</span>
-          <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
-        <div class="field"><span class="lab">録音メモ（鳴き声など）</span>
-          <div id="recPanel"></div></div>
-        <div class="field"><span class="lab">写真・動画（カメラで撮影／ライブラリから選択）</span>
-          <div id="mediaPanel"></div></div>
         <button type="button" class="btn ghost" style="margin-bottom:14px;" onclick="addObsToGuide()">🕮 この鳴き声・写真を図鑑に登録（確定種）</button>
         <label class="field"><span class="lab">外部写真番号・ファイル名</span>
           <input name="external_photo_reference" value="${esc(o.external_photo_reference)}" placeholder="別カメラの写真番号など"></label>
@@ -1670,7 +1684,9 @@ SCREENS.obsEdit = (argStr)=>{
 };
 function pickObs(btn,field,val){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); syncOther(field); SCREENS._dirty=true;
   if(field==='identification_status') updateIdHint(); }
-function segVal(field){ const on=document.querySelector(`[data-seg="${field}"] button.on`); return on? (on.textContent==='なし'?'':on.textContent):''; }
+function segVal(field){ const root=document.querySelector(`[data-seg="${field}"]`); if(!root) return '';
+  if(root.tagName==='SELECT') return root.value;   // プルダウン版（「なし」は value="" なのでそのまま空）
+  const on=root.querySelector('button.on'); return on? (on.textContent==='なし'?'':on.textContent):''; }
 function segVals(field){ return [...document.querySelectorAll(`[data-seg="${field}"] button.on`)].map(b=>b.textContent).filter(t=>t!=='なし').join('・'); }
 
 /* ---------- 入力中のライブガイド（Survey123の「条件つき質問」に相当） ----------
@@ -1720,8 +1736,11 @@ function syncOther(field){
   const on=[...document.querySelectorAll(`[data-seg="${field}"] button.on`)].some(b=>b.textContent==='その他');
   inp.style.display=on?'':'none'; }
 function toggleMulti(btn){ btn.classList.toggle('on');
-  const seg=btn.closest('[data-seg]'); if(seg) syncOther(seg.dataset.seg); SCREENS._dirty=true;
+  const seg=btn.closest('[data-seg]'); if(seg){ syncOther(seg.dataset.seg); segSumUpdate(seg.dataset.seg); } SCREENS._dirty=true;
   if(seg && seg.dataset.seg==='behavior') updateBreedHint(); }
+// 折りたたみ式の複数選択で、閉じたままでも選択中の内容が見えるように見出しの表示を更新する
+//（要素が無い画面＝飛翔経路の行動・とまり木の項目では何もしない）
+function segSumUpdate(field){ const el=document.getElementById('segsum-'+field); if(el) el.textContent=segVals(field)||'未選択'; }
 
 /* 種名検索（ひらがな・カタカナどちらの入力でもヒット） */
 function toKata(s){ return String(s||'').replace(/[ぁ-ゖ]/g,c=>String.fromCharCode(c.charCodeAt(0)+0x60)); }
