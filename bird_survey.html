@@ -218,7 +218,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v83（2026-08-03 飛翔経路の複数羽同時トレース：タブ切り替えで描き分け）';
+const APP_VERSION = 'v84（2026-08-03 観察入力の画面内でも音声入力（話す→振り分け→反映）を追加）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1695,6 +1695,29 @@ function voiceToObs(u){
   SCREENS._dirty=false;   // 内容は observation の下書きへ引き継ぐので、この画面の離脱確認は不要
   goBack(); nav('obsEdit', JSON.stringify({sv:u, voice:p}));
 }
+// 観察入力画面の中の音声入力: 解析結果を「開いているフォーム」にそのまま反映する。
+// 解析できた項目だけ書き込み、行動は既存の選択に追加、メモは原文を追記（消さない・失わない）
+function voiceApplyToForm(){
+  const txt=(($('#voiceText')||{}).value||'').trim();
+  if(!txt){ toast('先に話すか、内容を入力してください'); return; }
+  if(!$('#obForm')){ return; }   // 観察入力画面以外では何もしない
+  voiceRecAbort();   // 認識中に押されても、遅れて届く認識結果が空にした欄へ戻らないように先に破棄
+  const p=parseVoiceObs(txt);
+  if(p.species_name) chooseSpecies((speciesByName(p.species_name)||{}).species_id||'', p.species_name);
+  if(p.count){ const el=$('#obForm [name="count"]'); if(el) el.value=p.count; }
+  if(p.detection_method){ const el=document.querySelector('[data-seg="detection_method"]'); if(el) el.value=p.detection_method; }
+  if(p.distance_band){ const el=document.querySelector('[data-seg="distance_band"]'); if(el) el.value=p.distance_band; }
+  if(p.direction){ const b=[...document.querySelectorAll('[data-seg="direction"] button')].find(x=>x.textContent===p.direction);
+    if(b && !b.classList.contains('on')) b.click(); }
+  if(p.behavior){ p.behavior.split('・').forEach(v=>{
+    const b=[...document.querySelectorAll('[data-seg="behavior"] button')].find(x=>x.textContent===v);
+    if(b && !b.classList.contains('on')) b.click(); }); }   // click経由＝繁殖ヒント・見出し更新も従来どおり動く
+  if(p.note){ const el=$('#obForm [name="note"]'); if(el) el.value=(el.value?el.value+'\n':'')+p.note; }
+  SCREENS._dirty=true;
+  const ta=$('#voiceText'); if(ta) ta.value='';
+  voicePreview();
+  toast('入力欄に反映しました。内容を確認して保存してください');
+}
 
 SCREENS.obsEdit = (argStr)=>{
   const arg = JSON.parse(argStr||'{}');
@@ -1761,6 +1784,14 @@ SCREENS.obsEdit = (argStr)=>{
           <div id="recPanel"></div></div>
         <div class="field"><span class="lab">写真・動画（カメラで撮影／ライブラリから選択）</span>
           <div id="mediaPanel"></div></div>
+        <div class="field"><details class="fold">
+          <summary><span class="lab" style="display:inline; margin:0;">🎙 音声でまとめて入力</span>
+            <span class="small muted">話すと種名・数・行動などに振り分け</span></summary>
+          ${(window.SpeechRecognition||window.webkitSpeechRecognition)?`<button type="button" class="btn" id="voiceBtn" onclick="voiceListen()">🎙 話す（電波が必要）</button><div class="sp"></div>`:''}
+          <textarea id="voiceText" placeholder="例：ウグイス 2羽 さえずり 北東 30メートル（キーボードのマイク🎙でも入力可・圏外OK）" oninput="voicePreview()"></textarea>
+          <div class="card" id="voicePrev" style="background:var(--panel2); margin-top:6px;">—</div>
+          <button type="button" class="btn" style="margin-top:6px;" onclick="voiceApplyToForm()">↓ この内容を下の入力欄に反映</button>
+        </details></div>
         <label class="field"><span class="lab">種名（未入力でも保存可）</span>
           <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
             placeholder="和名で検索…" oninput="spSearch(this.value)">
@@ -3887,7 +3918,8 @@ function drawMap(obs,notes,flights,targets,route){
       L.marker(path[path.length-1],{icon:badge('終','#d05555')}).addTo(mapObj);
     }
     if(arrowsOn){ flightArrowPts(disp).forEach(a=>
-      L.marker(a.p,{icon:flightArrowIcon(a.b,col), interactive:false}).addTo(mapObj)); }
+      // rotateWithView: 地図を回転させたとき矢印も地面に追随させる（leaflet-rotate。未対応環境では無視される）
+      L.marker(a.p,{icon:flightArrowIcon(a.b,col), interactive:false, rotateWithView:true}).addTo(mapObj)); }
     path.forEach(p=>group.push(p));
   });
   if(Object.keys(legend).length) addFlightLegend(legend, fMode);
@@ -3927,12 +3959,16 @@ function flightArrowPts(path){
   }
   return out;
 }
-// 細い線のV字矢印（白フチ付き・線の色に合わせる。位置指定の十字と同じ描法）
+// 細い線のV字矢印（白フチ付き・線の色に合わせる。位置指定の十字と同じ描法）。
+// 回転はCSSでなくSVG内部の rotate(角度 中心x 中心y) で行う——iOS SafariはSVG要素へのCSS回転の
+// 基準点が左上になることがあり、中心で回らず「線の横にずれた変な向きの矢印」になるため
 function flightArrowIcon(bearing, col){
   return L.divIcon({className:'', iconSize:[18,18], iconAnchor:[9,9],
-    html:`<svg width="18" height="18" viewBox="0 0 18 18" style="transform:rotate(${bearing}deg); display:block;">
-      <path d="M4 12 L9 5 L14 12" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M4 12 L9 5 L14 12" fill="none" stroke="${col}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    html:`<svg width="18" height="18" viewBox="0 0 18 18" style="display:block;">
+      <g transform="rotate(${Math.round(bearing*10)/10} 9 9)">
+        <path d="M4 12 L9 5 L14 12" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M4 12 L9 5 L14 12" fill="none" stroke="${col}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
     </svg>`});
 }
 // 飛翔経路の凡例＋色モード切替（種→齢→個体）を地図左下に置く
