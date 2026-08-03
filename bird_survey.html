@@ -218,7 +218,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v79（2026-08-03 飛翔経路のロスト後続き描き＋ルート記録の中断通知）';
+const APP_VERSION = 'v80（2026-08-03 飛翔経路のメモ欄を種名の直下に移動）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2927,6 +2927,8 @@ SCREENS.flightEdit = (argStr)=>{
           <div id="spSuggest"></div>
           <div class="chips" id="spRefLinks"></div>
         </label>
+        <label class="field"><span class="lab">メモ</span>
+          <textarea name="memo" placeholder="飛翔の様子・方向など">${esc(f.memo||'')}</textarea></label>
         <div class="two">
           <label class="field"><span class="lab">齢</span>${segH('age_class',OPT.flightAge)}</label>
           <label class="field"><span class="lab">個体ラベル</span>
@@ -2942,8 +2944,6 @@ SCREENS.flightEdit = (argStr)=>{
         <label class="field"><span class="lab">行動（複数可）</span>${segB}</label>
         <label class="field"><span class="lab">個体数</span>
           <input type="number" name="count" min="1" value="${esc(f.count||1)}"></label>
-        <label class="field"><span class="lab">メモ</span>
-          <textarea name="memo" placeholder="飛翔の様子・方向など">${esc(f.memo||'')}</textarea></label>
         <label class="field row" style="gap:12px; align-items:center;">
           <input type="checkbox" id="flReview" style="width:auto;" ${f.needs_review?'checked':''}>
           <span class="lab" style="margin:0;">要確認フラグ</span></label>
