@@ -218,7 +218,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v82（2026-08-03 音声で観察を追加：話すと種名・数・行動に自動振り分け）';
+const APP_VERSION = 'v83（2026-08-03 飛翔経路の複数羽同時トレース：タブ切り替えで描き分け）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1019,7 +1019,14 @@ function leaveGuardOk(){
     // 未保存の新規記録は破棄済み名簿へ（保存待ちの写真・録音が完了しても、もう記録を作らせない）
     const newUuid = (cur.name==='obsEdit' && !SCREENS._obsEditing) ? (SCREENS._obs&&SCREENS._obs.uuid)
                   : (cur.name==='flightEdit' && !SCREENS._flightEditing) ? SCREENS._flightSelf : null;
-    if(newUuid) DISCARDED.add(newUuid);
+    // 複数トレースの途中保存で保存済みになったトラックが表示中のこともある＝保存済みは名簿に入れない
+    if(newUuid && !(SCREENS._ftSaved && SCREENS._ftSaved.has(newUuid))) DISCARDED.add(newUuid);
+    // 複数羽トレース中の破棄は全トラック分を名簿へ（保存に成功した分は除く＝保存済みレコードを無効化しない）。
+    // トラック状態もここで片付ける（残すと次に開いた画面で古い未保存扱いが復活する）
+    if(cur.name==='flightEdit' && !SCREENS._flightEditing && SCREENS._ftracks){
+      SCREENS._ftracks.forEach(tr=>{ if(tr&&tr.uuid && !(SCREENS._ftSaved&&SCREENS._ftSaved.has(tr.uuid))) DISCARDED.add(tr.uuid); });
+      SCREENS._ftracks=null; SCREENS._ftDirty=false; SCREENS._ftSaved=null;
+    }
   }
   return true;
 }
@@ -2593,6 +2600,12 @@ function attachMediaMeta(target, field, meta){
         species_id:'', species_name_snapshot:'', count:1, detection_method:'', behavior:'', habitat:'',
         identification_status:'未同定', confidence:'中', needs_review:false, note:'', external_photo_reference:'', audio:[], media:[], [field]:[meta] });
     } }
+  // 複数羽トレースの退避済みトラックに遅れてメディアが完成した場合、トラック側にも反映する
+  //（反映しないと一括保存が空のメディア配列で仮レコードを上書きし、参照を失う）
+  if(ok && target.kind==='flight' && SCREENS._ftracks){
+    const ftr=SCREENS._ftracks.find(t=>t&&t.uuid===target.uuid);
+    if(ftr && ftr.fields) ftr.fields[field]=(ftr.fields[field]||[]).concat([meta]);
+  }
   const cur=mediaCtx();
   if(ok && cur.kind===target.kind && cur.uuid===target.uuid){
     // 「未保存の新規記録」への追加だけを離脱ガード対象にする（既存記録へのメディアは即DB保存済み＝離脱しても消えないため）
@@ -3078,12 +3091,30 @@ SCREENS.flightEdit = (argStr)=>{
   const arg=JSON.parse(argStr||'{}'); const svUuid=arg.sv||currentSurveyUuid; const editing=!!arg.id;
   const keep=arg.keep||{};   // 「続けて描く」で前の経路から引き継ぐ属性
   let f = editing ? Object.assign({}, DB.flight(arg.id)) : null;
-  if(!f) f={ uuid:uuid(), survey_uuid:svUuid,
-    species_id:keep.species_id||'', species_name_snapshot:keep.species_name||'',
-    path:[], start_time:localDatetimeValue(), end_time:'',
-    height_class:keep.height_class||'不明', behavior:keep.behavior||'',
-    age_class:keep.age_class||'不明', individual_label:keep.individual_label||'',
-    count:1, memo:'', needs_review:false, audio:[], media:[] };
+  if(!f){
+    if(SCREENS._ftKeep && SCREENS._ftracks && SCREENS._ftracks[SCREENS._ftIdx]){
+      // 複数羽トレースのトラック切り替え（switchFlightTrack/addFlightTrack からの再描画）。
+      // 退避しておいたトラックの値でフォームを組み立てる
+      SCREENS._ftKeep=false;
+      const tr=SCREENS._ftracks[SCREENS._ftIdx];
+      f=Object.assign({ uuid:tr.uuid, survey_uuid:svUuid, path:(tr.path||[]).slice(),
+        species_id:'', species_name_snapshot:'', start_time:localDatetimeValue(), end_time:'',
+        height_class:'不明', behavior:'', age_class:'不明', individual_label:'',
+        count:1, memo:'', needs_review:false, audio:[], media:[] }, tr.fields||{});
+    } else {
+      f={ uuid:uuid(), survey_uuid:svUuid,
+        species_id:keep.species_id||'', species_name_snapshot:keep.species_name||'',
+        path:[], start_time:localDatetimeValue(), end_time:'',
+        height_class:keep.height_class||'不明', behavior:keep.behavior||'',
+        age_class:keep.age_class||'不明', individual_label:keep.individual_label||'',
+        count:1, memo:'', needs_review:false, audio:[], media:[] };
+      // トラック一覧を初期化（1本目＝この下書き）。fields は退避時に埋まる。
+      // st0=作成時の開始時刻（初期値から変えたかを保存時に判定するため。空文字判定では区別できない）
+      SCREENS._ftracks=[{ uuid:f.uuid, path:[], fields:null, st0:f.start_time }];
+      SCREENS._ftIdx=0; SCREENS._ftDirty=false; SCREENS._ftSaved=null;
+    }
+  } else { SCREENS._ftracks=null; SCREENS._ftDirty=false; }   // 既存レコードの編集は従来どおり単線（トラック機構は使わない）
+  const multiN = (!editing && SCREENS._ftracks) ? SCREENS._ftracks.length : 0;
   const segH=(field,opts)=>`<div class="seg" data-seg="${field}">${opts.map(o=>
     `<button type="button" class="${f[field]===o?'on':''}" onclick="pickObs(this,'${field}','${esc(o)}')">${esc(o)}</button>`).join('')}</div>`;
   const bo=otherParse(f.behavior); f.behavior=bo.v;
@@ -3093,7 +3124,13 @@ SCREENS.flightEdit = (argStr)=>{
   return {
     title: editing?'飛翔経路を編集':'飛翔経路を記録',
     html:`
-      <div class="note"><span id="fHelpHow"></span>鳥が飛んだ順に点がつながります（緑「始」→赤「終」で向き）。間違えたら「↶ 1つ戻す」。<br>薄い線は同じ調査の他の経路です。見失った鳥をまた見つけたときは、同じ線に足さず「保存して続きを新しい経路で描く」で別の線として描いてください（種名・個体ラベルは引き継がれ、前後は開始時刻で分かります）。</div>
+      <div class="note"><span id="fHelpHow"></span>鳥が飛んだ順に点がつながります（緑「始」→赤「終」で向き）。間違えたら「↶ 1つ戻す」。<br>薄い線は同じ調査の他の経路です。${editing?'':'同時に複数の鳥を追うときは「＋ 個体を追加」でトラックを増やし、タブで切り替えながら描けます（線ごとに種名・齢なども別に入力できます）。'}見失った鳥をまた見つけたときは、同じ線に足さず「保存して続きを新しい経路で描く」で別の線として描いてください（前後は開始時刻で分かります）。</div>
+      ${multiN?`<div class="chips" id="ftChips" style="margin-bottom:8px;">${SCREENS._ftracks.map((tr,i)=>{
+        const col=FLIGHT_PALETTE[i%FLIGHT_PALETTE.length];
+        const active=i===SCREENS._ftIdx;
+        const nm=(active ? (f.species_name_snapshot||'').trim() : ((tr.fields&&tr.fields.species_name_snapshot)||'').trim()) || ('個体'+(i+1));
+        return `<button type="button" class="c" style="border:2px solid ${col};${active?` background:${col}; color:#0a0f0d; font-weight:700;`:''}" onclick="switchFlightTrack(${i})">● ${esc(nm)}</button>`;
+      }).join('')}<button type="button" class="c" onclick="addFlightTrack()">＋ 個体を追加</button></div>`:''}
       <div id="fmap" style="height:calc(100vh - 520px); min-height:240px; border-radius:var(--radius); border:1px solid var(--line);"></div>
       <div class="sp"></div>
       <div class="btn-grid">
@@ -3128,23 +3165,124 @@ SCREENS.flightEdit = (argStr)=>{
           <input type="checkbox" id="flReview" style="width:auto;" ${f.needs_review?'checked':''}>
           <span class="lab" style="margin:0;">要確認フラグ</span></label>
       </form>
-      <div class="field"><span class="lab">録音</span><div id="recPanel"></div></div>
-      <div class="field"><span class="lab">写真・動画</span><div id="mediaPanel"></div></div>
-      <button class="btn primary big" onclick="saveFlight('${f.uuid}','${svUuid}',${editing},false)">保存する</button>
-      <div class="sp"></div>
+      ${multiN>1
+        ?'<div class="note">複数同時トレース中は録音・写真を付けられません。保存後に各経路を開いて追加してください。</div>'
+        :`<div class="field"><span class="lab">録音</span><div id="recPanel"></div></div>
+      <div class="field"><span class="lab">写真・動画</span><div id="mediaPanel"></div></div>`}
+      <button class="btn primary big" onclick="saveFlight('${f.uuid}','${svUuid}',${editing},false)">${multiN>1?`まとめて保存する（${multiN}個体）`:'保存する'}</button>
+      ${multiN>1?'':`<div class="sp"></div>
       <button class="btn" onclick="saveFlight('${f.uuid}','${svUuid}',${editing},true)">${editing
         ?'＋ 保存して続きを新しい経路で描く（ロスト後の再発見など）'
-        :'＋ 保存して続けて描く（別の個体・種／同じ個体の続き）'}</button>
+        :'＋ 保存して続けて描く（別の個体・種／同じ個体の続き）'}</button>`}
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteFlight('${f.uuid}')">この飛翔経路を削除</button>`:''}
     `,
     onMount:()=>{ SCREENS._chosenId=f.species_id||''; flightPath=(f.path||[]).slice();
-      SCREENS._mediaCtx={kind:'flight', uuid:f.uuid, sv:svUuid}; SCREENS._audio=(f.audio||[]).slice(); SCREENS._media=(f.media||[]).slice();
+      SCREENS._audio=(f.audio||[]).slice(); SCREENS._media=(f.media||[]).slice();
+      SCREENS._mediaCtx = multiN>1 ? null : {kind:'flight', uuid:f.uuid, sv:svUuid};   // 複数トレース中はメディアの持ち主を作らない
       SCREENS._flightSelf=f.uuid; SCREENS._flightSv=svUuid; SCREENS._flightEditing=editing;
       const flEl=$('#flForm'); if(flEl){ ['input','change'].forEach(ev=>flEl.addEventListener(ev, ()=>{ SCREENS._dirty=true; })); }   // 種名・時刻・メモ等の変更検知
-      renderRecPanel(); renderMediaPanel();
+      if(SCREENS._ftracks && SCREENS._ftDirty) SCREENS._dirty=true;   // トラック切り替えの再描画で未保存状態を引き継ぐ
+      if($('#recPanel')) renderRecPanel(); if($('#mediaPanel')) renderMediaPanel();
       updateSpRefLinks(f.species_name_snapshot||''); _mapTimer=setTimeout(()=>initFlightMap(),50); }
   };
 };
+/* ---------- 複数羽同時トレース（トラック切り替え） ----------
+   1トラック＝保存時に1つの飛翔経路レコード。切り替えは「フォーム値＋経路を退避 → 再描画」で行い、
+   描画・十字・undo など既存部品をそのまま使う。既存レコードの編集では使わない（単線のまま） */
+function stashFlightTrack(){
+  const tr=(SCREENS._ftracks||[])[SCREENS._ftIdx]; if(!tr) return;
+  const g=n=>{ const el=$(`#flForm [name="${n}"]`); return el?el.value:''; };
+  const name=(($('#spInput')&&$('#spInput').value)||'').trim();
+  const behSet=[...document.querySelectorAll('#flForm [data-seg="behavior"] button.on')].map(b=>b.textContent);
+  tr.path=flightPath.slice();
+  tr.fields={
+    species_id: name ? (SCREENS._chosenId||'') : '', species_name_snapshot: name,
+    age_class: segVal('age_class'), individual_label:(g('individual_label')||'').trim(),
+    start_time: g('start_time')||'', end_time: g('end_time')||'',
+    height_class: segVal('height_class'),
+    behavior: otherMerge(behSet.join('・'),'behavior'),
+    count: g('count')||'', memo:(g('memo')||'').trim(),
+    needs_review: $('#flReview')?$('#flReview').checked:false,
+    audio:(SCREENS._audio||[]).slice(), media:(SCREENS._media||[]).slice(),
+  };
+}
+function switchFlightTrack(i){
+  if(!SCREENS._ftracks || i===SCREENS._ftIdx || !SCREENS._ftracks[i]) return;
+  // 録音中（マイク許可待ち含む）の切り替えは再描画で録音が無警告に消えるため止める
+  if(recBusy()){ toast('録音中はタブを切り替えられません。先に録音を停止してください'); return; }
+  stashFlightTrack();
+  if(SCREENS._dirty) SCREENS._ftDirty=true;   // render()が_dirtyを消すため、未保存の事実をここで覚える
+  SCREENS._ftIdx=i; SCREENS._ftKeep=true; render();
+}
+function addFlightTrack(){
+  if(!SCREENS._ftracks) return;
+  // 録音・写真が絡む状態で複数トレースへ入ると、メディアの持ち主（仮レコード・ghost）と
+  // トラック状態が競合する。構造的に避けるため、この場合は1羽ずつの保存へ誘導する
+  if(recBusy()){ toast('録音中は個体を追加できません。先に録音を停止してください'); return; }
+  if((SCREENS._audio&&SCREENS._audio.length)||(SCREENS._media&&SCREENS._media.length)||SCREENS._ghost){
+    toast('録音・写真を付けた経路は複数同時トレースにできません。先にこの経路を保存してから、次の個体を記録してください', 4500); return; }
+  stashFlightTrack();
+  if(SCREENS._dirty) SCREENS._ftDirty=true;
+  const prev=(SCREENS._ftracks[SCREENS._ftIdx]||{}).fields||{};
+  const st=prev.start_time||localDatetimeValue();   // 同時観察なので開始時刻は揃える
+  SCREENS._ftracks.push({ uuid:uuid(), path:[], st0:st, fields:{
+    species_id:'', species_name_snapshot:'', age_class:'不明', individual_label:'',
+    start_time: st, end_time:'',
+    height_class:'不明', behavior:'', count:1, memo:'', needs_review:false, audio:[], media:[] } });
+  SCREENS._ftIdx=SCREENS._ftracks.length-1; SCREENS._ftKeep=true; render();
+}
+// 複数トラックの一括保存。1件でも失敗したらそこで止める（保存済み件数は知らせる）
+function saveFlightMulti(svUuid){
+  stashFlightTrack();
+  const tracks=SCREENS._ftracks||[];
+  const act=[];
+  for(let i=0;i<tracks.length;i++){ const tr=tracks[i]; const fl=tr.fields||{};
+    const pts=(tr.path||[]).filter(validPathPt);
+    // 「空」＝すべての入力が初期値のまま。1項目でも入力があれば空扱いにしない（黙って捨てない）
+    const untouched = !pts.length && !(fl.species_name_snapshot||'').trim() && !(fl.memo||'').trim()
+      && !(fl.individual_label||'').trim() && !(fl.end_time||'') && !(fl.behavior||'')
+      && !fl.needs_review && (!fl.age_class||fl.age_class==='不明') && (!fl.height_class||fl.height_class==='不明')
+      && (String(fl.count==null?'':fl.count).trim()===''||String(fl.count)==='1')
+      && String(fl.start_time||'')===String(tr.st0||'')   // 開始時刻を初期値から変えたら「操作あり」
+      && !((fl.audio&&fl.audio.length)||(fl.media&&fl.media.length));
+    if(untouched) continue;   // 完全に手つかずのトラックだけ除外
+    const label=(fl.species_name_snapshot||'').trim()||('個体'+(i+1));
+    if(pts.length<2){ toast(`${i+1}番目のトラック（${label}）の経路が2点未満です。地図で描くか、タブを切り替えて内容を消してください`, 4500); return; }
+    if(String(fl.count).trim()!==''){ const n=Number(fl.count);
+      if(!Number.isInteger(n) || n<0){ toast(`${i+1}番目のトラック（${label}）の個体数は0以上の整数で入力してください`); return; } }
+    act.push({i,tr});
+  }
+  if(!act.length){ toast('地図で2点以上の経路を描いてから保存してください'); return; }
+  // 同じ種名でラベルが全て空のトラック群には 個体A/B/… を自動付与（色分け「個体」で区別できるように）。
+  // 元データ（tr.fields）は書き換えず保存レコードにだけ載せる（途中失敗→再試行でラベルが片寄るのを防ぐ）
+  const byName={};
+  act.forEach(a=>{ const n=(a.tr.fields.species_name_snapshot||'').trim();
+    (byName[n]=byName[n]||[]).push(a); });
+  Object.keys(byName).forEach(n=>{ const g=byName[n];
+    if(n && g.length>1 && g.every(a=>!(a.tr.fields.individual_label||'').trim()))
+      g.forEach((a,j)=>{ a.autoLabel = j<26 ? '個体'+String.fromCharCode(65+j) : '個体'+(j+1); }); });
+  let ok=0;
+  for(const a of act){ const fl=a.tr.fields;
+    const name=(fl.species_name_snapshot||'').trim();
+    const rec={ uuid:a.tr.uuid, survey_uuid:svUuid,
+      species_id: name?(fl.species_id||''):'', species_name_snapshot:name,
+      path:(a.tr.path||[]).slice(),
+      start_time:fl.start_time||'', end_time:fl.end_time||'',
+      height_class:fl.height_class||'不明', age_class:fl.age_class||'不明',
+      individual_label:(fl.individual_label||'').trim()||a.autoLabel||'', behavior:fl.behavior||'',
+      count:fl.count||'', memo:(fl.memo||'').trim(), needs_review:!!fl.needs_review,
+      audio:fl.audio||[], media:fl.media||[] };
+    if(!DB.upsertFlight(rec)){ toast(`保存に失敗しました（${ok}件は保存済み）。空き容量を確保してからもう一度保存してください`, 4500); return; }
+    ok++;
+    // 保存できたトラックを記録（後で破棄しても保存済みレコードを破棄済み名簿に入れないため）
+    (SCREENS._ftSaved=SCREENS._ftSaved||new Set()).add(a.tr.uuid);
+    if(name) DB.pushRecent(name);
+  }
+  SCREENS._audio=null; SCREENS._media=null; SCREENS._mediaCtx=null;
+  SCREENS._ftracks=null; SCREENS._ftDirty=false; SCREENS._ftSaved=null; SCREENS._dirty=false;
+  toast(`${ok}本の飛翔経路を保存しました`);
+  goBack();
+}
 // 折れ線を滑らかな曲線に（Chaikin法。始点・終点は保持。生データは変えず表示・書き出しにだけ使う）
 function smoothPath(pts, iterations){
   pts=(pts||[]).filter(p=>Array.isArray(p)&&p.length===2);
@@ -3266,6 +3404,15 @@ function redrawFlight(){
   if(!mapObj) return;
   if(flightLayer){ try{ mapObj.removeLayer(flightLayer); }catch(e){} }
   flightLayer=L.layerGroup().addTo(mapObj);
+  // 複数羽トレース: アクティブ以外のトラックを各色の実線で描く（薄い既存経路より目立ち、アクティブより控えめ）
+  if(SCREENS._ftracks && SCREENS._ftracks.length>1){
+    SCREENS._ftracks.forEach((tr,i)=>{ if(i===SCREENS._ftIdx) return;
+      const col=FLIGHT_PALETTE[i%FLIGHT_PALETTE.length];
+      const p=(tr.path||[]).filter(validPathPt);
+      if(p.length>1) L.polyline(p,{color:col,weight:3,opacity:.8}).addTo(flightLayer);
+      if(p.length) L.circleMarker(p[p.length-1],{radius:5,color:'#fff',weight:1,fillColor:col,fillOpacity:1}).addTo(flightLayer);
+    });
+  }
   if(flightPath.length){
     if(flightPath.length>1) L.polyline(flightPath,{color:'#e0a030',weight:4,opacity:.9}).addTo(flightLayer);
     const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[24,24],iconAnchor:[12,12]});
@@ -3275,14 +3422,16 @@ function redrawFlight(){
   }
   const info=$('#fInfo');
   if(info){ let d=0; for(let i=1;i<flightPath.length;i++){ try{ d+=mapObj.distance(flightPath[i-1],flightPath[i]); }catch(e){} }
-    info.textContent = flightPath.length? `${flightPath.length}点 ・ 全長 約${d>=1000?(d/1000).toFixed(2)+'km':Math.round(d)+'m'}`
-      : (flightCrossMode?'まだ点がありません。地図を動かして「点を追加」で描いてください。':'まだ点がありません。地図をタップして描いてください。'); }
+    const multi=(SCREENS._ftracks&&SCREENS._ftracks.length>1)?`（全${SCREENS._ftracks.length}個体・表示中のタブに点が入ります）`:'';
+    info.textContent = flightPath.length? `${flightPath.length}点 ・ 全長 約${d>=1000?(d/1000).toFixed(2)+'km':Math.round(d)+'m'}${multi}`
+      : (flightCrossMode?'まだ点がありません。地図を動かして「点を追加」で描いてください。':'まだ点がありません。地図をタップして描いてください。')+multi; }
 }
 function flightUndo(){ if(!flightPath.length) return; flightPath.pop(); SCREENS._dirty=true; redrawFlight(); }
 function flightClear(){ if(!flightPath.length) return; if(!confirm('描いた線を全部消しますか？')) return; flightPath=[]; SCREENS._dirty=true; redrawFlight(); }
 function saveFlight(u,svUuid,editing,cont){
   // 録音中に保存→遷移すると離脱確認と衝突して履歴・録音状態が崩れるため、先に停止してもらう
   if(REC){ toast('録音中です。録音を停止してから保存してください'); return; }
+  if(!editing && SCREENS._ftracks && SCREENS._ftracks.length>1){ saveFlightMulti(svUuid); return; }   // 複数羽トレースは一括保存へ
   if(flightPath.length<2){ toast('地図で2点以上の経路を描いてから保存してください'); return; }
   const name=(($('#spInput')&&$('#spInput').value)||'').trim();
   const g=n=>{ const el=$(`#flForm [name="${n}"]`); return el?el.value:''; };
@@ -3310,6 +3459,7 @@ function saveFlight(u,svUuid,editing,cont){
   if(!DB.upsertFlight(rec)) return;   // 保存失敗なら成功表示も遷移もしない
   if(name) DB.pushRecent(name);
   SCREENS._audio=null; SCREENS._media=null; SCREENS._mediaCtx=null;
+  SCREENS._ftracks=null; SCREENS._ftDirty=false;   // 単線保存でもトラック状態は片付ける
   SCREENS._dirty=false;   // 保存済みなので離脱ガード対象から外す
   toast('飛翔経路を保存しました');
   if(cont){ // 属性を引き継いで次の経路を同じ地図で描く
@@ -3723,14 +3873,21 @@ function drawMap(obs,notes,flights,targets,route){
   const fKeys=[...new Set((flights||[]).map(f=>flightColorKey(f,fMode)))];
   const colorOf={}; fKeys.forEach(k=>colorOf[k]=FLIGHT_PALETTE[flightColorIndex(fMode,k)%FLIGHT_PALETTE.length]);
   const legend={};   // 凡例用：値→色
+  // 表示切り替え: トレースが混んできたら始終マーカーを消して線だけにできる。向きは等間隔の細い矢印で補える
+  const endsOn=flightEndsOn(), arrowsOn=flightArrowsOn();
   (flights||[]).forEach(f=>{ const path=(f.path||[]).filter(validPathPt);
     if(path.length<2) return;
     const col=colorOf[flightColorKey(f,fMode)]; legend[flightColorKey(f,fMode)]=col;
-    const pl=L.polyline(smoothPath(path),{color:col,weight:4,opacity:.85}).addTo(mapObj);
+    const disp=smoothPath(path);   // 線・矢印とも表示用の滑らか経路に載せる（ズレると矢印が線から浮く）
+    const pl=L.polyline(disp,{color:col,weight:4,opacity:.85}).addTo(mapObj);
     pl.bindPopup(`<b>🛩 ${esc(f.species_name_snapshot||'（未同定）')}</b>${f.age_class&&f.age_class!=='不明'?' ・ '+esc(f.age_class):''}${f.individual_label?' ・ '+esc(f.individual_label):''}<br>${esc(f.count==null||f.count===''?1:f.count)}個体 ・ ${esc(f.height_class||'')}<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
-    const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
-    L.marker(path[0],{icon:badge('始','#3fb984')}).addTo(mapObj);
-    L.marker(path[path.length-1],{icon:badge('終','#d05555')}).addTo(mapObj);
+    if(endsOn){
+      const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
+      L.marker(path[0],{icon:badge('始','#3fb984')}).addTo(mapObj);
+      L.marker(path[path.length-1],{icon:badge('終','#d05555')}).addTo(mapObj);
+    }
+    if(arrowsOn){ flightArrowPts(disp).forEach(a=>
+      L.marker(a.p,{icon:flightArrowIcon(a.b,col), interactive:false}).addTo(mapObj)); }
     path.forEach(p=>group.push(p));
   });
   if(Object.keys(legend).length) addFlightLegend(legend, fMode);
@@ -3740,6 +3897,43 @@ function drawMap(obs,notes,flights,targets,route){
   else if(group.length===1 && !lastFix){ mapObj.setView(group[0],15); }
   addLocateControl();   // 右上に「現在地へ」ボタンを設置
   locateOnMap(group);   // 現在地を取得し、自動で表示範囲に含める
+}
+// 飛翔経路の表示切り替え（始終マーカー／向き矢印）。設定は端末に記憶
+function flightEndsOn(){ return localStorage.getItem('bs_flight_ends')!=='0'; }   // 既定は表示
+function flightArrowsOn(){ return localStorage.getItem('bs_flight_arrows')==='1'; }   // 既定は非表示
+function toggleFlightEnds(){ try{ localStorage.setItem('bs_flight_ends', flightEndsOn()?'0':'1'); }catch(e){} render(); }
+function toggleFlightArrows(){ try{ localStorage.setItem('bs_flight_arrows', flightArrowsOn()?'0':'1'); }catch(e){} render(); }
+// 2点間の方位角（北=0・時計回り。矢印の回転用）
+function bearingDeg(a,b){ const toR=Math.PI/180;
+  const y=Math.sin((b[1]-a[1])*toR)*Math.cos(b[0]*toR);
+  const x=Math.cos(a[0]*toR)*Math.sin(b[0]*toR)-Math.sin(a[0]*toR)*Math.cos(b[0]*toR)*Math.cos((b[1]-a[1])*toR);
+  return (Math.atan2(y,x)*180/Math.PI+360)%360; }
+// 経路上に等間隔で置く矢印の位置と向き（始点・終点は除く。本数は長さに応じて2〜6本）
+function flightArrowPts(path){
+  const p=(path||[]).filter(validPathPt);
+  const total=pathLength(p); if(total<=0 || p.length<2) return [];
+  const n=Math.min(6, Math.max(2, Math.round(total/150)));
+  const step=total/(n+1);
+  const out=[]; let acc=0, target=step;
+  for(let i=1;i<p.length && out.length<n;i++){
+    const segLen=distMeters(p[i-1],p[i]);
+    while(segLen>0 && acc+segLen>=target && out.length<n){
+      const t=(target-acc)/segLen;
+      out.push({ p:[ p[i-1][0]+(p[i][0]-p[i-1][0])*t, p[i-1][1]+(p[i][1]-p[i-1][1])*t ],
+        b:bearingDeg(p[i-1],p[i]) });
+      target+=step;
+    }
+    acc+=segLen;
+  }
+  return out;
+}
+// 細い線のV字矢印（白フチ付き・線の色に合わせる。位置指定の十字と同じ描法）
+function flightArrowIcon(bearing, col){
+  return L.divIcon({className:'', iconSize:[18,18], iconAnchor:[9,9],
+    html:`<svg width="18" height="18" viewBox="0 0 18 18" style="transform:rotate(${bearing}deg); display:block;">
+      <path d="M4 12 L9 5 L14 12" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M4 12 L9 5 L14 12" fill="none" stroke="${col}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`});
 }
 // 飛翔経路の凡例＋色モード切替（種→齢→個体）を地図左下に置く
 function cycleFlightColorMode(){ const order=['種','齢','個体']; const cur=flightColorMode();
@@ -3754,10 +3948,16 @@ function addFlightLegend(legend, mode){
     onAdd:function(){
       const d=L.DomUtil.create('div','');
       d.style.cssText='background:rgba(255,255,255,.92);padding:6px 8px;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.3);max-width:170px;color:#222;';
+      const bStyle='font-size:11px;padding:3px 6px;border:1px solid #ccc;border-radius:6px;background:#fff;cursor:pointer;';
       d.innerHTML=`<div style="font-size:11px;font-weight:700;margin-bottom:3px;">飛翔：${esc(mode)}別</div>${items}
-        <button type="button" style="margin-top:5px;font-size:11px;padding:3px 6px;border:1px solid #ccc;border-radius:6px;background:#fff;cursor:pointer;">色を切替（種/齢/個体）</button>`;
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;">
+        <button type="button" data-act="color" style="${bStyle}">色を切替（種/齢/個体）</button>
+        <button type="button" data-act="ends" style="${bStyle}${flightEndsOn()?'':'opacity:.55;'}">${flightEndsOn()?'始終を隠す':'始終を表示'}</button>
+        <button type="button" data-act="arrows" style="${bStyle}${flightArrowsOn()?'':'opacity:.55;'}">${flightArrowsOn()?'矢印を隠す':'→ 矢印を表示'}</button>
+        </div>`;
       L.DomEvent.disableClickPropagation(d);
-      const b=d.querySelector('button'); if(b) b.onclick=cycleFlightColorMode;
+      const wire=(act,fn)=>{ const b=d.querySelector(`button[data-act="${act}"]`); if(b) b.onclick=fn; };
+      wire('color',cycleFlightColorMode); wire('ends',toggleFlightEnds); wire('arrows',toggleFlightArrows);
       return d;
     }});
   mapObj.addControl(new Ctl());
