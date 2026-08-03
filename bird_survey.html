@@ -218,7 +218,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v81（2026-08-03 観察入力の並び替え：録音・写真を先頭に、確認方法等をプルダウン化）';
+const APP_VERSION = 'v82（2026-08-03 音声で観察を追加：話すと種名・数・行動に自動振り分け）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -998,6 +998,7 @@ const DISCARDED=new Set();
 function leaveGuardOk(){
   const cur=STACK[STACK.length-1]||{};
   const editScreen=(cur.name==='obsEdit'||cur.name==='noteEdit'||cur.name==='flightEdit'||cur.name==='routeEdit'
+    ||cur.name==='voiceObs'   // 音声入力の発話テキストも未保存の入力として保護
     ||(cur.name==='surveyEdit' && SCREENS._editing));   // 既存調査の途中編集も保護（新規は下書き自動保存があるので対象外）
   const dirty=editScreen && SCREENS._dirty;
   const ghost=dirty ? SCREENS._ghost : null;   // 写真・録音を先に付けてDBに仮保存された未保存の新規記録
@@ -1032,6 +1033,7 @@ let _navGen=0;   // 画面世代。マイク許可待ち中に画面が変わっ
 function render(){
   _navGen++;
   if(REC) recAbort(); // 画面を離れたら録音を中断（保存はしない。離脱前の確認は leaveGuardOk が担当）
+  if(typeof voiceRecAbort==='function') voiceRecAbort();   // 音声認識も同様（残すと別画面でマイクが動き続ける）
   SCREENS._dirty=false; SCREENS._ghost=null;   // 新しい画面は未編集状態から始まる（編集画面の操作でtrueになる）
   if(PDFCTX){ try{ PDFCTX.doc.destroy(); }catch(e){} PDFCTX=null; } // PDF閲覧の後始末
   if(_mapTimer){ clearTimeout(_mapTimer); _mapTimer=null; }   // 前画面の地図初期化予約を取り消す
@@ -1359,6 +1361,7 @@ SCREENS.survey = (u)=>{
     <div class="actions">
       <button type="button" class="act sm primary wide" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🐦</span>観察を追加</button>
       <button type="button" class="act sm wide" id="quickRecBtn" onclick="quickRec('${u}')"><span class="ic">🎤</span>すぐ録音（種名はあとで）</button>
+      <button type="button" class="act sm" onclick="nav('voiceObs','${u}')"><span class="ic">🎙</span>音声で追加</button>
       <button type="button" class="act sm" onclick="nav('obsBatch','${u}')"><span class="ic">🐦🐦</span>まとめて記録</button>
       <button type="button" class="act sm" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🛩</span>飛翔経路</button>
       <button type="button" class="act sm" onclick="nav('routeEdit','${u}')"><span class="ic">🧭</span>調査ルート</button>
@@ -1540,6 +1543,152 @@ function stopGps(){ if(gpsWatchId!=null && navigator.geolocation){ navigator.geo
 /* ============================================================
    観察記録 追加/編集
    ============================================================ */
+/* ---------- 音声で観察を追加（話す→自動振り分け→確認して保存） ----------
+   認識テキストの入口は2つ: アプリ内の音声認識（電波必須・非対応端末あり）と、
+   テキスト欄＋キーボードの音声入力（iPhone標準・圏外OK）。どちらも parseVoiceObs で
+   同じ解析に流し、結果は「観察を追加」画面の下書きにする（自動保存はしない＝誤記録防止）。
+   発話の原文は必ず観察メモに残す（解析を誤っても情報が失われない） */
+const VOICE_DIRS=['北東','北西','南東','南西','北','東','南','西'];   // 2文字方位を先に判定（「北東」を「北」と誤らない）
+const VOICE_KNUM={'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9};
+// 「二」「十」「二十」「二十三」程度の漢数字を数値に（音声認識が漢数字で書くことがある）
+function voiceKanjiNum(s){
+  const m=String(s||'').match(/^([一二三四五六七八九]?)(十?)([一二三四五六七八九]?)$/);
+  if(!m || (!m[1]&&!m[2]&&!m[3])) return null;
+  if(!m[2] && m[3]) return null;   // 「二三」のような十なしの2桁は解釈しない
+  const tens=m[2]?(m[1]?VOICE_KNUM[m[1]]:1)*10:(m[1]?VOICE_KNUM[m[1]]:0);
+  return tens+(m[3]?VOICE_KNUM[m[3]]:0);
+}
+const VOICE_KATA=/[ァ-ヶー]/;
+function parseVoiceObs(text){
+  const raw=String(text||'').trim();
+  // 正規化: ひらがな→カタカナ（種名マスタはカタカナ）・全角数字→半角・数字内の桁区切りカンマ除去
+  const t=toKata(raw).replace(/[０-９]/g, c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0))
+    .replace(/(\d)[,，](?=\d)/g,'$1');
+  const r={ species_name:'', species_id:'', count:'', behavior:'', detection_method:'',
+    distance_band:'', direction:'', note: raw?('🎙 '+raw):'' };
+  if(!raw) return r;
+  // 種名の2段判定（「とびけら」→トビ、「うそみたい」→ウソ のような一般文への誤ヒットを防ぐ）:
+  // 1) 原文にカタカナのまま現れ、前後がカタカナ以外（＝単語の切れ目）なら採用
+  // 2) それが無ければ、かな正規化後の包含。ただし短い名前は誤ヒットしやすいので3文字以上のみ
+  // 候補の中では最長を採用（「カラス」より「ハシブトガラス」を優先）
+  let best=null;
+  for(const s of SPECIES){ const n=toKata(s.japanese_name);
+    let hit=false, i=raw.indexOf(n);
+    while(i>=0){
+      const okL=(i===0)||!VOICE_KATA.test(raw.charAt(i-1));
+      // 右境界: カタカナが続けば単語の途中。ひらがなが続く場合は助詞など（が・は・を…）だけを
+      // 切れ目とみなす（「トビが飛んだ」は採用、「トビけらがいた」のケラ続きは不採用）
+      const nc=(i+n.length>=raw.length)?'':raw.charAt(i+n.length);
+      const okR=!nc || (!VOICE_KATA.test(nc) && (!/[ぁ-ゖ]/.test(nc) || 'がはをのにともでへやかだ'.includes(nc)));
+      if(okL&&okR){ hit=true; break; }
+      i=raw.indexOf(n,i+1);
+    }
+    if(!hit && n.length>=3 && t.includes(n)) hit=true;
+    if(hit && (!best || n.length>best.n.length)) best={s,n};
+  }
+  if(best){ r.species_name=best.s.japanese_name; r.species_id=best.s.species_id; }
+  // 距離帯: 「30メートル」「30m」「30.5m」→ 区分に丸める。「30mm」等の別単位は除外。
+  // 先に取り、マッチ部分を文面から除いてから個体数を見る（距離の数字を個体数に誤取り込みしない）
+  let t2=t;
+  const dm=t.match(/(\d+(?:\.\d+)?)\s*(?:メートル|メーター|[mMｍ](?![a-zA-Zｍ]))/);
+  if(dm){ const n=parseFloat(dm[1]); r.distance_band = n<=25?'〜25m' : (n<=50?'〜50m':'50m超');
+    t2=t.replace(dm[0],' '); }
+  // 個体数: 「2羽」「3匹」「2個体」（漢数字「二羽」「十羽」も可）。無ければ種名直後の裸の整数
+  let count='';
+  const cm=t2.match(/(?:^|[^\d.])(\d+)\s*(?:羽|匹|個体|ワ)/);
+  if(cm) count=cm[1];
+  if(!count){ const km=t2.match(/([一二三四五六七八九十]{1,3})\s*(?:羽|匹|個体|ワ)/);
+    if(km){ const n=voiceKanjiNum(km[1]); if(n!=null) count=String(n); } }
+  if(!count && best){ const after=t2.slice(t2.indexOf(best.n)+best.n.length);
+    // 数字の直後に英字が続くもの（30mm 等の単位付き）は個体数と見なさない
+    const m2=after.match(/^\s*(\d+)(?![\d.a-zA-Zａ-ｚＡ-Ｚ])/); if(m2) count=m2[1]; }
+  r.count=count;
+  // 行動: 選択肢の語が含まれるか（複数可。「その他」は対象外）
+  const beh=OPT.behavior.filter(b=>b!=='その他' && t.includes(toKata(b)));
+  r.behavior=beh.join('・');
+  // 確認方法: キーワードから推定（無ければ空のまま＝入力画面の既定「目視」に従う）
+  const hasEye=/目視|見エ|見タ/.test(t);
+  const hasVoice=/声|鳴キ|サエズリ/.test(t);
+  const hasTrace=/痕跡|糞|フン|羽毛/.test(t);
+  const hasFly=/飛翔|飛ン/.test(t) || beh.includes('飛翔');
+  if(hasEye&&hasVoice) r.detection_method='目視および鳴き声';
+  else if(hasVoice) r.detection_method='鳴き声';
+  else if(hasEye) r.detection_method='目視';
+  else if(hasTrace) r.detection_method='痕跡';
+  else if(hasFly) r.detection_method='飛翔';
+  // 方向: 8方位の語（2文字を先に）
+  for(const d of VOICE_DIRS){ if(t.includes(d)){ r.direction=d; break; } }
+  return r;
+}
+SCREENS.voiceObs = (u)=>{
+  const s=DB.survey(u); if(!s) return SCREENS.home();
+  const hasSR=!!(window.SpeechRecognition||window.webkitSpeechRecognition);
+  return {
+    title:'音声で観察を追加',
+    sub:[`<span class="pill">${esc(s.name||'調査')}</span>`],
+    html:`
+      <div class="note">「ウグイス 2羽 さえずり」のように話すと、種名・数・行動などに自動で振り分けます。内容は次の「観察を追加」画面で確認してから保存します。<br>${hasSR
+        ?'🎙ボタンは<b>電波が必要</b>です。圏外のときは下の欄をタップして、キーボードのマイクで話してください（圏外でも使えます）。'
+        :'この端末ではアプリ内の音声認識が使えないため、下の欄をタップして<b>キーボードのマイク🎙</b>で話してください（圏外でも使えます）。'}</div>
+      ${hasSR?`<button class="btn primary big" id="voiceBtn" onclick="voiceListen()">🎙 話す</button><div class="sp"></div>`:''}
+      <label class="field"><span class="lab">話した内容（手で修正できます）</span>
+        <textarea id="voiceText" placeholder="例：ウグイス 2羽 さえずり 北東 30メートル" oninput="SCREENS._dirty=true; voicePreview()"></textarea></label>
+      <div class="field"><span class="lab">読み取り結果</span>
+        <div class="card" id="voicePrev" style="background:var(--panel2);">—</div></div>
+      <button class="btn primary big" onclick="voiceToObs('${u}')">この内容で観察を追加</button>
+    `,
+    onMount:()=>{ voicePreview(); }
+  };
+};
+let VREC=null;   // 音声認識セッション（多重起動防止）
+// 認識セッションの強制破棄。画面遷移時（render）と遷移前（voiceToObs）に必ず呼ぶ。
+// 先に VREC を外してからハンドラを切る＝以降どのコールバックが遅れて届いても何もしない
+function voiceRecAbort(){
+  const rec=VREC; VREC=null; if(!rec) return;
+  try{ rec.onresult=null; rec.onerror=null; rec.onend=null;
+    (rec.abort||rec.stop||function(){}).call(rec); }catch(e){}
+  const b=$('#voiceBtn'); if(b) b.textContent='🎙 話す';
+}
+function voiceListen(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR) return;
+  if(VREC){ const cur=VREC;   // 聞き取り中にもう一度押したら停止（結果は onend 経由で確定）
+    if(cur._stopping){ voiceRecAbort(); return; }   // 停止が効かない実装の脱出口（2度目で強制破棄）
+    cur._stopping=true;
+    try{ cur.stop(); }catch(e){ voiceRecAbort(); }
+    return; }
+  const rec=new SR(); rec.lang='ja-JP'; rec.interimResults=true; rec.continuous=false;
+  // 各コールバックは「今も自分が現役か」を確認する（破棄済みセッションの遅延通知でDOMを触らない）
+  rec.onresult=e=>{ if(VREC!==rec) return;
+    let fin='', inter='';
+    for(const res of e.results){ if(res.isFinal) fin+=res[0].transcript; else inter+=res[0].transcript; }
+    const ta=$('#voiceText'); if(ta){ ta.value=fin||inter; SCREENS._dirty=true; voicePreview(); } };
+  rec.onerror=e=>{ if(VREC!==rec) return;
+    toast(e.error==='network'
+    ?'音声認識には電波が必要です。下の欄からキーボードのマイクで話してください'
+    :'音声を認識できませんでした。下の欄からも入力できます', 4000); };
+  rec.onend=()=>{ if(VREC!==rec) return;
+    VREC=null; const b=$('#voiceBtn'); if(b) b.textContent='🎙 話す'; };
+  try{ rec.start(); VREC=rec; const b=$('#voiceBtn'); if(b) b.textContent='⏹ 聞き取り中…（タップで停止）'; }
+  catch(e){ VREC=null; toast('音声認識を開始できませんでした'); }
+}
+function voicePreview(){
+  const box=$('#voicePrev'); if(!box) return;
+  const txt=(($('#voiceText')||{}).value||'');
+  const p=parseVoiceObs(txt);
+  const row=(k,v)=>`<div class="row" style="padding:2px 0;"><div class="small muted" style="width:80px; flex:none;">${k}</div><div class="grow small">${v||'<span class="muted">—</span>'}</div></div>`;
+  box.innerHTML = row('種名', p.species_name?esc(p.species_name):(txt.trim()?'<span class="muted">見つかりません（次の画面で選べます）</span>':''))
+    + row('個体数', esc(p.count)) + row('行動', esc(p.behavior)) + row('確認方法', esc(p.detection_method))
+    + row('距離帯', esc(p.distance_band)) + row('方向', esc(p.direction)) + row('メモ', esc(p.note));
+}
+function voiceToObs(u){
+  const txt=(($('#voiceText')||{}).value||'').trim();
+  if(!txt){ toast('先に話すか、内容を入力してください'); return; }
+  voiceRecAbort();
+  const p=parseVoiceObs(txt);
+  SCREENS._dirty=false;   // 内容は observation の下書きへ引き継ぐので、この画面の離脱確認は不要
+  goBack(); nav('obsEdit', JSON.stringify({sv:u, voice:p}));
+}
+
 SCREENS.obsEdit = (argStr)=>{
   const arg = JSON.parse(argStr||'{}');
   const svUuid = arg.sv || currentSurveyUuid;
@@ -1559,6 +1708,17 @@ SCREENS.obsEdit = (argStr)=>{
       if(validLatLon(String(k.lat||''), String(k.lon||''))){ o.latitude=String(k.lat); o.longitude=String(k.lon); o.gps_accuracy=(k.acc==null)?'':k.acc; }
     }
     else { const fx=freshFix(); if(fx){ o.latitude=fx.lat.toFixed(6); o.longitude=fx.lon.toFixed(6); o.gps_accuracy=Math.round(fx.acc); } }
+    // 音声入力（voiceObs）からの下書き。解析できた項目だけ初期値を上書き（保存は利用者の確認後）
+    if(arg.voice){ const v=arg.voice;
+      if(v.species_name){ o.species_name_snapshot=v.species_name;
+        o.species_id=(speciesByName(v.species_name)||{}).species_id||''; }
+      if(v.count) o.count=v.count;
+      if(v.behavior) o.behavior=v.behavior;
+      if(v.detection_method) o.detection_method=v.detection_method;
+      if(v.distance_band) o.distance_band=v.distance_band;
+      if(v.direction) o.direction=v.direction;
+      if(v.note) o.note=v.note;
+    }
   } else if(o.observed_at && o.observed_at.length>16){ o.observed_at=localDatetimeValue(new Date(o.observed_at)); }
 
   // 「その他（記入内容）」をボタン一致用の値と記入欄の初期値に分解
@@ -1677,6 +1837,7 @@ SCREENS.obsEdit = (argStr)=>{
       // 精度の扱い: null=保存時に既存値を維持 / ''=不明（手入力座標） / 数値=確定値。初期値は画面に表示している精度と一致させる
       SCREENS._acc=(o.gps_accuracy===''||o.gps_accuracy==null)?null:o.gps_accuracy;
       const fEl=$('#obForm'); if(fEl){ ['input','change'].forEach(ev=>fEl.addEventListener(ev, ()=>{ SCREENS._dirty=true; })); }   // 文字・数値・日時・チェックの変更検知
+      if(arg.voice) SCREENS._dirty=true;   // 音声の下書きが入っている＝未保存の入力として離脱時に確認する
       renderQuickSpecies(); renderRecPanel(); renderMediaPanel(); updateSpRefLinks(o.species_name_snapshot);
       updateBreedHint(); updateIdHint();   // 編集で開いたときも選択済みの内容に合わせてヒントを出す
     }
@@ -5533,8 +5694,8 @@ async function gdriveStartupCheck(){
           if(r) toast(`ドライブから読み込みました：記録の取り込み${r.changed}件／写真・録音${r.media.done}件`
             +(r.skipped?`（${r.skipped}ファイルは壊れているためスキップ。保存した端末での点検・修復が必要です）`:''), r.skipped?6000:4000);
           pulledNow=true;
-          // 取り込み中に入力・録音を始めていたら画面を作り直さない（未保存の内容が消えるため）
-          if(!SCREENS._dirty && !REC) reset('home');
+          // 取り込み中に入力・録音・音声認識を始めていたら画面を作り直さない（未保存の内容・聞き取りが消えるため）
+          if(!SCREENS._dirty && !REC && !VREC) reset('home');
         }catch(e){ toast('読み込みに失敗しました: '+(e.message||e)); }
       }else{
         // 既読にはしない（既読は「取り込み済み」の意味。断られた印だけ残す）。
@@ -5547,7 +5708,7 @@ async function gdriveStartupCheck(){
     if(!pulledNow){
       const md=await gdrivePullMedia(token, {}).catch(()=>null);
       if(md && md.done){ toast(`写真・録音${md.done}件を取り込みました`+(md.miss?`（あと${md.miss}件は相手の端末の同期待ち）`:''));
-        if(!SCREENS._dirty && !REC) render(); }   // 入力・録音中は画面を作り直さない（未保存の内容が消えるため）
+        if(!SCREENS._dirty && !REC && !VREC) render(); }   // 入力・録音・音声認識中は画面を作り直さない（未保存の内容が消えるため）
     }
   }catch(e){ try{ console.error('sync check failed', e); }catch(_){} }
 }
