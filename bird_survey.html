@@ -134,6 +134,12 @@
     background:var(--panel); color:var(--fg); border:1px solid var(--line);
     border-radius:10px; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
   .map-full-btn:active{background:var(--panel2);}
+  /* 音声入力の種名候補。押して選ぶ（選ばれているものは塗りつぶし＋✓）。
+     指で押す前提なので、小さくても縦の当たり判定は確保する */
+  .voice-chip{display:inline-block; margin:2px 5px 2px 0; padding:6px 11px; font-size:13px; font-weight:700;
+    background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:999px; cursor:pointer;}
+  .voice-chip.on{background:var(--accent); color:#0a0f0d; border-color:var(--accent);}
+  .voice-chip:active{opacity:.85;}
   /* 全画面中は、iPhoneのノッチ・ホームバーの上に操作ボタンが隠れないよう内側に寄せる。
      横向きではノッチが左右に来る（「小さく」ボタンが押せなくなる＝戻れなくなる）ので四方向とも避ける */
   .map-full .leaflet-top{margin-top:env(safe-area-inset-top, 0px);}
@@ -231,7 +237,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v86（2026-08-04 地図の右下に「⛶ 大きく」：その場で画面いっぱいに広げられる）';
+const APP_VERSION = 'v87（2026-08-04 種名は候補から選ぶ方式に：聞き間違いでも黙って別の種が入らない）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1646,20 +1652,62 @@ function voiceAliasApply(s){
   }
   return out;
 }
+/* ---------- 「もしかして」候補（聞き間違いの受け止め） ----------
+   音声認識は「ウグイズ」「シジュカラ」のように1〜2文字だけ外すことがある。
+   ぴったり当たる種が1つも無いときだけ、近い名前を候補として出す。
+   ここで出したものは自動では選ばない（黙って違う種を入れないため。選ぶのは利用者のタップ） */
+// 上限つきの編集距離。上限を超えた時点で打ち切るので、候補にならない種の計算は早く終わる
+function voiceEditDist(a,b,max){
+  const la=a.length, lb=b.length;
+  if(Math.abs(la-lb)>max) return max+1;
+  let prev=[], cur=[];
+  for(let j=0;j<=lb;j++) prev[j]=j;
+  for(let i=1;i<=la;i++){
+    cur[0]=i; let row=i;
+    for(let j=1;j<=lb;j++){
+      cur[j]=Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a.charAt(i-1)===b.charAt(j-1)?0:1));
+      if(cur[j]<row) row=cur[j];
+    }
+    if(row>max) return max+1;   // この行が全部上限超え＝これ以上縮まらない
+    const tmp=prev; prev=cur; cur=tmp;
+  }
+  return prev[lb];
+}
+// カタカナのかたまりの「先頭」を種名と比べる（発話は「種名→数→行動」の順で始まることが多い）
+function voiceNearSpecies(t){
+  const runs=(String(t||'').match(/[ァ-ヶー]{3,}/g)||[]).slice(0,4);
+  if(!runs.length) return [];
+  const out=[];
+  for(const s of SPECIES){
+    const n=toKata(s.japanese_name); if(n.length<3) continue;
+    const lim=(n.length>=6)?2:1;   // 長い名前ほど1文字の取り違えが起きやすいので許容を広げる
+    let d=lim+1;
+    for(const run of runs){
+      for(let L=n.length-1; L<=n.length+1 && d>0; L++){
+        if(L<3 || L>run.length) continue;
+        const dd=voiceEditDist(run.slice(0,L), n, lim);
+        if(dd<d) d=dd;
+      }
+    }
+    if(d<=lim) out.push({s,d,n});
+  }
+  out.sort((a,b)=>a.d-b.d || b.n.length-a.n.length);
+  return out.slice(0,3).map(x=>x.s);
+}
 function parseVoiceObs(text){
   const raw=String(text||'').trim();
   // 当て字変換 → 正規化: ひらがな→カタカナ（種名マスタはカタカナ）・全角数字→半角・数字内の桁区切りカンマ除去
   const rawM=voiceAliasApply(raw);
   const t=toKata(rawM).replace(/[０-９]/g, c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0))
     .replace(/(\d)[,，](?=\d)/g,'$1');
-  const r={ species_name:'', species_id:'', count:'', behavior:'', detection_method:'',
+  const r={ species_name:'', species_id:'', species_cands:[], count:'', behavior:'', detection_method:'',
     distance_band:'', direction:'', note: raw?('🎙 '+raw):'' };
   if(!raw) return r;
   // 種名の2段判定（「とびけら」→トビ、「うそみたい」→ウソ のような一般文への誤ヒットを防ぐ）:
   // 1) 原文にカタカナのまま現れ、前後がカタカナ以外（＝単語の切れ目）なら採用
   // 2) それが無ければ、かな正規化後の包含。ただし短い名前は誤ヒットしやすいので3文字以上のみ
   // 候補の中では最長を採用（「カラス」より「ハシブトガラス」を優先）
-  let best=null;
+  const hits=[];
   for(const s of SPECIES){ const n=toKata(s.japanese_name);
     let hit=false, i=rawM.indexOf(n);
     while(i>=0){
@@ -1681,9 +1729,16 @@ function parseVoiceObs(text){
         k=t.indexOf(n,k+1);
       }
     }
-    if(hit && (!best || n.length>best.n.length)) best={s,n};
+    if(hit) hits.push({s,n});
   }
+  hits.sort((a,b)=>b.n.length-a.n.length);   // 長い名前を優先（「カラス」より「ハシブトガラス」）
+  const best=hits[0]||null;
   if(best){ r.species_name=best.s.japanese_name; r.species_id=best.s.species_id; }
+  // 候補: 当たった種を最大3件。1件も当たらなかったときだけ「もしかして」を出す（聞き間違い対策）。
+  // もしかしては決して自動で選ばない＝黙って違う種が入ることが構造的に起きない
+  r.species_cands = hits.length
+    ? hits.slice(0,3).map(h=>({name:h.s.japanese_name, id:h.s.species_id, sure:true}))
+    : voiceNearSpecies(t).map(s=>({name:s.japanese_name, id:s.species_id, sure:false}));
   // 距離帯: 「30メートル」「30m」「30.5m」→ 区分に丸める。「30mm」等の別単位は除外。
   // 先に取り、マッチ部分を文面から除いてから個体数を見る（距離の数字を個体数に誤取り込みしない）
   let t2=t;
@@ -1774,29 +1829,63 @@ function voiceListen(){
   try{ rec.start(); VREC=rec; const b=$('#voiceBtn'); if(b) b.textContent='⏹ 聞き取り中…（タップで停止）'; }
   catch(e){ VREC=null; toast('音声認識を開始できませんでした'); }
 }
+/* ---------- 種名は「決め打ち」ではなく「候補から選ぶ」 ----------
+   話した内容から1種を黙って決めると、違う種が入っていても気づかれない。
+   候補をボタンで並べ、押されたものを採用する。押されていなければ先頭（＝確かに当たった種）を使う */
+let VOICE_PICK={txt:'', name:'', id:''};   // 話した内容が変わったら捨てる＝別の文の選択を持ち越さない
+// 一致しないときに「使わない」だけでは足りない。文をX→Y→Xと戻したときや、別の観察で同じ文を
+// 打ち直したときに、タップしていない選択が復活してしまうため、中身そのものを捨てる
+function voicePickClear(){ VOICE_PICK={txt:'', name:'', id:''}; }
+function voicePickSet(name,id){
+  const ta=$('#voiceText');
+  VOICE_PICK={txt:(ta&&ta.value)||'', name:name||'', id:id||''};
+  SCREENS._dirty=true; voicePreview();
+}
+// 実際に使う種名。txt は textarea の値そのまま（trimしない）で揃えること
+function voicePickFor(txt,p){
+  if(VOICE_PICK.name && VOICE_PICK.txt===txt) return {name:VOICE_PICK.name, id:VOICE_PICK.id};
+  return {name:p.species_name, id:p.species_id};
+}
+function voiceCandHtml(p,txt){
+  if(!p.species_cands.length) return txt.trim()?'<span class="muted">見つかりません（あとで選べます）</span>':'';
+  const cur=voicePickFor(txt,p);
+  const maybe=!p.species_cands[0].sure;
+  return (maybe?'<span class="tiny muted" style="margin-right:4px;">もしかして</span>':'')
+    + p.species_cands.map(c=>{
+      const on=(c.name===cur.name);
+      // 種名は自分たちのマスタの値だが、方針どおり onclick には埋め込まずdata属性から読む
+      return `<button type="button" class="voice-chip${on?' on':''}" data-n="${esc(c.name)}" data-i="${esc(c.id)}"
+        onclick="voicePickSet(this.dataset.n, this.dataset.i)">${on?'✓ ':''}${esc(c.name)}</button>`;
+    }).join('');
+}
 function voicePreview(){
   const box=$('#voicePrev'); if(!box) return;
   const txt=(($('#voiceText')||{}).value||'');
+  if(VOICE_PICK.txt!==txt) voicePickClear();   // 文が変わった時点で選択を捨てる（戻しても復活させない）
   const p=parseVoiceObs(txt);
+  const cands=voiceCandHtml(p,txt);
   if(box.classList.contains('compact')){
-    // ドック用の1行表示（場所を取らない。メモは原文そのままなので省略）
-    const parts=[ p.species_name?('✓'+p.species_name):(txt.trim()?'種名: 見つかりません':''),
-      p.count?(p.count+'羽'):'', p.behavior, p.detection_method, p.distance_band, p.direction ]
+    // ドック用の省スペース表示（メモは原文そのままなので省略）
+    const parts=[ p.count?(p.count+'羽'):'', p.behavior, p.detection_method, p.distance_band, p.direction ]
       .filter(Boolean).map(esc);
-    box.textContent='';
-    box.innerHTML = parts.length?('読み取り: '+parts.join(' ・ ')):'—';
+    const rest=parts.length?`<span class="tiny muted">${parts.join(' ・ ')}</span>`:'';
+    box.innerHTML = (cands||rest) ? (cands+(cands&&rest?'<br>':'')+rest) : '—';
     return;
   }
   const row=(k,v)=>`<div class="row" style="padding:2px 0;"><div class="small muted" style="width:80px; flex:none;">${k}</div><div class="grow small">${v||'<span class="muted">—</span>'}</div></div>`;
-  box.innerHTML = row('種名', p.species_name?esc(p.species_name):(txt.trim()?'<span class="muted">見つかりません（次の画面で選べます）</span>':''))
+  box.innerHTML = row('種名', cands)
     + row('個体数', esc(p.count)) + row('行動', esc(p.behavior)) + row('確認方法', esc(p.detection_method))
     + row('距離帯', esc(p.distance_band)) + row('方向', esc(p.direction)) + row('メモ', esc(p.note));
 }
 function voiceToObs(u){
-  const txt=(($('#voiceText')||{}).value||'').trim();
+  const rawTxt=(($('#voiceText')||{}).value||'');
+  const txt=rawTxt.trim();
   if(!txt){ toast('先に話すか、内容を入力してください'); return; }
   voiceRecAbort();
   const p=parseVoiceObs(txt);
+  const pick=voicePickFor(rawTxt,p);   // 候補をタップして選び直していればそれを使う
+  p.species_name=pick.name; p.species_id=pick.id;
+  voicePickClear();   // 引き継いだので、この選択は次の入力へ持ち越さない
   SCREENS._dirty=false;   // 内容は observation の下書きへ引き継ぐので、この画面の離脱確認は不要
   goBack(); nav('obsEdit', JSON.stringify({sv:u, voice:p}));
 }
@@ -1830,6 +1919,7 @@ function voiceDockToggle(){
 }
 function voiceDockClose(){
   voiceRecAbort();
+  voicePickClear();   // 入力を終えたので選択も捨てる（次に開いたとき前の選択が残らない）
   const d=document.getElementById('voiceDock'); if(d) d.remove();
   const m=$('#main'); if(m) m.style.paddingBottom='';
 }
@@ -1842,12 +1932,14 @@ function voiceDockDismiss(){
 // 観察入力画面の中の音声入力: 解析結果を「開いているフォーム」にそのまま反映する。
 // 解析できた項目だけ書き込み、行動は既存の選択に追加、メモは原文を追記（消さない・失わない）
 function voiceApplyToForm(){
-  const txt=(($('#voiceText')||{}).value||'').trim();
+  const rawTxt=(($('#voiceText')||{}).value||'');
+  const txt=rawTxt.trim();
   if(!txt){ toast('先に話すか、内容を入力してください'); return; }
   if(!$('#obForm')){ return; }   // 観察入力画面以外では何もしない
   voiceRecAbort();   // 認識中に押されても、遅れて届く認識結果が空にした欄へ戻らないように先に破棄
   const p=parseVoiceObs(txt);
-  if(p.species_name) chooseSpecies((speciesByName(p.species_name)||{}).species_id||'', p.species_name);
+  const pick=voicePickFor(rawTxt,p);   // 候補をタップして選び直していればそれを使う
+  if(pick.name) chooseSpecies((speciesByName(pick.name)||{}).species_id||'', pick.name);
   if(p.count){ const el=$('#obForm [name="count"]'); if(el) el.value=p.count; }
   if(p.detection_method){ const el=document.querySelector('[data-seg="detection_method"]'); if(el) el.value=p.detection_method; }
   if(p.distance_band){ const el=document.querySelector('[data-seg="distance_band"]'); if(el) el.value=p.distance_band; }
@@ -1858,6 +1950,7 @@ function voiceApplyToForm(){
     if(b && !b.classList.contains('on')) b.click(); }); }   // click経由＝繁殖ヒント・見出し更新も従来どおり動く
   if(p.note){ const el=$('#obForm [name="note"]'); if(el) el.value=(el.value?el.value+'\n':'')+p.note; }
   SCREENS._dirty=true;
+  voicePickClear();   // 反映済みなので、この選択は次の発話へ持ち越さない
   const ta=$('#voiceText'); if(ta) ta.value='';
   voicePreview();
   toast('入力欄に反映しました。内容を確認して保存してください');
