@@ -129,6 +129,19 @@
     cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
   .map-drop-btn:active{opacity:.85;}
   @media (max-width:420px){ .map-drop-btn{margin-bottom:22px;} }   /* 狭い画面で右下の出典表示と重ならないよう一段上げる */
+  /* 地図を画面いっぱいに広げるボタン（右下）。目立ちすぎないよう地の色で、押せることは枠で示す */
+  .map-full-btn{width:auto; padding:8px 11px; font-size:13px; font-weight:700; white-space:nowrap;
+    background:var(--panel); color:var(--fg); border:1px solid var(--line);
+    border-radius:10px; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
+  .map-full-btn:active{background:var(--panel2);}
+  /* 全画面中は、iPhoneのノッチ・ホームバーの上に操作ボタンが隠れないよう内側に寄せる。
+     横向きではノッチが左右に来る（「小さく」ボタンが押せなくなる＝戻れなくなる）ので四方向とも避ける */
+  .map-full .leaflet-top{margin-top:env(safe-area-inset-top, 0px);}
+  .map-full .leaflet-bottom{margin-bottom:env(safe-area-inset-bottom, 0px);}
+  .map-full .leaflet-left{left:env(safe-area-inset-left, 0px);}
+  .map-full .leaflet-right{right:env(safe-area-inset-right, 0px);}
+  /* 全画面中の背面ページの固定。直接 body.style を書き換えると、その間に別処理が変えた指定を消してしまう */
+  body.map-full-lock{overflow:hidden;}
   .north-needle{display:inline-block; line-height:1.05; font-size:13px; font-weight:700; transition:transform .15s;}
 
   /* 集計テーブル */
@@ -218,7 +231,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v85（2026-08-03 音声入力を画面下の固定パネルに：項目を見ながら話して反映）';
+const APP_VERSION = 'v86（2026-08-04 地図の右下に「⛶ 大きく」：その場で画面いっぱいに広げられる）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2144,6 +2157,7 @@ let _compassEvName='deviceorientation';   // 登録したイベント名（同�
 let _compassReq=0;        // 許可待ちの世代番号。地図破棄で++して、遅れて届いた許可が古い地図を回すのを防ぐ
 // 地図の破棄はこの1本に集約（render・対象位置地図の開閉から使う）。コンパス監視・許可待ちも道連れで無効化
 function destroyMap(){
+  if(typeof mapFullOff==='function') mapFullOff(true);   // 全画面のまま破棄すると固定表示が画面に残るので先に戻す
   if(mapObj){ try{ mapObj.remove(); }catch(e){} mapObj=null; }
   // 地図上のマーカー参照もここでまとめて破棄する（古い参照が残ると、次に開いた別の地図と取り違える温床になる）
   obsTargetMarker=null; obsPosMarker=null;
@@ -2174,8 +2188,122 @@ function createBaseMap(elId, center, zoom, opts){
   L.control.layers(bases, overlays, {position:'topright', collapsed:true}).addTo(m);
   m.on('baselayerchange', e=>{ try{ localStorage.setItem('bs_basemap', e.name); }catch(err){} });
   if(rotatable) addCompassControls(m);
+  addFullscreenControl(m);
   setTimeout(()=>{ try{ m.invalidateSize(); }catch(e){} },200);
   return m;
+}
+/* ---------- 地図を画面いっぱいに広げる（右下のボタン） ----------
+   フォームに埋め込んだ地図は狭くて見づらいので、その場で全画面に広げられるようにする。
+   position:fixed に切り替えるだけだと瞬間移動して「どこが広がったのか」が分からないため、
+   いまの枠から画面の四隅へ 0.28秒かけて伸ばす（戻すときは逆再生）。
+   Leafletは器の大きさの変化を自分では見ないので、伸びる途中と伸び終わりに invalidateSize() する。
+   iOS Safari は動画以外の全画面API（requestFullscreen）が使えないため、CSSで広げる方式にしている */
+let _mapFull=null;   // 全画面中の情報 {el, ph, prev, m, btn, esc}。同時に1枚しか開かない（mapObjが1本のため）
+const MAPFULL_MS=280;
+// 全画面で書き換える指定だけを覚えて戻す（cssText丸ごとの退避・復元にすると、その間に
+// 他の処理が変えた display などを古い値に巻き戻してしまう＝閉じた地図が再び現れる）
+// margin は shorthand で退避・復元すると個別指定（margin-top:8px など）を消してしまい、
+// 戻したときに地図の上下の余白が失われる（実測で8pxずれた）。必ず4辺それぞれで持つ
+const MAPFULL_PROPS=['position','marginTop','marginRight','marginBottom','marginLeft',
+  'width','height','zIndex','top','left','right','bottom','transition','borderRadius','border'];
+function addFullscreenControl(m){
+  const C=L.Control.extend({ onAdd:function(){
+    const b=L.DomUtil.create('button','map-full-btn');
+    b.type='button'; b.textContent='⛶ 大きく'; b.title='地図を画面いっぱいに広げる';
+    L.DomEvent.disableClickPropagation(b);
+    L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>mapFullToggle(m,b));
+    return b; }});
+  new C({position:'bottomright'}).addTo(m);
+}
+// 予約した後始末は必ず「今もこの全画面が現役か」を確かめてから動く（連打・画面遷移で世代が変わるため）
+function mapFullTimer(f, fn, ms){ const id=setTimeout(()=>{ if(_mapFull===f) fn(); }, ms); f.timers.push(id); return id; }
+function mapFullClear(f){ f.timers.forEach(clearTimeout); f.timers=[]; }
+function mapFullToggle(m,btn){
+  if(!_mapFull){ mapFullOn(m,btn); return; }
+  // 縮小の途中でもう一度押されたら、閉じるのをやめて広げ直す（連打で状態が二重に作られるのを防ぐ）
+  if(_mapFull.closing) mapFullExpand(_mapFull); else mapFullOff();
+}
+// 現在の枠 → 画面いっぱい
+function mapFullOn(m,btn){
+  if(_mapFull){ if(_mapFull.closing) mapFullExpand(_mapFull); return; }
+  let el=null; try{ el=m.getContainer(); }catch(e){}
+  if(!el || !el.parentNode) return;
+  const r=el.getBoundingClientRect();
+  // 元の場所に同じ高さの場所取りを置く（全画面の間、下のフォームが詰まって動かないように）
+  // 元の場所に同じ大きさ・同じ余白の場所取りを置く（余白まで写さないと、戻り先を測る位置が
+  // 余白のぶんずれて、縮小し終わった瞬間にカクッと跳ねる）
+  const cs=getComputedStyle(el);
+  const ph=document.createElement('div');
+  ph.className='map-full-ph';   // 片付け漏れを見つけやすくするため名前を付ける
+  ph.style.cssText='height:'+r.height+'px; flex:none; margin:'
+    +cs.marginTop+' '+cs.marginRight+' '+cs.marginBottom+' '+cs.marginLeft+';';
+  el.parentNode.insertBefore(ph, el);
+  const esc=(e)=>{ if(e.key==='Escape') mapFullOff(); };
+  const prev={}; MAPFULL_PROPS.forEach(p=>prev[p]=el.style[p]);
+  // 後ろのページを止めると読み位置が先頭に飛ぶ端末があるので、戻すときのために覚えておく
+  const f={el, ph, prev, m, btn, esc, sy:window.scrollY||0, timers:[], closing:false, onres:null};
+  _mapFull=f;
+  mapFullBox(el, r);   // まず「いまと同じ見た目」で position:fixed にする
+  el.classList.add('map-full');
+  el.offsetHeight;     // ここで一度確定させないと、次の指定とまとめて適用されて動きにならない
+  window.addEventListener('keydown', esc);
+  mapFullExpand(f);
+}
+// 画面の四隅へ広げる（新規に開くときと、閉じ途中の取り消しの両方から使う）
+function mapFullExpand(f){
+  mapFullClear(f); mapFullResizeWatch(f, false); f.closing=false;
+  const el=f.el;
+  el.style.transition='top '+MAPFULL_MS+'ms ease, left '+MAPFULL_MS+'ms ease, right '+MAPFULL_MS+'ms ease, bottom '+MAPFULL_MS+'ms ease';
+  el.style.top='0px'; el.style.left='0px'; el.style.right='0px'; el.style.bottom='0px';
+  document.body.classList.add('map-full-lock');   // 後ろのページが一緒に動かないように
+  if(f.btn){ try{ f.btn.textContent='⤡ 小さく'; f.btn.title='元の大きさに戻す'; }catch(e){} }
+  // 伸びる途中と伸び終わりに作り直す（途中の1回で地図の中身が追いついて見える）
+  mapFullTimer(f, ()=>{ try{ f.m.invalidateSize({animate:false}); }catch(e){} }, Math.round(MAPFULL_MS/2));
+  mapFullTimer(f, ()=>{ try{ f.m.invalidateSize({animate:false}); }catch(e){} }, MAPFULL_MS+30);
+}
+// 画面いっぱい → 元の枠。now=true は動きを付けずに即戻す（地図の破棄・画面遷移から呼ぶとき用）
+function mapFullOff(now){
+  const f=_mapFull; if(!f) return;
+  if(f.closing && !now) return;   // すでに閉じ中（二度押しは無視）
+  mapFullClear(f);
+  f.closing=true;
+  if(f.btn){ try{ f.btn.textContent='⛶ 大きく'; f.btn.title='地図を画面いっぱいに広げる'; }catch(e){} }
+  // 先にページの固定を解いて読み位置を戻す（戻り先の枠は、その状態で測らないとずれる）
+  document.body.classList.remove('map-full-lock');
+  if(Math.abs((window.scrollY||0)-f.sy)>2){ try{ window.scrollTo(0, f.sy); }catch(e){} }
+  let r=null; try{ r=f.ph.getBoundingClientRect(); }catch(e){}
+  if(now || !f.el.parentNode || !r || !r.height){ mapFullFinish(f); return; }
+  mapFullBox(f.el, r);
+  mapFullTimer(f, ()=>mapFullFinish(f), MAPFULL_MS+30);
+  mapFullResizeWatch(f, true);   // 縮小中の画面回転は戻り先が変わるので、動きを諦めて即座に片付ける
+}
+// 後始末の本体。ここを通るまで _mapFull は空にしない（空にすると即時解除が効かなくなる）
+function mapFullFinish(f){
+  if(_mapFull!==f) return;
+  _mapFull=null;
+  mapFullClear(f); mapFullResizeWatch(f, false);
+  window.removeEventListener('keydown', f.esc);
+  document.body.classList.remove('map-full-lock');
+  try{ MAPFULL_PROPS.forEach(p=>{ f.el.style[p]=f.prev[p]||''; }); f.el.classList.remove('map-full'); }catch(e){}
+  try{ if(f.ph.parentNode) f.ph.parentNode.removeChild(f.ph); }catch(e){}
+  try{ f.m.invalidateSize({animate:false}); }catch(e){}
+}
+function mapFullResizeWatch(f, on){
+  if(on){ if(f.onres) return;
+    f.onres=()=>mapFullFinish(f);
+    window.addEventListener('resize', f.onres); window.addEventListener('orientationchange', f.onres); return; }
+  if(!f.onres) return;
+  window.removeEventListener('resize', f.onres); window.removeEventListener('orientationchange', f.onres);
+  f.onres=null;
+}
+// 指定した枠に position:fixed で重ねる（上下左右の距離で指定するので、iOSの画面高さの癖に左右されない）
+function mapFullBox(el, r){
+  el.style.position='fixed'; el.style.width='auto'; el.style.height='auto';
+  el.style.marginTop='0'; el.style.marginRight='0'; el.style.marginBottom='0'; el.style.marginLeft='0';
+  el.style.zIndex='1400';   // ヘッダー(500)より上・写真の拡大表示(1500)とお知らせ(2000)より下
+  el.style.borderRadius='0'; el.style.border='none';
+  el.style.top=r.top+'px'; el.style.left=r.left+'px';
+  el.style.right=(window.innerWidth-r.right)+'px'; el.style.bottom=(window.innerHeight-r.bottom)+'px';
 }
 /* 北マーク（常に実際の北を指す・タップで北を上に戻す）＋ コンパス追従ボタン */
 function addCompassControls(m){
