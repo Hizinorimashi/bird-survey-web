@@ -218,7 +218,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v84（2026-08-03 観察入力の画面内でも音声入力（話す→振り分け→反映）を追加）';
+const APP_VERSION = 'v85（2026-08-03 音声入力を画面下の固定パネルに：項目を見ながら話して反映）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1041,6 +1041,7 @@ function render(){
   _navGen++;
   if(REC) recAbort(); // 画面を離れたら録音を中断（保存はしない。離脱前の確認は leaveGuardOk が担当）
   if(typeof voiceRecAbort==='function') voiceRecAbort();   // 音声認識も同様（残すと別画面でマイクが動き続ける）
+  if(typeof voiceDockClose==='function' && document.getElementById('voiceDock')) voiceDockClose();   // 音声ドックは#mainの外なのでここで片付ける
   SCREENS._dirty=false; SCREENS._ghost=null;   // 新しい画面は未編集状態から始まる（編集画面の操作でtrueになる）
   if(PDFCTX){ try{ PDFCTX.doc.destroy(); }catch(e){} PDFCTX=null; } // PDF閲覧の後始末
   if(_mapTimer){ clearTimeout(_mapTimer); _mapTimer=null; }   // 前画面の地図初期化予約を取り消す
@@ -1566,10 +1567,77 @@ function voiceKanjiNum(s){
   return tens+(m[3]?VOICE_KNUM[m[3]]:0);
 }
 const VOICE_KATA=/[ァ-ヶー]/;
+// 音声認識が鳥名を漢字（当て字）で書き出したときの変換辞書。値がマスタに実在するときだけ置換する。
+// 「沢山鳥」のような一般語を巻き込む恐れのある表記（山鳥・烏 等の1〜2字の汎用語）は入れない
+const VOICE_SPECIES_ALIASES={
+  '熊鷹':'クマタカ','大鷹':'オオタカ','鳶':'トビ','鵟':'ノスリ','大鷲':'オオワシ',
+  '尾白鷲':'オジロワシ','隼':'ハヤブサ','長元坊':'チョウゲンボウ','鶚':'ミサゴ','鷂':'ハイタカ',
+  '真鴨':'マガモ','小鴨':'コガモ','尾長鴨':'オナガガモ','鴛鴦':'オシドリ','大白鳥':'オオハクチョウ','小白鳥':'コハクチョウ',
+  '川鵜':'カワウ','海鵜':'ウミウ','鳰':'カイツブリ','青鷺':'アオサギ','五位鷺':'ゴイサギ',
+  '鶯':'ウグイス','雲雀':'ヒバリ','燕':'ツバメ','雨燕':'アマツバメ','岩燕':'イワツバメ','腰赤燕':'コシアカツバメ',
+  '雀':'スズメ','鵯':'ヒヨドリ','椋鳥':'ムクドリ','目白':'メジロ',
+  '四十雀':'シジュウカラ','山雀':'ヤマガラ','日雀':'ヒガラ','小雀':'コガラ','五十雀':'ゴジュウカラ',
+  '鶫':'ツグミ','白腹':'シロハラ','赤腹':'アカハラ','駒鳥':'コマドリ','瑠璃鶲':'ルリビタキ','尉鶲':'ジョウビタキ',
+  '野鶲':'ノビタキ','大瑠璃':'オオルリ','黄鶲':'キビタキ',
+  '白鶺鴒':'ハクセキレイ','黄鶺鴒':'キセキレイ','背黒鶺鴒':'セグロセキレイ',
+  '河烏':'カワガラス','川烏':'カワガラス','鷦鷯':'ミソサザイ','菊戴':'キクイタダキ','翡翠':'カワセミ','山翡翠':'ヤマセミ',
+  '赤啄木鳥':'アカゲラ','小啄木鳥':'コゲラ','熊啄木鳥':'クマゲラ','山啄木鳥':'ヤマゲラ',
+  '懸巣':'カケス','星鴉':'ホシガラス','頬白':'ホオジロ','頬赤':'ホオアカ','青鵐':'アオジ',
+  '雉鳩':'キジバト','雉':'キジ','郭公':'カッコウ','筒鳥':'ツツドリ','時鳥':'ホトトギス','不如帰':'ホトトギス',
+  '鶉':'ウズラ','梟':'フクロウ','青葉木菟':'アオバズク','縞梟':'シマフクロウ','夜鷹':'ヨタカ',
+  '田鴫':'タシギ','山鴫':'ヤマシギ','丹頂':'タンチョウ',
+  '三砂':'ミサゴ',   // 音声認識の実誤変換（実機報告 2026-08-03）。増えたらここに追記していく
+  '大葦切':'オオヨシキリ','小葦切':'コヨシキリ','鵙':'モズ','百舌鳥':'モズ','百舌':'モズ',
+};
+const VOICE_ALIAS_KEYS=Object.keys(VOICE_SPECIES_ALIASES).sort((a,b)=>b.length-a.length);   // 長い表記を先に（「四十雀」を「雀」より先）
+const VOICE_KANJI=/[一-鿿々]/;
+const VOICE_PARTICLE='がはをのにともでへやかだ';
+// 鳥名の直後がこれらの語で始まるなら、区切り文字が無くても単語の切れ目とみなす。
+// 現場では「鶯さえずり」「鳶飛翔」「鶯二羽」のように助詞を挟まず話すため、これが無いと拾えない
+// 「見」「鳴」「飛」のような1文字では地名・熟語を巻き込むため、活用形まで含めて並べる
+const VOICE_NEXT_OK=[...OPT.behavior.filter(b=>b!=='その他'), ...OPT.detection.filter(d=>d!=='不明'),
+  ...VOICE_DIRS, '羽','匹','個体','メートル','メーター','声','痕跡','糞','羽毛','って',
+  '見た','見え','見つけ','鳴い','鳴き','鳴く','飛ん','飛び'];
+// 漢数字も単独では地名を巻き込む（燕三条）ので、助数詞まで続く場合だけ切れ目として認める
+const VOICE_NEXT_NUM=/^[一二三四五六七八九十]+\s*(?:羽|匹|個体)/;
+function voiceNextKnown(str,pos){ const rest=str.slice(pos);
+  return VOICE_NEXT_NUM.test(rest) || VOICE_NEXT_OK.some(w=>rest.startsWith(w)); }
+// 右境界の共通判定。allowKanji=true は「原文にカタカナで書かれている」経路用（種名の確度が高いので
+// 漢字が続いても切れ目とみなす）。どちらの経路でも、続きが既知の観察用語なら切れ目として認める
+function voiceBoundR(str,pos,allowKanji){
+  const nc=(pos<str.length)?str.charAt(pos):'';
+  if(!nc) return true;
+  if(!VOICE_KATA.test(nc) && (allowKanji || !VOICE_KANJI.test(nc))
+    && (!/[ぁ-ゖ]/.test(nc) || VOICE_PARTICLE.includes(nc))) return true;
+  return voiceNextKnown(str,pos);
+}
+// 当て字→カタカナの置換。単語境界つき: 前後が漢字・カタカナなら熟語の一部（麻雀・鳶職・鶯谷駅・翡翠色）
+// とみなして変換しない。後ろのひらがなは助詞類だけを切れ目として認める（「鶯が」は変換・「夜鷹そば」は不変換）
+function voiceAliasApply(s){
+  let out=String(s||'');
+  for(const k of VOICE_ALIAS_KEYS){
+    if(!out.includes(k)) continue;
+    const v=VOICE_SPECIES_ALIASES[k];
+    if(!speciesByName(v)) continue;   // マスタに無い名前には変換しない（誤確定防止）
+    let res='', i=0;
+    while(i<out.length){
+      const j=out.indexOf(k,i);
+      if(j<0){ res+=out.slice(i); break; }
+      const prev=j>0?out.charAt(j-1):'';
+      const okL=!prev || (!VOICE_KANJI.test(prev) && !VOICE_KATA.test(prev));
+      const okR=voiceBoundR(out, j+k.length, false);
+      res+=out.slice(i,j)+((okL&&okR)?v:k);
+      i=j+k.length;
+    }
+    out=res;
+  }
+  return out;
+}
 function parseVoiceObs(text){
   const raw=String(text||'').trim();
-  // 正規化: ひらがな→カタカナ（種名マスタはカタカナ）・全角数字→半角・数字内の桁区切りカンマ除去
-  const t=toKata(raw).replace(/[０-９]/g, c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0))
+  // 当て字変換 → 正規化: ひらがな→カタカナ（種名マスタはカタカナ）・全角数字→半角・数字内の桁区切りカンマ除去
+  const rawM=voiceAliasApply(raw);
+  const t=toKata(rawM).replace(/[０-９]/g, c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0))
     .replace(/(\d)[,，](?=\d)/g,'$1');
   const r={ species_name:'', species_id:'', count:'', behavior:'', detection_method:'',
     distance_band:'', direction:'', note: raw?('🎙 '+raw):'' };
@@ -1580,17 +1648,26 @@ function parseVoiceObs(text){
   // 候補の中では最長を採用（「カラス」より「ハシブトガラス」を優先）
   let best=null;
   for(const s of SPECIES){ const n=toKata(s.japanese_name);
-    let hit=false, i=raw.indexOf(n);
+    let hit=false, i=rawM.indexOf(n);
     while(i>=0){
-      const okL=(i===0)||!VOICE_KATA.test(raw.charAt(i-1));
-      // 右境界: カタカナが続けば単語の途中。ひらがなが続く場合は助詞など（が・は・を…）だけを
-      // 切れ目とみなす（「トビが飛んだ」は採用、「トビけらがいた」のケラ続きは不採用）
-      const nc=(i+n.length>=raw.length)?'':raw.charAt(i+n.length);
-      const okR=!nc || (!VOICE_KATA.test(nc) && (!/[ぁ-ゖ]/.test(nc) || 'がはをのにともでへやかだ'.includes(nc)));
-      if(okL&&okR){ hit=true; break; }
-      i=raw.indexOf(n,i+1);
+      const okL=(i===0)||!VOICE_KATA.test(rawM.charAt(i-1));
+      // 右境界: カタカナが続けば単語の途中（「トビが飛んだ」は採用、「トビけらがいた」は不採用）
+      if(okL && voiceBoundR(rawM, i+n.length, true)){ hit=true; break; }
+      i=rawM.indexOf(n,i+1);
     }
-    if(!hit && n.length>=3 && t.includes(n)) hit=true;
+    // 2段目: ひらがなで話された場合。t は全体がカタカナ化されるので t 上では切れ目を判定できない。
+    // toKata は文字数を変えないため、同じ位置の原文(rawM)の前後で境界を見る
+    // （「うぐいすがないた」は採用・「うぐいす谷駅」「めじろ台駅」「かわせみ色」は不採用）
+    if(!hit && n.length>=3){
+      let k=t.indexOf(n);
+      while(k>=0){
+        const pc=k>0?rawM.charAt(k-1):'';
+        const okL2=!pc || (!VOICE_KATA.test(pc) && !VOICE_KANJI.test(pc)
+          && (!/[ぁ-ゖ]/.test(pc) || VOICE_PARTICLE.includes(pc)));
+        if(okL2 && voiceBoundR(rawM, k+n.length, false)){ hit=true; break; }
+        k=t.indexOf(n,k+1);
+      }
+    }
     if(hit && (!best || n.length>best.n.length)) best={s,n};
   }
   if(best){ r.species_name=best.s.japanese_name; r.species_id=best.s.species_id; }
@@ -1663,12 +1740,18 @@ function voiceListen(){
     cur._stopping=true;
     try{ cur.stop(); }catch(e){ voiceRecAbort(); }
     return; }
-  const rec=new SR(); rec.lang='ja-JP'; rec.interimResults=true; rec.continuous=false;
+  // continuous=true: 区切って話しても一呼吸の沈黙で認識が終わらないようにする（それでも
+  // OS側の都合で終わることはある→その場合は追記方式が受け止める）
+  const rec=new SR(); rec.lang='ja-JP'; rec.interimResults=true; rec.continuous=true;
+  // 開始時点の欄の内容を覚えておき、認識結果はその後ろに足す（途切れて話し直しても前の内容が消えない）
+  const base=(($('#voiceText')||{}).value||'').trim();
   // 各コールバックは「今も自分が現役か」を確認する（破棄済みセッションの遅延通知でDOMを触らない）
   rec.onresult=e=>{ if(VREC!==rec) return;
     let fin='', inter='';
     for(const res of e.results){ if(res.isFinal) fin+=res[0].transcript; else inter+=res[0].transcript; }
-    const ta=$('#voiceText'); if(ta){ ta.value=fin||inter; SCREENS._dirty=true; voicePreview(); } };
+    // continuous=true では確定分と認識途中が同時に存在する。両方つなぐ（確定が出た瞬間に
+    // 認識途中の言葉が画面から消えないように）
+    const ta=$('#voiceText'); if(ta){ ta.value=(base?base+' ':'')+fin+inter; SCREENS._dirty=true; voicePreview(); } };
   rec.onerror=e=>{ if(VREC!==rec) return;
     toast(e.error==='network'
     ?'音声認識には電波が必要です。下の欄からキーボードのマイクで話してください'
@@ -1682,6 +1765,15 @@ function voicePreview(){
   const box=$('#voicePrev'); if(!box) return;
   const txt=(($('#voiceText')||{}).value||'');
   const p=parseVoiceObs(txt);
+  if(box.classList.contains('compact')){
+    // ドック用の1行表示（場所を取らない。メモは原文そのままなので省略）
+    const parts=[ p.species_name?('✓'+p.species_name):(txt.trim()?'種名: 見つかりません':''),
+      p.count?(p.count+'羽'):'', p.behavior, p.detection_method, p.distance_band, p.direction ]
+      .filter(Boolean).map(esc);
+    box.textContent='';
+    box.innerHTML = parts.length?('読み取り: '+parts.join(' ・ ')):'—';
+    return;
+  }
   const row=(k,v)=>`<div class="row" style="padding:2px 0;"><div class="small muted" style="width:80px; flex:none;">${k}</div><div class="grow small">${v||'<span class="muted">—</span>'}</div></div>`;
   box.innerHTML = row('種名', p.species_name?esc(p.species_name):(txt.trim()?'<span class="muted">見つかりません（次の画面で選べます）</span>':''))
     + row('個体数', esc(p.count)) + row('行動', esc(p.behavior)) + row('確認方法', esc(p.detection_method))
@@ -1694,6 +1786,45 @@ function voiceToObs(u){
   const p=parseVoiceObs(txt);
   SCREENS._dirty=false;   // 内容は observation の下書きへ引き継ぐので、この画面の離脱確認は不要
   goBack(); nav('obsEdit', JSON.stringify({sv:u, voice:p}));
+}
+/* 観察入力画面の音声入力ドック: 画面下に固定表示し、フォームをスクロールして各項目を
+   見ながら「話す→反映」できる。保存バーの上に載せる（保存ボタンは隠さない）。
+   部品IDは voiceObs と共通（#voiceBtn/#voiceText/#voicePrev）＝ voiceListen/voicePreview を使い回す */
+function voiceDockToggle(){
+  // 開いている時にもう一度押した場合も「閉じる」＝未反映の発話があれば確認を挟む
+  // （確認なしの voiceDockClose は render() の後始末など内部用途だけに使う）
+  if(document.getElementById('voiceDock')){ voiceDockDismiss(); return; }
+  if(!$('#obForm')) return;
+  const hasSR=!!(window.SpeechRecognition||window.webkitSpeechRecognition);
+  const d=document.createElement('div');
+  d.id='voiceDock';
+  d.style.cssText='position:fixed; left:50%; transform:translateX(-50%); width:min(100%,900px); '
+    +'bottom:calc(70px + env(safe-area-inset-bottom, 0px)); z-index:70; box-sizing:border-box; '
+    +'background:var(--panel); border-top:1px solid var(--line); border-radius:12px 12px 0 0; '
+    +'padding:8px 12px; box-shadow:0 -4px 16px rgba(0,0,0,.45);';
+  d.innerHTML=`
+    <div style="display:flex; gap:8px; align-items:flex-start;">
+      ${hasSR?`<button type="button" class="btn" id="voiceBtn" style="width:auto; padding:10px 12px; flex:none;" onclick="voiceListen()">🎙 話す</button>`:''}
+      <textarea id="voiceText" rows="2" style="min-height:44px; flex:1;" placeholder="${hasSR?'ここに話した内容が入ります（手修正可）':'キーボードのマイク🎙で話してください（圏外OK）'}" oninput="SCREENS._dirty=true; voicePreview()"></textarea>
+      <button type="button" class="btn ghost" style="width:auto; padding:10px 12px; flex:none;" onclick="voiceDockDismiss()">✕</button>
+    </div>
+    <div id="voicePrev" class="tiny muted compact" style="margin:6px 2px;">—</div>
+    <button type="button" class="btn" style="padding:10px;" onclick="voiceApplyToForm()">↑ 上の入力欄に反映</button>`;
+  document.body.appendChild(d);
+  // ドックに隠れないよう、フォーム側の下端に余白を足す（閉じたら戻す）
+  const m=$('#main'); if(m) m.style.paddingBottom='210px';
+  voicePreview();
+}
+function voiceDockClose(){
+  voiceRecAbort();
+  const d=document.getElementById('voiceDock'); if(d) d.remove();
+  const m=$('#main'); if(m) m.style.paddingBottom='';
+}
+// ✕ボタン用: 未反映の発話が残っていれば確認してから閉じる（render()からの後始末は確認なしの voiceDockClose を使う）
+function voiceDockDismiss(){
+  const txt=(($('#voiceText')||{}).value||'').trim();
+  if(txt && !confirm('話した内容がまだ反映されていません。破棄して閉じますか？')) return;
+  voiceDockClose();
 }
 // 観察入力画面の中の音声入力: 解析結果を「開いているフォーム」にそのまま反映する。
 // 解析できた項目だけ書き込み、行動は既存の選択に追加、メモは原文を追記（消さない・失わない）
@@ -1784,14 +1915,7 @@ SCREENS.obsEdit = (argStr)=>{
           <div id="recPanel"></div></div>
         <div class="field"><span class="lab">写真・動画（カメラで撮影／ライブラリから選択）</span>
           <div id="mediaPanel"></div></div>
-        <div class="field"><details class="fold">
-          <summary><span class="lab" style="display:inline; margin:0;">🎙 音声でまとめて入力</span>
-            <span class="small muted">話すと種名・数・行動などに振り分け</span></summary>
-          ${(window.SpeechRecognition||window.webkitSpeechRecognition)?`<button type="button" class="btn" id="voiceBtn" onclick="voiceListen()">🎙 話す（電波が必要）</button><div class="sp"></div>`:''}
-          <textarea id="voiceText" placeholder="例：ウグイス 2羽 さえずり 北東 30メートル（キーボードのマイク🎙でも入力可・圏外OK）" oninput="voicePreview()"></textarea>
-          <div class="card" id="voicePrev" style="background:var(--panel2); margin-top:6px;">—</div>
-          <button type="button" class="btn" style="margin-top:6px;" onclick="voiceApplyToForm()">↓ この内容を下の入力欄に反映</button>
-        </details></div>
+        <button type="button" class="btn ghost" style="margin-bottom:14px;" onclick="voiceDockToggle()">🎙 音声でまとめて入力（画面下に開く）</button>
         <label class="field"><span class="lab">種名（未入力でも保存可）</span>
           <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
             placeholder="和名で検索…" oninput="spSearch(this.value)">
