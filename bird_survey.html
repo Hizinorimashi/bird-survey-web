@@ -237,7 +237,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v87（2026-08-04 種名は候補から選ぶ方式に：聞き間違いでも黙って別の種が入らない）';
+const APP_VERSION = 'v88（2026-08-04 書きかけを守る画面を追加・個体数の数え方を統一・GPS精度を書き出しへ）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -995,6 +995,21 @@ function breedingRank(behaviorStr, hasSpecies){
 
 /* 図鑑・鳴き声の参照リンク（📖=Wikipedia日本語 / 🔊=Xeno-canto。学名があれば鳴き声検索が正確） */
 function speciesByName(name){ return SPECIES.find(s=>s.japanese_name===name); }
+// 個体数の読み方をアプリ全体で1つにする。空欄・未入力は「1」＝記録が存在する以上、最低1個体はいる
+// （入力欄の初期値も1）。以前は集計が0、報告書と地図が1、飛翔GeoJSONが空欄と読み手ごとに割れていて、
+// 同じ調査の合計が画面によって違った（2026-08-04 全体監査）
+// 位置の確からしさ（m）。書き出し用。空欄・数値でないもの・負の値は空にする
+function accuracyM(v){
+  const s=String(v==null?'':v).trim(); if(s==='') return '';
+  const n=Number(s);
+  return (Number.isFinite(n) && n>=0) ? n : '';
+}
+function indCount(v){
+  const s=String(v==null?'':v).trim();
+  if(s==='') return 1;
+  const n=Number(s);
+  return (Number.isFinite(n) && n>=0) ? Math.trunc(n) : 1;
+}
 function guideUrlFor(s){ return 'https://ja.wikipedia.org/wiki/'+encodeURIComponent((s&&s.japanese_name)||''); }
 function callUrlFor(s){ const q=(s&&s.scientific_name)||(s&&s.japanese_name)||''; return 'https://xeno-canto.org/explore?query='+encodeURIComponent(q); }
 function brCallUrlFor(s){ return 'https://db3.bird-research.jp/saezuri/birdsong/list;name='+encodeURIComponent((s&&s.japanese_name)||''); }
@@ -1014,10 +1029,18 @@ let mapCurMarker = null, mapCurCircle = null; // 地図上の現在地マーカ�
 const DISCARDED=new Set();
 // 画面を離れる前の確認。録音中と、編集画面の未保存入力を無警告で捨てないための関門。
 // 保存フローは保存成功時に SCREENS._dirty=false にしてから遷移するので、ここには引っかからない
+// 未保存の入力を守る画面の一覧。ここに入れ忘れると、書きかけが警告なく消える
+// （まとめて記録・仮説・検証結果・振り返りが対象外になっていた＝2026-08-04の全体監査 Critical）
+const GUARD_SCREENS=['obsEdit','noteEdit','flightEdit','routeEdit','voiceObs',
+  'obsBatch','hypEdit','hypVerify','surveyEnd'];
+// 入力があった時点で「いまが保護対象の画面か」を見る。画面ごとに見張りを張り替えないための判定
+function markDirtyIfGuarded(){
+  const cur=STACK[STACK.length-1]||{};
+  if(GUARD_SCREENS.indexOf(cur.name)>=0 || (cur.name==='surveyEdit' && SCREENS._editing)) SCREENS._dirty=true;
+}
 function leaveGuardOk(){
   const cur=STACK[STACK.length-1]||{};
-  const editScreen=(cur.name==='obsEdit'||cur.name==='noteEdit'||cur.name==='flightEdit'||cur.name==='routeEdit'
-    ||cur.name==='voiceObs'   // 音声入力の発話テキストも未保存の入力として保護
+  const editScreen=(GUARD_SCREENS.indexOf(cur.name)>=0
     ||(cur.name==='surveyEdit' && SCREENS._editing));   // 既存調査の途中編集も保護（新規は下書き自動保存があるので対象外）
   const dirty=editScreen && SCREENS._dirty;
   const ghost=dirty ? SCREENS._ghost : null;   // 写真・録音を先に付けてDBに仮保存された未保存の新規記録
@@ -1085,6 +1108,14 @@ function render(){
   revokePanelUrls(main, 'audio, .mediael');   // 画面差し替え前に音声・写真のObject URLを解放（リーク防止）
   main.innerHTML = out.html || '';
   if(out.onMount) out.onMount();
+  // 入力を検知して未保存扱いにする。個々の欄に oninput を書き足す方式は書き漏れが起きるため、
+  // 画面ごとまとめて見張る。#main は画面を変えても入れ替わらないので、見張りは**起動時に1度だけ**張り、
+  // 対象画面かどうかは発火した時点で見る（renderのたびに張ると、画面を開くたびに際限なく積み上がる）
+  if(!SCREENS._inputHooked){
+    SCREENS._inputHooked=true;
+    main.addEventListener('input', markDirtyIfGuarded);
+    main.addEventListener('change', markDirtyIfGuarded);
+  }
   window.scrollTo(0,0);
 }
 
@@ -1416,7 +1447,7 @@ SCREENS.survey = (u)=>{
         ${o.needs_review?'<span class="badge warn">要確認</span>':''}
         ${o.identification_status&&o.identification_status!=='確定'?`<span class="badge">${esc(o.identification_status)}</span>`:''}
       </div>
-      <div class="small muted">${fmtTime(o.observed_at)} ・ ${esc(o.count==null||o.count===''?1:o.count)}個体 ・ ${esc(o.detection_method||'')}${o.habitat?' ・ '+esc(o.habitat):''}${o.age_class&&o.age_class!=='不明'?' ・ '+esc(o.age_class):''}${o.sex&&o.sex!=='不明'?' ・ '+esc(o.sex):''}</div>
+      <div class="small muted">${fmtTime(o.observed_at)} ・ ${esc(indCount(o.count))}個体 ・ ${esc(o.detection_method||'')}${o.habitat?' ・ '+esc(o.habitat):''}${o.age_class&&o.age_class!=='不明'?' ・ '+esc(o.age_class):''}${o.sex&&o.sex!=='不明'?' ・ '+esc(o.sex):''}</div>
     </div>
     <span class="tiny muted">${(o.audio&&o.audio.length)?'🎤':''}${(o.media&&o.media.length)?'📷':''}${o.latitude?'📍':''}</span>`;
   const obsCard = o=> selMode
@@ -2111,7 +2142,10 @@ SCREENS.obsEdit = (argStr)=>{
     }
   };
 };
-function pickObs(btn,field,val){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); syncOther(field); SCREENS._dirty=true;
+function pickObs(btn,field,val){
+  const before=btn.classList.contains('on');   // 同じ値を押し直しただけなら未保存扱いにしない（無用な離脱確認を出さない）
+  btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); syncOther(field);
+  if(!before) SCREENS._dirty=true;
   if(field==='identification_status') updateIdHint(); }
 function segVal(field){ const root=document.querySelector(`[data-seg="${field}"]`); if(!root) return '';
   if(root.tagName==='SELECT') return root.value;   // プルダウン版（「なし」は value="" なのでそのまま空）
@@ -2875,7 +2909,9 @@ function batchSave(svUuid){
   if(!DB.save(DB.key.ob, arr)) return;   // 保存失敗なら成功表示も遷移もしない（DB.saveが警告済み）
   items.forEach(it=>DB.pushRecent(it.name));
   toast(`${items.length}種を保存しました`+(flagged?`（うち${flagged}件はマスタにない種名のため要確認を付けました）`:''), flagged?4000:1800);
-  SCREENS._batchItems=null; SCREENS._batchAcc=null; goBack();
+  SCREENS._batchItems=null; SCREENS._batchAcc=null;
+  SCREENS._dirty=false;   // 保存済み＝離脱確認の対象から外す
+  goBack();
 }
 function deleteObs(u){ if(!confirm('この観察記録を削除しますか？')) return;
   if(!DB.softDelete(DB.key.ob,u)) return;   // 保存失敗（容量不足）はDB.saveが警告済み。成功表示も遷移もしない
@@ -3959,15 +3995,24 @@ function saveHyp(u,svUuid,editing){
     required_data:g('required_data'), target_species:g('target_species'), target_location:g('target_location'),
     status:segVal('status')||'未検証' });
   if(!DB.upsertHyp(rec)) return; toast('保存しました');
+  SCREENS._dirty=false;   // 保存済み＝離脱確認の対象から外す
   if(editing) goBack(); else { goBack(); nav('hypDetail',u); }
 }
 function deleteHyp(u){ if(!confirm('この仮説と検証結果を削除しますか？')) return;
-  DB.softDelete(DB.key.hy,u);
-  // 仮説と一緒に消す検証結果には印(deleted_with_hyp)を付ける。復元時にこれだけ戻す（個別に消した結果は戻さない）
+  // 仮説と一緒に消す検証結果には印(deleted_with_hyp)を付ける。復元時にこれだけ戻す（個別に消した結果は戻さない）。
+  // 子を先に保存し、成功したときだけ親を消す。逆順だと「親だけ消えて検証結果が孤立」する
+  const before=DB.load(DB.key.hr);   // 巻き戻し用の控え（親の削除に失敗したとき子だけ消えた状態にしない）
   const arr=DB.load(DB.key.hr); let ch=false;
   arr.forEach(r=>{ if(r.hypothesis_uuid===u && !r.deleted_at){ r.deleted_at=nowISO(); r.deleted_with_hyp=true; ch=true; } });
-  if(ch) DB.save(DB.key.hr,arr);
-  toast('削除しました'); goBack(); }
+  if(ch && !DB.save(DB.key.hr,arr)) return;   // 保存失敗はDB.saveが警告済み。成功表示も遷移もしない
+  if(!DB.softDelete(DB.key.hy,u)){
+    // 子だけ消えた状態は「仮説は残っているのに検証結果が全部消えた」ように見える。必ず戻す
+    if(ch && !DB.save(DB.key.hr,before)){
+      toast('削除に失敗し、検証結果を元に戻すこともできませんでした。空き容量を確保してから、データ点検・修復画面で確認してください', 8000);
+    }
+    return;
+  }
+  SCREENS._dirty=false; toast('削除しました'); goBack(); }
 
 SCREENS.hypDetail = (u)=>{
   const h=DB.hypothesis(u); if(!h) return SCREENS.home();
@@ -4017,7 +4062,7 @@ SCREENS.hypVerify = (argStr)=>{
   const svObs=DB.obsOf(h.survey_uuid);
   const chosen=new Set(r.observation_uuids||[]);
   const obsPick=svObs.length? `<div class="chips">${svObs.map(o=>
-    `<span class="c ${chosen.has(o.uuid)?'on':''}" data-obs="${o.uuid}" onclick="this.classList.toggle('on')"
+    `<span class="c ${chosen.has(o.uuid)?'on':''}" data-obs="${o.uuid}" onclick="this.classList.toggle('on'); markDirtyIfGuarded()"
       style="${chosen.has(o.uuid)?'background:var(--accent2);border-color:var(--accent);color:#fff':''}">${esc(o.species_name_snapshot||'未同定')} ${fmtTime(o.observed_at)}</span>`).join('')}</div>`
     : '<div class="small muted">この調査にはまだ観察記録がありません。</div>';
   return {
@@ -4066,9 +4111,13 @@ function saveHypResult(u,hyUuid,editing){
   // 判定が付いたら仮説ステータスを検証済みへ更新（未検証のときのみ）
   const h=DB.hypothesis(hyUuid);
   if(judgment && h && (h.status==='未検証'||h.status==='検証中')){ h.status='検証済み'; DB.upsertHyp(h); }
-  toast('保存しました'); goBack();
+  toast('保存しました');
+  SCREENS._dirty=false;   // 保存済み＝離脱確認の対象から外す
+  goBack();
 }
-function deleteHypResult(u){ if(!confirm('この検証結果を削除しますか？')) return; DB.softDelete(DB.key.hr,u); toast('削除しました'); goBack(); }
+function deleteHypResult(u){ if(!confirm('この検証結果を削除しますか？')) return;
+  if(!DB.softDelete(DB.key.hr,u)) return;   // 削除できていないのに成功表示して戻ると、直前の編集内容も失われる
+  SCREENS._dirty=false; toast('削除しました'); goBack(); }
 
 /* ============================================================
    調査終了・振り返り
@@ -4076,10 +4125,18 @@ function deleteHypResult(u){ if(!confirm('この検証結果を削除します�
 SCREENS.surveyEnd = (u)=>{
   const s=DB.survey(u); if(!s) return SCREENS.home();
   const obs=DB.obsOf(u);
-  const spCount=new Set(obs.filter(o=>o.species_name_snapshot).map(o=>o.species_name_snapshot)).size;
-  const total=obs.reduce((a,o)=>a+(parseInt(o.count,10)||0),0);
-  const undet=obs.filter(o=>o.identification_status==='未同定'||!o.species_name_snapshot).length;
-  const review=obs.filter(o=>o.needs_review).length;
+  // 飛翔経路も種数・個体数に含める。含めないと、飛翔だけを記録した調査で
+  // 終了画面が「0種・0個体」、種別集計が「1種・2個体」と食い違う（2026-08-04 全体監査で実測）
+  const flightsAll=DB.flightsOf(u).filter(f=>(f.path||[]).filter(validPathPt).length>=2);
+  const spCount=new Set([...obs, ...flightsAll].filter(x=>x.species_name_snapshot)
+    .map(x=>x.species_name_snapshot)).size;
+  const total=obs.reduce((a,o)=>a+indCount(o.count),0)
+    + flightsAll.reduce((a,f)=>a+indCount(f.count),0);
+  // 未同定・要確認も飛翔を含める。種数と個体数だけ飛翔を数えると内訳が合わなくなる
+  const undet=obs.filter(o=>o.identification_status==='未同定'||!o.species_name_snapshot).length
+    + flightsAll.filter(f=>!f.species_name_snapshot).length;
+  const review=obs.filter(o=>o.needs_review).length
+    + flightsAll.filter(f=>f.needs_review).length;
   const hyps=DB.hypOf(u);
   const verified=hyps.filter(h=>h.status==='検証済み').length;
   const r=s.review||{};
@@ -4094,7 +4151,8 @@ SCREENS.surveyEnd = (u)=>{
         <div class="tablewrap"><table>
           <tr><td>観察記録数</td><td class="num">${obs.length}</td><td>確認種数</td><td class="num">${spCount}</td></tr>
           <tr><td>総個体数</td><td class="num">${total}</td><td>未同定件数</td><td class="num">${undet}</td></tr>
-          <tr><td>要確認件数</td><td class="num">${review}</td><td>メモ件数</td><td class="num">${DB.notesOf(u).length}</td></tr>
+          <tr><td>飛翔経路数</td><td class="num">${flightsAll.length}</td><td>要確認件数</td><td class="num">${review}</td></tr>
+          <tr><td>メモ件数</td><td class="num">${DB.notesOf(u).length}</td><td></td><td class="num"></td></tr>
           <tr><td>仮説件数</td><td class="num">${hyps.length}</td><td>検証済み仮説</td><td class="num">${verified}</td></tr>
         </table></div>
       </div>
@@ -4116,7 +4174,9 @@ function finishSurvey(u){
   f.querySelectorAll('textarea').forEach(t=>review[t.name]=t.value);
   s.review=review;
   if(s.status!=='終了'){ s.status='終了'; s.end_datetime=nowISO(); }
-  if(!DB.upsertSurvey(s)) return; stopGps(); autoBackupRecords(); scheduleFolderFull(); toast('保存しました'); reset('home'); nav('survey',u);
+  if(!DB.upsertSurvey(s)) return; stopGps(); autoBackupRecords(); scheduleFolderFull(); toast('保存しました');
+  SCREENS._dirty=false;   // 保存済み＝離脱確認の対象から外す
+  reset('home'); nav('survey',u);
 }
 
 /* ============================================================
@@ -4126,9 +4186,20 @@ SCREENS.summary = (u)=>{
   const s=DB.survey(u); const obs=DB.obsOf(u); const flights=DB.flightsOf(u);
   const map={};
   const ent=key=>map[key]||(map[key]={name:key, total:0, count:0, first:null, last:null, methods:new Set(), review:0, undet:0, routes:0});
-  const touchTime=(m,t)=>{ if(t){ if(!m.first||t<m.first) m.first=t; if(!m.last||t>m.last) m.last=t; } };
+  // 初認・終認の比較は、観察（世界標準時で保存）と飛翔（時差なしで保存）で保存形式が違うため、
+  // 文字列のまま比べると順序が逆転する（実測: 観察05:00・飛翔04:00で初認05:00・終認04:00）。
+  // 書き出しと同じ isoLocal で日本時間に揃えてから比べる
+  // 日付だけの値（2026-08-04）や日時と読めない値は初認・終認から外す。
+  // 混ぜると、日付だけの値が常に最小になって初認に居座り、時刻表示すると再び逆転して見える
+  const touchTime=(m,t)=>{ const s=String(t||'');
+    // 日付だけの値と、暦として存在しない日時（2026-02-30 / 25時 等）は除外する。
+    // okStamp は取込・同期でも使っている共通の検査で、暦日と解釈可能性まで見る
+    if(!s || DATE_ONLY_RE.test(s) || !okStamp(s)) return;
+    const v=isoLocal(t); if(!v) return;
+    if(!m.first||v<m.first) m.first=v;
+    if(!m.last||v>m.last) m.last=v; };
   obs.forEach(o=>{ const m=ent(o.species_name_snapshot||'（未同定）');
-    m.total+=parseInt(o.count,10)||0; m.count++;
+    m.total+=indCount(o.count); m.count++;
     if(o.detection_method) m.methods.add(o.detection_method);
     if(o.needs_review) m.review++;
     if(o.identification_status==='未同定'||!o.species_name_snapshot) m.undet++;
@@ -4139,7 +4210,7 @@ SCREENS.summary = (u)=>{
   flights.forEach(f=>{ const path=(f.path||[]).filter(validPathPt);
     if(path.length<2) return;
     const m=ent(f.species_name_snapshot||'（未同定）');
-    const c=parseInt(f.count,10)||0;
+    const c=indCount(f.count);
     m.total+=c; m.routes++; m.methods.add('飛翔');
     if(f.needs_review) m.review++;
     touchTime(m,f.start_time);
@@ -4154,7 +4225,7 @@ SCREENS.summary = (u)=>{
   const km=routeLen/1000;
   // 注記どおり「未同定を除く」を個体数・種数の両方に適用（従来は種数のみ除外で、個体/kmに未同定が混ざっていた）
   const obsIdOk=obs.filter(o=>!(o.identification_status==='未同定' || !o.species_name_snapshot));
-  const obsInd=obsIdOk.reduce((a,o)=>a+(parseInt(o.count,10)||0),0);
+  const obsInd=obsIdOk.reduce((a,o)=>a+indCount(o.count),0);
   const obsSp=new Set(obsIdOk.map(o=>o.species_name_snapshot).filter(n=>n&&n!=='（未同定）')).size;
   const densHtml = km>0 ? `<div class="sp"></div>
       <h3 style="margin:0 0 6px;">ルート密度</h3>
@@ -4228,7 +4299,7 @@ function drawMap(obs,notes,flights,targets,route){
     if(o.needs_review){ sym='▲'; col='#e0a030'; }
     else if(o.identification_status==='未同定'||!o.species_name_snapshot){ sym='?'; col='#8a9a93'; }
     const m=mk(lat,lon,sym,col).addTo(mapObj);
-    m.bindPopup(`<b>${esc(o.species_name_snapshot||'（未同定）')}</b><br>${esc(o.count==null||o.count===''?1:o.count)}個体 ・ ${esc(o.detection_method||'')}<br>${fmtTime(o.observed_at)}`);
+    m.bindPopup(`<b>${esc(o.species_name_snapshot||'（未同定）')}</b><br>${esc(indCount(o.count))}個体 ・ ${esc(o.detection_method||'')}<br>${fmtTime(o.observed_at)}`);
     group.push([lat,lon]);
   });
   notes.forEach(n=>{ const lat=parseFloat(n.latitude), lon=parseFloat(n.longitude);
@@ -4256,7 +4327,7 @@ function drawMap(obs,notes,flights,targets,route){
     const col=colorOf[flightColorKey(f,fMode)]; legend[flightColorKey(f,fMode)]=col;
     const disp=smoothPath(path);   // 線・矢印とも表示用の滑らか経路に載せる（ズレると矢印が線から浮く）
     const pl=L.polyline(disp,{color:col,weight:4,opacity:.85}).addTo(mapObj);
-    pl.bindPopup(`<b>🛩 ${esc(f.species_name_snapshot||'（未同定）')}</b>${f.age_class&&f.age_class!=='不明'?' ・ '+esc(f.age_class):''}${f.individual_label?' ・ '+esc(f.individual_label):''}<br>${esc(f.count==null||f.count===''?1:f.count)}個体 ・ ${esc(f.height_class||'')}<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
+    pl.bindPopup(`<b>🛩 ${esc(f.species_name_snapshot||'（未同定）')}</b>${f.age_class&&f.age_class!=='不明'?' ・ '+esc(f.age_class):''}${f.individual_label?' ・ '+esc(f.individual_label):''}<br>${esc(indCount(f.count))}個体 ・ ${esc(f.height_class||'')}<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
     if(endsOn){
       const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
       L.marker(path[0],{icon:badge('始','#3fb984')}).addTo(mapObj);
@@ -5456,7 +5527,10 @@ const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','survey_
   'latitude','longitude','species_name','count','detection_method','distance_band','direction','behavior','habitat','age_class','sex',
   'env_redlist','hokkaido_redlist','species_protection_act','natural_monument','breeding_rank',
   'target_latitude','target_longitude','perch_size','perch_class','nest_tree_species','nest_tree_height','nest_state',
-  'identification_status','confidence','needs_review','note','audio_file','media_file','external_photo_reference'];
+  'identification_status','confidence','needs_review','note','audio_file','media_file','external_photo_reference',
+  // gps_accuracy_m: 画面には「±Xm」と出るのに書き出しに無く、GISで低精度の点を見分けられなかった（2026-08-04 全体監査）。
+  // **必ず末尾に足す**。途中へ挿すと、列の順番で読んでいる外部の集計表がそこから全部ずれる
+  'gps_accuracy_m'];
 function csvCell(v){ v=v==null?'':String(v);
   // 数式インジェクション対策は「数値でない」文字列にだけ適用する。
   // 負の緯度経度(-73.98)や個体数を ' 付きの文字列に変えてGIS/R/Pythonの数値処理を壊さないため。
@@ -5468,7 +5542,9 @@ function buildRows(surveys){
     rows.push({ survey_id:s.uuid, survey_name:s.name, survey_date:fmtDate(s.survey_date), survey_method:s.survey_method,
       survey_season:s.season||'', survey_round:s.round_no||'',
       observation_id:o.uuid, observed_at:isoLocal(o.observed_at), latitude:o.latitude, longitude:o.longitude,
-      species_name:o.species_name_snapshot, count:o.count, detection_method:o.detection_method,
+      // 位置の確からしさ。数値でないもの・負の値は空にする（GIS側で誤って距離として使われないように）
+      gps_accuracy_m:accuracyM(o.gps_accuracy),
+      species_name:o.species_name_snapshot, count:indCount(o.count), detection_method:o.detection_method,
       distance_band:o.distance_band||'', direction:o.direction||'',
       target_latitude:o.target_latitude||'', target_longitude:o.target_longitude||'',
       perch_size:o.perch_size||'', perch_class:o.perch_class||'',
@@ -5508,11 +5584,11 @@ function exportReport(surveys, base){
     m.bySurvey[s.uuid]=(m.bySurvey[s.uuid]||0)+c;
   };
   surveys.forEach(s=>{ svCols.push({uuid:s.uuid, label:svLabel(s)});
-    DB.obsOf(s.uuid).forEach(o=>{ const c=(o.count==null||o.count==='')?1:(parseInt(o.count,10)||0);
+    DB.obsOf(s.uuid).forEach(o=>{ const c=indCount(o.count);
       addRec(s, o.species_name_snapshot, c, o.detection_method, o.behavior, !!o.species_name_snapshot); });
     // 飛翔経路も種一覧に合流（集計画面と同じく2点以上の経路のみ）
     DB.flightsOf(s.uuid).forEach(f=>{ if((f.path||[]).filter(validPathPt).length<2) return;
-      const c=(f.count==null||f.count==='')?1:(parseInt(f.count,10)||0);
+      const c=indCount(f.count);
       addRec(s, f.species_name_snapshot, c, '飛翔', f.behavior, !!f.species_name_snapshot); });
   });
   const names=Object.keys(bySp);
@@ -5556,7 +5632,7 @@ function flightFeature(s,f,path){
     properties:{ survey_id:s.uuid, survey_name:s.name, flight_id:f.uuid,
       species_name:f.species_name_snapshot||'', age_class:f.age_class||'', individual_label:f.individual_label||'',
       start_time:isoLocal(f.start_time), end_time:isoLocal(f.end_time),
-      height_class:f.height_class||'', behavior:f.behavior||'', count:f.count||'',
+      height_class:f.height_class||'', behavior:f.behavior||'', count:indCount(f.count),
       length_m: Math.round(pathLength(path)),
       audio_file:(f.audio||[]).map((a,i)=>flightAudioFilename(f,i,a)).join(';'),
       media_file:(f.media||[]).map((m,i)=>flightMediaFilename(f,i,m)).join(';'),
