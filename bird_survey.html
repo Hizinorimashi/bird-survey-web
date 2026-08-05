@@ -237,7 +237,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v90（2026-08-05 観察と飛翔経路を行き来：同じ鳥は二重に数えない）';
+const APP_VERSION = 'v91（2026-08-05 緯度・経度の手入力欄を非表示に：位置は現在地か地図で指定）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2080,13 +2080,11 @@ SCREENS.obsEdit = (argStr)=>{
             <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="grabGps()">📍 現在地</button>
             <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="toggleObsPosMap()">🗺 地図で指定</button></div>
           <div id="obsPosMap" style="height:240px; margin-top:8px; border-radius:var(--radius); border:1px solid var(--line); display:none;"></div>
-          <details class="fold" style="margin-top:8px;">
-            <summary class="small muted">緯度・経度を数値で直す（通常は不要）</summary>
-            <div class="two" style="margin-top:8px;">
-              <input id="latIn" inputmode="decimal" placeholder="緯度" value="${esc(o.latitude)}" oninput="posManualEdit()">
-              <input id="lonIn" inputmode="decimal" placeholder="経度" value="${esc(o.longitude)}" oninput="posManualEdit()">
-            </div>
-          </details>
+          <!-- 位置の値そのものを持つ欄。数値を手で直す操作は現場で使われないため画面には出さない（2026-08-05）。
+               表示を消しても、📍現在地・🗺地図で指定・保存はすべてこの値を読み書きしている。
+               位置を直したいときは地図で指定すればよいので、直す手段が無くなるわけではない -->
+          <input type="hidden" id="latIn" value="${esc(o.latitude)}">
+          <input type="hidden" id="lonIn" value="${esc(o.longitude)}">
         </div>
         <label class="field"><span class="lab">種名（未入力でも保存可）</span>
           <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
@@ -2274,13 +2272,6 @@ function renderQuickSpecies(){
 }
 // data属性から値を読む（onclickのJS文字列にユーザー入力を埋め込まない＝XSS対策）
 function pickQuickSpecies(el){ const n=(el&&el.getAttribute('data-sp'))||''; chooseSpecies('',n); }
-// 緯度・経度を手入力したとき: 手入力座標にGPS精度は付けられないため「不明」にし、表示からも±を消す
-function posManualEdit(){
-  SCREENS._acc=''; SCREENS._dirty=true;
-  const la=$('#latIn')?$('#latIn').value.trim():'', lo=$('#lonIn')?$('#lonIn').value.trim():'';
-  const pl=$('#posLabel'); if(pl) pl.textContent=(la||lo)?(la+', '+lo):'未取得';
-  if(validLatLon(la,lo)) obsPosMarkerUpdate(parseFloat(la),parseFloat(lo));   // 観察位置マップが開いていれば追随
-}
 function grabGps(){
   if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
   const own=(SCREENS._obs&&SCREENS._obs.uuid); toast('位置を取得中…');
