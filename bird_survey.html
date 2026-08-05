@@ -237,7 +237,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v88（2026-08-04 書きかけを守る画面を追加・個体数の数え方を統一・GPS精度を書き出しへ）';
+const APP_VERSION = 'v89（2026-08-05 観察入力の位置を種名の上へ：撮る→位置→種名の順に）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2053,6 +2053,19 @@ SCREENS.obsEdit = (argStr)=>{
         <div class="field"><span class="lab">写真・動画（カメラで撮影／ライブラリから選択）</span>
           <div id="mediaPanel"></div></div>
         <button type="button" class="btn ghost" style="margin-bottom:14px;" onclick="voiceDockToggle()">🎙 音声でまとめて入力（画面下に開く）</button>
+        <div class="card" style="background:var(--panel2);">
+          <div class="row"><div class="grow small muted">位置：<span id="posLabel">${o.latitude?esc(o.latitude)+', '+esc(o.longitude)+(o.gps_accuracy?` (±${esc(o.gps_accuracy)}m)`:''):'未取得'}</span></div>
+            <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="grabGps()">📍 現在地</button>
+            <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="toggleObsPosMap()">🗺 地図で指定</button></div>
+          <div id="obsPosMap" style="height:240px; margin-top:8px; border-radius:var(--radius); border:1px solid var(--line); display:none;"></div>
+          <details class="fold" style="margin-top:8px;">
+            <summary class="small muted">緯度・経度を数値で直す（通常は不要）</summary>
+            <div class="two" style="margin-top:8px;">
+              <input id="latIn" inputmode="decimal" placeholder="緯度" value="${esc(o.latitude)}" oninput="posManualEdit()">
+              <input id="lonIn" inputmode="decimal" placeholder="経度" value="${esc(o.longitude)}" oninput="posManualEdit()">
+            </div>
+          </details>
+        </div>
         <label class="field"><span class="lab">種名（未入力でも保存可）</span>
           <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
             placeholder="和名で検索…" oninput="spSearch(this.value)">
@@ -2087,19 +2100,6 @@ SCREENS.obsEdit = (argStr)=>{
         <label class="field row" style="gap:12px; align-items:center;">
           <input type="checkbox" id="needsReview" style="width:auto;" ${o.needs_review?'checked':''}>
           <span class="lab" style="margin:0;">要確認フラグ（あとで見直す）</span></label>
-        <div class="card" style="background:var(--panel2);">
-          <div class="row"><div class="grow small muted">位置：<span id="posLabel">${o.latitude?esc(o.latitude)+', '+esc(o.longitude)+(o.gps_accuracy?` (±${esc(o.gps_accuracy)}m)`:''):'未取得'}</span></div>
-            <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="grabGps()">📍 現在地</button>
-            <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="toggleObsPosMap()">🗺 地図で指定</button></div>
-          <div id="obsPosMap" style="height:240px; margin-top:8px; border-radius:var(--radius); border:1px solid var(--line); display:none;"></div>
-          <details class="fold" style="margin-top:8px;">
-            <summary class="small muted">緯度・経度を数値で直す（通常は不要）</summary>
-            <div class="two" style="margin-top:8px;">
-              <input id="latIn" inputmode="decimal" placeholder="緯度" value="${esc(o.latitude)}" oninput="posManualEdit()">
-              <input id="lonIn" inputmode="decimal" placeholder="経度" value="${esc(o.longitude)}" oninput="posManualEdit()">
-            </div>
-          </details>
-        </div>
         <details class="fold" id="nestFold" ${(o.target_latitude||o.target_longitude||o.perch_size||o.perch_class||o.nest_tree_species||o.nest_tree_height||o.nest_state)?'open':''}>
         <summary>🪵 対象の位置・とまり木・巣（猛禽などで必要なとき）</summary>
         <div class="card" style="background:var(--panel2);">
