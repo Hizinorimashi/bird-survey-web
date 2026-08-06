@@ -112,6 +112,9 @@
   .chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;}
   .chips .c{background:var(--chip); border:1px solid var(--line); border-radius:16px; padding:5px 10px; font-size:13px;}
   .chips .c[onclick]{border-radius:20px; padding:10px 14px; font-size:15px; cursor:pointer;}   /* タップできるチップだけ大きく */
+  /* いま選んでいるもの（P1/P2 のタブ、根拠の観察）。どれを入力中か分かるように塗りつぶす */
+  .chips .c.on{background:var(--accent); color:#0a0f0d; border-color:var(--accent); font-weight:700;
+    box-shadow:0 0 0 3px rgba(63,185,132,.35);}
 
   /* 地図 */
   #map{height:calc(100vh - 220px); min-height:320px; border-radius:var(--radius); border:1px solid var(--line);}
@@ -240,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v95（2026-08-06 止まっていたものを種類で分岐・Pごとに入力／営巣木は地図のNで別指定）';
+const APP_VERSION = 'v96（2026-08-06 いま入力しているPが、タブと地図の両方で光るように）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2759,7 +2762,7 @@ function perchLoad(){
   set('perchArtSel',pc.art); set('perchNote',pc.note);
   perchSyncBranch();
 }
-function perchPick(i){ perchStore(); PERCH_IDX=i; perchTabs(); perchLoad(); }
+function perchPick(i){ perchStore(); PERCH_IDX=i; perchTabs(); perchLoad(); pfRedraw(); }
 // P が複数あるときは P1・P2… のタブを出して、それぞれ別に選べるようにする
 function perchTabs(){
   const box=$('#perchTabs'), which=$('#perchWhich'); if(!box) return;
@@ -2767,7 +2770,7 @@ function perchTabs(){
   if(PERCH_IDX>=ps.length) PERCH_IDX=Math.max(0, ps.length-1);
   if(ps.length<=1){
     box.innerHTML='';
-    if(which) which.textContent = ps.length? '' : '地図で P を落とすと入力できます';
+    if(which) which.textContent = ps.length? '地図の P について入力しています' : '地図で P を落とすと入力できます';
     return;
   }
   box.innerHTML=ps.map((sg,i)=>`<span class="c${i===PERCH_IDX?' on':''}" data-i="${i}" onclick="perchPick(Number(this.getAttribute('data-i')))">P${i+1}</span>`).join('');
@@ -2834,7 +2837,11 @@ function pfRedraw(){
   PF_SEGS.forEach(seg=>{
     if(seg.t==='P'){
       np++;
-      L.marker(seg.pt,{icon:badge('P'+(np>1?np:''),'#3fb984',26)}).addTo(pfLayer);
+      // いま「止まっていたもの」を入力している P は、大きく・白い縁を太くして見分けられるようにする
+      const cur=(np-1)===PERCH_IDX && pfPoints().length>1;
+      const ic=L.divIcon({className:'',html:'<div style="background:'+(cur?'#2c8a63':'#3fb984')+';border:'+(cur?'4px':'2px')+' solid #fff;border-radius:50%;width:'+(cur?34:26)+'px;height:'+(cur?34:26)+'px;display:flex;align-items:center;justify-content:center;font-size:'+(cur?13:11)+'px;color:#fff;font-weight:700;box-shadow:0 1px 5px rgba(0,0,0,.5)">P'+(pfPoints().length>1?np:'')+'</div>',
+        iconSize:[cur?34:26,cur?34:26], iconAnchor:[cur?17:13,cur?17:13]});
+      L.marker(seg.pt,{icon:ic}).addTo(pfLayer);
     } else if(seg.pts.length){
       nf++;
       if(seg.pts.length>1) L.polyline(seg.pts,{color:'#e0a030',weight:4,opacity:.9}).addTo(pfLayer);
