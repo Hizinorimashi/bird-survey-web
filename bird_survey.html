@@ -140,6 +140,9 @@
     background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:999px; cursor:pointer;}
   .voice-chip.on{background:var(--accent); color:#0a0f0d; border-color:var(--accent);}
   .voice-chip:active{opacity:.85;}
+  /* 地図の P / F。いまどちらで落とすのかが一目で分かるよう、選んでいる方を塗りつぶす */
+  .pf-btn{font-weight:800; font-size:17px;}
+  .pf-btn.on{background:var(--accent); color:#0a0f0d; border-color:var(--accent); box-shadow:0 0 0 3px rgba(63,185,132,.35);}
   /* 全画面中は、iPhoneのノッチ・ホームバーの上に操作ボタンが隠れないよう内側に寄せる。
      横向きではノッチが左右に来る（「小さく」ボタンが押せなくなる＝戻れなくなる）ので四方向とも避ける */
   .map-full .leaflet-top{margin-top:env(safe-area-inset-top, 0px);}
@@ -237,7 +240,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v93（2026-08-06 観察入力を作り直し：地図のP（止まり）とF（飛翔）で記録）';
+const APP_VERSION = 'v94（2026-08-06 止まりは落とした数だけ・経路は切り替えるたび新しく／選択中のP・Fが光る）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2094,7 +2097,7 @@ SCREENS.obsEdit = (argStr)=>{
         </div>
       </div>
       <form id="obForm">
-        <details class="fold" id="foldMedia">
+        <details class="fold" id="foldMedia" open>
           <summary><span class="lab" style="display:inline; margin:0;">📷 メディア記録</span>
             <span class="small muted">写真・録音・動画・メモ</span></summary>
           <div class="field"><span class="lab">録音メモ（鳴き声など）</span><div id="recPanel"></div></div>
@@ -2104,7 +2107,7 @@ SCREENS.obsEdit = (argStr)=>{
             <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
         </details>
 
-        <details class="fold" id="foldSpecies" open>
+        <details class="fold" id="foldSpecies">
           <summary><span class="lab" style="display:inline; margin:0;">🐦 種情報</span>
             <span class="small muted">種名・数・齢・行動など</span></summary>
           <label class="field"><span class="lab">種名（未入力でも保存可）</span>
@@ -2155,9 +2158,12 @@ SCREENS.obsEdit = (argStr)=>{
         <details class="fold" id="foldEnv">
           <summary><span class="lab" style="display:inline; margin:0;">🌿 環境</span>
             <span class="small muted">生息環境・止まり木・巣</span></summary>
-          ${segFold('habitat','生息環境（複数選択可）',OPT.habitat)}
-          <label class="field"><span class="lab">とまり木の階層・サイズ（複数選択可・任意）</span>${segMulti('perch_size',OPT.perchSize)}</label>
-          <label class="field"><span class="lab">とまり木の分類（複数選択可・任意）</span>${segMulti('perch_class',OPT.perchClass)}</label>
+          <div class="lab" style="margin-top:4px;">まわりの環境（どんな場所か・複数選択可）</div>
+          <label class="field">${segMulti('habitat',OPT.habitat)}</label>
+          <div class="divider"></div>
+          <div class="lab">止まっていたもの（何にとまっていたか・任意）</div>
+          <label class="field"><span class="lab">高さ・サイズ（複数選択可）</span>${segMulti('perch_size',OPT.perchSize)}</label>
+          <label class="field"><span class="lab">木の種類（複数選択可）</span>${segMulti('perch_class',OPT.perchClass)}</label>
           <div class="two">
             <label class="field"><span class="lab">樹種名（とまり木・営巣木）</span>
               <input name="nest_tree_species" value="${esc(o.nest_tree_species||'')}" placeholder="例：アカエゾマツ"></label>
@@ -2191,11 +2197,10 @@ SCREENS.obsEdit = (argStr)=>{
       SCREENS._audio=(o.audio||[]).slice(); SCREENS._media=(o.media||[]).slice();
       // 記録モードは毎回「止まっている」から始める（前の画面の経路を持ち越さない）
       // 地図の状態は毎回まっさらから始める（前の画面の内容を持ち越さない）
-      PF_MODE='P'; PF_POINT=null; PF_PTIME=''; PF_TIMES=[]; flightPath=[]; flightLayer=null; pfLayer=null;
-      if(editing){
+      PF_MODE='P'; PF_SEGS=[]; PF_NEWLINE=true; flightPath=[]; flightLayer=null; pfLayer=null;
+      if(editing && validLatLon(String(o.target_latitude||''), String(o.target_longitude||''))){
         // 既存記録を開いたとき: 鳥の位置は P として地図に出す
-        const tla=parseFloat(o.target_latitude), tlo=parseFloat(o.target_longitude);
-        if(validLatLon(String(o.target_latitude||''), String(o.target_longitude||''))) PF_POINT=[tla,tlo];
+        PF_SEGS.push({t:'P', pt:[parseFloat(o.target_latitude), parseFloat(o.target_longitude)], time:o.observed_at||''});
       }
       SCREENS._chosenId=o.species_id||''; SCREENS._obsEditing=editing;
       // 精度の扱い: null=保存時に既存値を維持 / ''=不明（手入力座標） / 数値=確定値。初期値は画面に表示している精度と一致させる
@@ -2656,54 +2661,55 @@ function clearObsTarget(){
      P だけ → 観察1件 ／ F だけ → 飛翔1件 ／ 両方 → 2件を同じ目印で結び付け
    観察者の位置は画面に出さず、保存時にGPSから入れる。距離帯は観察者とPの距離から自動で決める */
 let PF_MODE='P';          // 地図タップの意味
-let PF_POINT=null;        // [lat,lon] 鳥がいた場所
-let PF_PTIME='';          // Pを落とした時刻（観察日時になる）
-let PF_TIMES=[];          // 経路の各点を落とした時刻（最初=開始・最後=終了）
+// 落とした順の並び。1個体の行動を時系列で持つ:
+//   {t:'P', pt:[lat,lon], time:'...'}      … 止まっていた場所（落とすたびに増える）
+//   {t:'F', pts:[[lat,lon]...], times:[]}  … 飛翔経路（Fへ切り替えるたびに新しい線が始まる）
+let PF_SEGS=[];
+let PF_NEWLINE=true;      // 次にFで落とすとき、新しい線を始めるか
 function pfSet(mode){
+  if(PF_MODE!==mode) PF_NEWLINE=true;   // 切り替えたら、次の線は新しく始める
   PF_MODE=mode;
   const b1=$('#pfP'), b2=$('#pfF');
   if(b1) b1.classList.toggle('on', mode==='P');
   if(b2) b2.classList.toggle('on', mode==='F');
-  pfInfo();
-  // 飛翔の項目は線が引かれているときだけ出す（仕様書）
-  pfSyncFlightFields();
+  pfInfo(); pfSyncFlightFields();
 }
+function pfPoints(){ return PF_SEGS.filter(x=>x.t==='P'); }
+function pfPaths(){ return PF_SEGS.filter(x=>x.t==='F' && x.pts.length>=2); }
 function pfSyncFlightFields(){
-  const on=flightPath.length>0;
+  const on=pfPaths().length>0;
   const h=$('#flHeightWrap'); if(h) h.style.display=on?'':'none';
   const b=$('#flBehWrap'); if(b) b.style.display=on?'':'none';
 }
 function pfInfo(){
   const el=$('#mapInfo'); if(!el) return;
-  const parts=[];
-  parts.push(PF_MODE==='P'?'P：タップで鳥がいた場所':'F：タップで経路を描く');
-  if(PF_POINT) parts.push('P あり');
-  if(flightPath.length) parts.push('経路 '+flightPath.length+'点');
+  const np=pfPoints().length, nf=pfPaths().length;
+  const parts=[PF_MODE==='P'?'P：タップで止まっていた場所':'F：タップで飛翔経路'];
+  if(np) parts.push('止まり '+np+'か所');
+  if(nf) parts.push('経路 '+nf+'本');
   el.textContent=parts.join(' ・ ');
 }
-// 地図に落とす（P は1点だけ・上書き。F は追加）
 function pfDrop(lat,lon){
+  const now=localDatetimeValue();
   if(PF_MODE==='P'){
-    PF_POINT=[lat,lon]; PF_PTIME=localDatetimeValue();
-    const la=$('#otLat'), lo=$('#otLon');
-    if(la) la.value=String(lat.toFixed?lat.toFixed(6):lat);
-    if(lo) lo.value=String(lon.toFixed?lon.toFixed(6):lon);
+    PF_SEGS.push({t:'P', pt:[lat,lon], time:now});
   } else {
-    flightPath.push([lat,lon]); PF_TIMES.push(localDatetimeValue());
+    const last=PF_SEGS[PF_SEGS.length-1];
+    if(PF_NEWLINE || !last || last.t!=='F'){ PF_SEGS.push({t:'F', pts:[[lat,lon]], times:[now]}); PF_NEWLINE=false; }
+    else { last.pts.push([lat,lon]); last.times.push(now); }
   }
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields();
 }
 function obsMapUndo(){
-  if(PF_MODE==='P'){ if(!PF_POINT) return; PF_POINT=null; PF_PTIME='';
-    const la=$('#otLat'), lo=$('#otLon'); if(la) la.value=''; if(lo) lo.value=''; }
-  else { if(!flightPath.length) return; flightPath.pop(); PF_TIMES.pop(); }
+  const last=PF_SEGS[PF_SEGS.length-1]; if(!last) return;
+  if(last.t==='P') PF_SEGS.pop();
+  else { last.pts.pop(); last.times.pop(); if(!last.pts.length) PF_SEGS.pop(); }
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields();
 }
 function obsMapClear(){
-  if(!PF_POINT && !flightPath.length) return;
-  if(!confirm('地図に落とした内容（Pと経路）を全部消しますか？')) return;
-  PF_POINT=null; PF_PTIME=''; flightPath=[]; PF_TIMES=[];
-  const la=$('#otLat'), lo=$('#otLon'); if(la) la.value=''; if(lo) lo.value='';
+  if(!PF_SEGS.length) return;
+  if(!confirm('地図に落とした内容（止まりと経路）を全部消しますか？')) return;
+  PF_SEGS=[]; PF_NEWLINE=true;
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields();
 }
 let pfLayer=null;
@@ -2711,17 +2717,20 @@ function pfRedraw(){
   if(!mapObj) return;
   if(pfLayer){ try{ mapObj.removeLayer(pfLayer); }catch(e){} }
   pfLayer=L.layerGroup().addTo(mapObj);
-  if(flightPath.length){
-    if(flightPath.length>1) L.polyline(flightPath,{color:'#e0a030',weight:4,opacity:.9}).addTo(pfLayer);
-    const badge=(t,bg)=>L.divIcon({className:'',html:'<div style="background:'+bg+';border:2px solid #fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:700">'+t+'</div>',iconSize:[24,24],iconAnchor:[12,12]});
-    L.marker(flightPath[0],{icon:badge('始','#3fb984')}).addTo(pfLayer);
-    flightPath.forEach((pt,i)=>{ if(i>0&&i<flightPath.length-1) L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(pfLayer); });
-    if(flightPath.length>1) L.marker(flightPath[flightPath.length-1],{icon:badge('終','#d05555')}).addTo(pfLayer);
-  }
-  if(PF_POINT){
-    const ic=L.divIcon({className:'',html:'<div style="background:#3fb984;border:2px solid #fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;font-weight:700">P</div>',iconSize:[26,26],iconAnchor:[13,13]});
-    L.marker(PF_POINT,{icon:ic}).addTo(pfLayer);
-  }
+  const badge=(t,bg,size)=>L.divIcon({className:'',html:'<div style="background:'+bg+';border:2px solid #fff;border-radius:50%;width:'+size+'px;height:'+size+'px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:700">'+t+'</div>',iconSize:[size,size],iconAnchor:[size/2,size/2]});
+  let np=0, nf=0;
+  PF_SEGS.forEach(seg=>{
+    if(seg.t==='P'){
+      np++;
+      L.marker(seg.pt,{icon:badge('P'+(np>1?np:''),'#3fb984',26)}).addTo(pfLayer);
+    } else if(seg.pts.length){
+      nf++;
+      if(seg.pts.length>1) L.polyline(seg.pts,{color:'#e0a030',weight:4,opacity:.9}).addTo(pfLayer);
+      L.marker(seg.pts[0],{icon:badge('始','#3fb984',22)}).addTo(pfLayer);
+      seg.pts.forEach((pt,i)=>{ if(i>0&&i<seg.pts.length-1) L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(pfLayer); });
+      if(seg.pts.length>1) L.marker(seg.pts[seg.pts.length-1],{icon:badge('終','#d05555',22)}).addTo(pfLayer);
+    }
+  });
 }
 // 観察者の位置と鳥の位置から距離帯を決める（区分は既存のまま）
 function distBandFrom(obsLat,obsLon,tLat,tLon){
@@ -2748,8 +2757,9 @@ function initObsPosMap(){
   let center=[43.06,141.35], zoom=13;
   if(okPos){ center=[la,lo]; zoom=16; }
   else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=16; }
-  if(PF_POINT){ center=PF_POINT; zoom=16; }
-  else if(flightPath.length){ center=flightPath[0]; zoom=15; }
+  const _p0=pfPoints()[0], _f0=pfPaths()[0];
+  if(_p0){ center=_p0.pt; zoom=16; }
+  else if(_f0){ center=_f0.pts[0]; zoom=15; }
   mapObj=createBaseMap('obsPosMap', center, zoom, {});
   mapObj.on('click', e=>{ if(flightCrossMode) return; pfDrop(e.latlng.lat, e.latlng.lng); });
   addPfControl(mapObj);
@@ -2762,7 +2772,8 @@ function initObsPosMap(){
     L.polyline(smoothPath(pth),{color:'#e0a030',weight:3,opacity:.25,dashArray:'4,4'}).addTo(mapObj);
   }); }
   pfRedraw(); pfInfo();
-  if(flightPath.length>1){ try{ mapObj.fitBounds(flightPath,{padding:[40,40]}); }catch(e){} }
+  const all=[]; PF_SEGS.forEach(sg=>{ if(sg.t==='P') all.push(sg.pt); else sg.pts.forEach(x=>all.push(x)); });
+  if(all.length>1){ try{ mapObj.fitBounds(all,{padding:[40,40]}); }catch(e){} }
 }
 // 地図の上の P / F 切替（アイコンのみ・仕様書）
 function addPfControl(m){
@@ -2795,13 +2806,12 @@ function setObsPos(lat,lon){
   SCREENS._dirty=true;                 // 地図タップはinput監視に乗らないため明示
   obsPosMarkerUpdate(lat,lon);
 }
-// 地図に線が引かれているときに作る飛翔レコード。検査に落ちたら null を返す（保存は始めない）
-function buildFlightRec(svUuid, name, count, ageCls, indKey, memo, needsReview){
-  if(flightPath.length<2){ toast('経路は2点以上必要です（Fにして地図をタップ）'); return null; }
-  // 時刻は落とした時刻から自動で入る。編集画面で直された値があればそちらを優先
-  const stEl=$('#flStart'), enEl=$('#flEnd');
-  const st=((stEl&&stEl.value)||'') || PF_TIMES[0] || localDatetimeValue();
-  const en=((enEl&&enEl.value)||'') || PF_TIMES[PF_TIMES.length-1] || '';
+// 経路1本から飛翔レコードを作る。検査に落ちたら null を返す（保存は始めない）
+function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsReview, override){
+  if(!seg || seg.pts.length<2) return null;
+  const ov=override||{};
+  const st=ov.start || seg.times[0] || localDatetimeValue();
+  const en=ov.end   || seg.times[seg.times.length-1] || '';
   for(const pair of [[st,'開始時刻'],[en,'終了時刻']]){
     if(pair[0] && !okStamp(pair[0])){ toast('飛翔の'+pair[1]+'が正しくありません'); return null; }
   }
@@ -2809,7 +2819,7 @@ function buildFlightRec(svUuid, name, count, ageCls, indKey, memo, needsReview){
   return { uuid:uuid(), survey_uuid:svUuid,
     species_id: name ? (SCREENS._chosenId||(speciesByName(name)||{}).species_id||'') : '',
     species_name_snapshot:name,
-    path:flightPath.slice(), start_time:st, end_time:en,
+    path:seg.pts.slice(), start_time:st, end_time:en,
     height_class:segVal('fl_height')||'不明',
     age_class:ageCls||'不明', individual_label:'',
     behavior:otherMerge(segVals('fl_behavior'),'fl_behavior'),
@@ -2904,61 +2914,71 @@ function saveObs(u, svUuid, editing, cont){
     const fx=freshFix();
     if(fx){ rec.latitude=fx.lat.toFixed(6); rec.longitude=fx.lon.toFixed(6); rec.gps_accuracy=Math.round(fx.acc); }
   }
-  // 距離帯は観察者とPの距離から自動で決める。手で選び直されていればそれを優先する
-  if(!segVal('distance_band')){
-    const band=distBandFrom(rec.latitude, rec.longitude, rec.target_latitude, rec.target_longitude);
-    if(band) rec.distance_band=band;
-  }
+  /* --- 地図に落とした並びから記録を作る ---
+     P の数だけ観察、経路の数だけ飛翔。2件以上になるときは同じ個体として結び付ける。
+     検査は全部先に済ませ、書き込みは飛翔→観察の順。途中で失敗したら書いた分を全部戻す */
+  const pts = editing ? [] : pfPoints();
+  const paths = editing ? [] : pfPaths();
+  const nRec = editing ? 1 : (pts.length + paths.length);
+  if(!editing && nRec===0){
+    toast('地図で P（止まっていた場所）か F（飛翔経路）を落としてください', 4000); return; }
+  const indKey = (nRec>1) ? (rec.individual_key || uuid()) : (rec.individual_key||'');
+  const flReview = (!name) || (!!name && !speciesByName(name)) || (indCount(rec.count)===0);
 
-  /* --- 地図の中身で書き分ける ---
-     P だけ → 観察1件 ／ F だけ → 飛翔1件 ／ 両方 → 2件を同じ目印で結び付け。
-     検査は全部先に済ませ、書き込みは「飛翔 → 観察」の順。観察が失敗したら飛翔を書き戻す */
-  const hasP = editing ? true : !!PF_POINT;          // 編集は従来どおり観察として扱う
-  const hasF = !editing && flightPath.length>=2;
-  if(!editing && !hasP && !hasF){
-    toast('地図で P（鳥がいた場所）か F（飛翔経路）を落としてください', 4000); return; }
-  let flRec=null;
-  if(hasF){
-    if(hasP && !rec.individual_key) rec.individual_key=uuid();
-    flRec=buildFlightRec(svUuid, name, rec.count, rec.age_class,
-      hasP?rec.individual_key:'', g('note'),
-      (!name) || (!!name && !speciesByName(name)) || (indCount(rec.count)===0));
-    if(!flRec) return;
+  // 飛翔をまとめて組み立てる（1本でも検査に落ちたら何も保存しない）
+  const flRecs=[];
+  for(const seg of paths){
+    const fr=buildFlightRec(seg, svUuid, name, rec.count, rec.age_class, indKey, g('note'), flReview,
+      (paths.length===1)?{ start:(($('#flStart')&&$('#flStart').value)||''), end:(($('#flEnd')&&$('#flEnd').value)||'') }:null);
+    if(!fr) return;
+    flRecs.push(fr);
   }
-  // 巻き戻し用に、飛翔を書き足す前の配列を控える（データが減る方向なので容量不足でも通りやすい）
-  const flBefore = flRec ? DB.load(DB.key.fl) : null;
-  if(flRec && !DB.upsertFlight(flRec)) return;
-  if(!hasP){
-    // 飛翔だけ。観察は作らないので、写真・録音の都合で作られた仮記録を片付ける
+  // 観察をまとめて組み立てる（1つ目は rec、2つ目以降は場所と時刻だけ差し替えた写し）
+  const obRecs=[];
+  if(editing) obRecs.push(rec);
+  else pts.forEach((sg,i)=>{
+    const r2 = (i===0) ? rec : Object.assign({}, rec, { uuid:uuid() });
+    r2.individual_key = indKey;
+    r2.target_latitude = String(sg.pt[0]); r2.target_longitude = String(sg.pt[1]);
+    if(sg.time && okStamp(sg.time)) r2.observed_at = new Date(sg.time).toISOString();
+    // 距離帯は観察者とその止まり位置の距離から決める（手で選び直されていればそれを優先）
+    if(!segVal('distance_band')){
+      const band=distBandFrom(r2.latitude, r2.longitude, r2.target_latitude, r2.target_longitude);
+      r2.distance_band = band || '';
+    }
+    obRecs.push(r2);
+  });
+
+  // 巻き戻し用に、書き足す前の配列を控える（データが減る方向なので容量不足でも通りやすい）
+  const flBefore = flRecs.length ? DB.load(DB.key.fl) : null;
+  const obBefore = obRecs.length ? DB.load(DB.key.ob) : null;
+  const rollback = ()=>{
+    let okAll=true;
+    if(flBefore && !DB.save(DB.key.fl, flBefore)) okAll=false;
+    if(obBefore && !DB.save(DB.key.ob, obBefore)) okAll=false;
+    if(!okAll) toast('保存に失敗し、書きかけを取り消せませんでした。データ点検・修復画面で確認してください', 8000);
+  };
+  for(const fr of flRecs){ if(!DB.upsertFlight(fr)){ rollback(); return; } }
+  for(const r2 of obRecs){ if(!DB.upsertObs(r2)){ rollback(); return; } }
+
+  if(!obRecs.length){
+    // 飛翔だけ。観察を作らないので、写真・録音の都合で作られた仮記録を片付ける
     const gh=SCREENS._ghost;
     if(gh){
       DISCARDED.add(gh.uuid);
-      if(!DB.hardDelete(gh.key, gh.uuid)){
-        DISCARDED.delete(gh.uuid);
-        const back = DB.save(DB.key.fl, flBefore) && !DB.flight(flRec.uuid);
-        toast(back?'空き容量不足のため、書きかけの記録を片付けられませんでした'
-                  :'保存に失敗し、飛翔経路を取り消せませんでした。データ点検・修復画面で確認してください', 8000);
-        return;
-      }
+      if(!DB.hardDelete(gh.key, gh.uuid)){ DISCARDED.delete(gh.uuid); rollback(); return; }
       SCREENS._ghost=null; mediaGcAll().catch(function(){});
     }
     if(name) DB.pushRecent(name);
     SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
     SCREENS._dirty=false; SCREENS._ghost=null;
-    flightPath=[]; PF_TIMES=[]; PF_POINT=null; PF_PTIME='';
-    toast('飛翔経路を保存しました');
+    PF_SEGS=[]; PF_NEWLINE=true;
+    toast('飛翔経路を'+flRecs.length+'本保存しました');
     if(cont===true){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid})); } else goBack();
     return;
   }
-  if(!DB.upsertObs(rec)){
-    if(flRec){
-      const back = DB.save(DB.key.fl, flBefore) && !DB.flight(flRec.uuid);
-      if(!back) toast('保存に失敗し、先に書いた飛翔経路を取り消せませんでした。データ点検・修復画面で確認してください', 8000);
-    }
-    return;   // 保存失敗(DB.saveが警告済み)。成功表示も画面遷移もしない
-  }
-  if(flRec){ flightPath=[]; PF_TIMES=[]; }
-  PF_POINT=null; PF_PTIME='';
+  PF_SEGS=[]; PF_NEWLINE=true;
+  if(nRec>1) toast('記録を'+nRec+'件（止まり'+pts.length+'・経路'+paths.length+'）保存しました', 3000);
   if(name) DB.pushRecent(name);
   const keep={ lat:rec.latitude, lon:rec.longitude, acc:rec.gps_accuracy };   // 「続けて」用に、保存した位置と精度をそのまま引き継ぐ
   SCREENS._acc=null; SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
