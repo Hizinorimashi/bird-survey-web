@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v96（2026-08-06 いま入力しているPが、タブと地図の両方で光るように）';
+const APP_VERSION = 'v97（2026-08-06 地図の下に P1・L1・P2 の一覧：選んで位置直し・描き足し・削除）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2100,7 +2100,14 @@ SCREENS.obsEdit = (argStr)=>{
         <div class="row" style="margin-top:6px; gap:8px; align-items:center;">
           <span class="tiny muted grow" id="mapInfo"></span>
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapUndo()" title="1つ戻す">↶</button>
-          <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapClear()" title="消す">🗑</button>
+          <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapClear()" title="全部消す">🗑</button>
+        </div>
+        <!-- 落としたものの一覧。選ぶと地図で光り、位置直しや削除ができる（P=止まり／L=経路） -->
+        <div class="chips" id="segChips" style="margin-top:6px;"></div>
+        <div class="row" id="segEditBar" style="display:none; margin-top:6px; gap:8px; align-items:center;">
+          <span class="tiny grow" id="segEditMsg"></span>
+          <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="segEditDone()">やめる</button>
+          <button type="button" class="btn danger" style="width:auto; padding:6px 10px;" onclick="segEditDelete()">✕ 消す</button>
         </div>
       </div>
       <form id="obForm">
@@ -2250,7 +2257,7 @@ SCREENS.obsEdit = (argStr)=>{
       // 記録モードは毎回「止まっている」から始める（前の画面の経路を持ち越さない）
       // 地図の状態は毎回まっさらから始める（前の画面の内容を持ち越さない）
       PF_MODE='P'; PF_SEGS=[]; PF_NEWLINE=true; flightPath=[]; flightLayer=null; pfLayer=null;
-      PF_NEST=null; PERCH_IDX=0;
+      PF_NEST=null; PERCH_IDX=0; PF_SEL=-1;
       if(validLatLon(String(o.nest_latitude||''), String(o.nest_longitude||''))){
         PF_NEST=[parseFloat(o.nest_latitude), parseFloat(o.nest_longitude)];
       }
@@ -2266,7 +2273,7 @@ SCREENS.obsEdit = (argStr)=>{
       renderQuickSpecies(); renderRecPanel(); renderMediaPanel(); updateSpRefLinks(o.species_name_snapshot);
       updateBreedHint(); updateIdHint();
       if(typeof startGpsIndicator==='function') startGpsIndicator();   // 観察者の位置は保存時に使う
-      _mapTimer=setTimeout(()=>{ initObsPosMap(); pfSyncFlightFields(); perchTabs(); perchLoad(); }, 60);   // 地図は画面の主役なので最初から出す   // 編集で開いたときも選択済みの内容に合わせてヒントを出す
+      _mapTimer=setTimeout(()=>{ initObsPosMap(); pfSyncFlightFields(); perchTabs(); perchLoad(); segChips(); }, 60);   // 地図は画面の主役なので最初から出す   // 編集で開いたときも選択済みの内容に合わせてヒントを出す
     }
   };
 };
@@ -2725,11 +2732,66 @@ let PF_NEWLINE=true;      // 次にFで落とすとき、新しい線を始め�
 function pfSet(mode){
   if(PF_MODE!==mode) PF_NEWLINE=true;   // 切り替えたら、次の線は新しく始める
   PF_MODE=mode;
+  PF_SEL=-1;   // モードを選び直したら「新しく落とす」に戻す
+  if(typeof segChips==='function') segChips();
   ['P','F','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', mode===m); });
   pfInfo(); pfSyncFlightFields();
 }
 function pfPoints(){ return PF_SEGS.filter(x=>x.t==='P'); }
 let PF_NEST=null;         // 巣の位置 [lat,lon]（1つだけ）
+let PF_SEL=-1;            // 直している対象（PF_SEGSの番号）。-1 は「新しく落とす」
+// 落としたものの一覧を作る。P=止まり、L=経路（利用者の言い方に合わせる）
+function segLabel(i){
+  let np=0, nl=0;
+  for(let k=0;k<=i;k++){ if(PF_SEGS[k].t==='P') np++; else nl++; }
+  return (PF_SEGS[i].t==='P') ? ('P'+np) : ('L'+nl);
+}
+function segChips(){
+  const box=$('#segChips'); if(!box) return;
+  if(!PF_SEGS.length && !PF_NEST){ box.innerHTML=''; segEditBar(); return; }
+  const items=PF_SEGS.map((sg,i)=>
+    `<span class="c${i===PF_SEL?' on':''}" data-i="${i}" onclick="segPick(Number(this.getAttribute('data-i')))">${segLabel(i)}</span>`);
+  if(PF_NEST) items.push(`<span class="c${PF_SEL===-2?' on':''}" data-i="-2" onclick="segPick(-2)">巣</span>`);
+  box.innerHTML='<span class="tiny muted" style="align-self:center; margin-right:4px;">直す：</span>'+items.join('');
+  segEditBar();
+}
+function segEditBar(){
+  const bar=$('#segEditBar'), msg=$('#segEditMsg');
+  if(!bar) return;
+  if(PF_SEL===-1){ bar.style.display='none'; return; }
+  bar.style.display='';
+  if(msg){
+    if(PF_SEL===-2) msg.textContent='巣の位置を直しています。地図をタップすると移動します';
+    else if(PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='P') msg.textContent=segLabel(PF_SEL)+' を直しています。地図をタップすると移動します';
+    else msg.textContent=segLabel(PF_SEL)+' を直しています。地図をタップすると続きを描き足します';
+  }
+}
+function segPick(i){
+  if(typeof perchStore==='function') perchStore();
+  PF_SEL=(PF_SEL===i)?-1:i;   // もう一度押したら選択を外す
+  // 止まりを選んだら「止まっていたもの」の入力もその P に合わせる
+  if(PF_SEL>=0 && PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='P'){
+    const ps=pfPoints(); const idx=ps.indexOf(PF_SEGS[PF_SEL]);
+    if(idx>=0){ PERCH_IDX=idx; if(typeof perchTabs==='function'){ perchTabs(); perchLoad(); } }
+  }
+  segChips(); pfRedraw(); pfInfo();
+}
+function segEditDone(){ PF_SEL=-1; segChips(); pfRedraw(); pfInfo(); }
+function segEditDelete(){
+  if(PF_SEL===-2){
+    if(!confirm('巣の位置を消しますか？')) return;
+    PF_NEST=null;
+    const nl=$('#nestLat'), no=$('#nestLon'); if(nl) nl.value=''; if(no) no.value='';
+    const lab=$('#nestPosLabel'); if(lab) lab.textContent='巣の位置：未指定';
+  } else {
+    const sg=PF_SEGS[PF_SEL]; if(!sg) return;
+    if(!confirm(segLabel(PF_SEL)+' を消しますか？')) return;
+    PF_SEGS.splice(PF_SEL,1);
+  }
+  PF_SEL=-1; SCREENS._dirty=true;
+  if(typeof perchTabs==='function'){ PERCH_IDX=0; perchTabs(); perchLoad(); }
+  segChips(); pfRedraw(); pfInfo(); pfSyncFlightFields();
+}
 let PERCH_IDX=0;          // 「止まっていたもの」を編集している P の番号（0始まり）
 // 止まっていたものの初期値。P ごとに1つ持つ
 function perchNew(){ return { type:'', size:'', cls:'', species:'', height:'', art:'', note:'' }; }
@@ -2794,12 +2856,27 @@ function pfInfo(){
 }
 function pfDrop(lat,lon){
   const now=localDatetimeValue();
+  // 「直す」で対象が選ばれているときは、新しく落とさずその対象を動かす／描き足す
+  if(PF_SEL===-2){
+    PF_NEST=[lat,lon];
+    const nl=$('#nestLat'), no=$('#nestLon');
+    if(nl) nl.value=String(lat); if(no) no.value=String(lon);
+    SCREENS._dirty=true; pfRedraw(); pfInfo(); return;
+  }
+  if(PF_SEL>=0){
+    const sg=PF_SEGS[PF_SEL];
+    if(sg){
+      if(sg.t==='P'){ sg.pt=[lat,lon]; }
+      else { sg.pts.push([lat,lon]); sg.times.push(now); }
+      SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); return;
+    }
+  }
   if(PF_MODE==='N'){
     PF_NEST=[lat,lon];
     const nl=$('#nestLat'), no=$('#nestLon');
     if(nl) nl.value=String(lat); if(no) no.value=String(lon);
     const lab=$('#nestPosLabel'); if(lab) lab.textContent='巣の位置：指定済み';
-    SCREENS._dirty=true; pfRedraw(); pfInfo(); return;
+    SCREENS._dirty=true; pfRedraw(); pfInfo(); segChips(); return;
   }
   if(PF_MODE==='P'){
     PF_SEGS.push({t:'P', pt:[lat,lon], time:now, perch:perchNew()});
@@ -2810,19 +2887,19 @@ function pfDrop(lat,lon){
     if(PF_NEWLINE || !last || last.t!=='F'){ PF_SEGS.push({t:'F', pts:[[lat,lon]], times:[now]}); PF_NEWLINE=false; }
     else { last.pts.push([lat,lon]); last.times.push(now); }
   }
-  SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields();
+  SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips();
 }
 function obsMapUndo(){
   const last=PF_SEGS[PF_SEGS.length-1]; if(!last) return;
   if(last.t==='P') PF_SEGS.pop();
   else { last.pts.pop(); last.times.pop(); if(!last.pts.length) PF_SEGS.pop(); }
-  SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); perchTabs(); perchLoad();
+  SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); perchTabs(); perchLoad(); segChips();
 }
 function obsMapClear(){
   if(!PF_SEGS.length) return;
   if(!confirm('地図に落とした内容（止まりと経路）を全部消しますか？')) return;
-  PF_SEGS=[]; PF_NEWLINE=true; PERCH_IDX=0;
-  SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); perchTabs(); perchLoad();
+  PF_SEGS=[]; PF_NEWLINE=true; PERCH_IDX=0; PF_SEL=-1;
+  SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); perchTabs(); perchLoad(); segChips();
 }
 let pfLayer=null;
 function pfRedraw(){
@@ -2838,13 +2915,14 @@ function pfRedraw(){
     if(seg.t==='P'){
       np++;
       // いま「止まっていたもの」を入力している P は、大きく・白い縁を太くして見分けられるようにする
-      const cur=(np-1)===PERCH_IDX && pfPoints().length>1;
+      const cur=(PF_SEGS.indexOf(seg)===PF_SEL) || ((np-1)===PERCH_IDX && pfPoints().length>1);
       const ic=L.divIcon({className:'',html:'<div style="background:'+(cur?'#2c8a63':'#3fb984')+';border:'+(cur?'4px':'2px')+' solid #fff;border-radius:50%;width:'+(cur?34:26)+'px;height:'+(cur?34:26)+'px;display:flex;align-items:center;justify-content:center;font-size:'+(cur?13:11)+'px;color:#fff;font-weight:700;box-shadow:0 1px 5px rgba(0,0,0,.5)">P'+(pfPoints().length>1?np:'')+'</div>',
         iconSize:[cur?34:26,cur?34:26], iconAnchor:[cur?17:13,cur?17:13]});
       L.marker(seg.pt,{icon:ic}).addTo(pfLayer);
     } else if(seg.pts.length){
       nf++;
-      if(seg.pts.length>1) L.polyline(seg.pts,{color:'#e0a030',weight:4,opacity:.9}).addTo(pfLayer);
+      const selL=(PF_SEGS.indexOf(seg)===PF_SEL);
+      if(seg.pts.length>1) L.polyline(seg.pts,{color:selL?'#ffd479':'#e0a030',weight:selL?7:4,opacity:.95}).addTo(pfLayer);
       L.marker(seg.pts[0],{icon:badge('始','#3fb984',22)}).addTo(pfLayer);
       seg.pts.forEach((pt,i)=>{ if(i>0&&i<seg.pts.length-1) L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(pfLayer); });
       if(seg.pts.length>1) L.marker(seg.pts[seg.pts.length-1],{icon:badge('終','#d05555',22)}).addTo(pfLayer);
