@@ -237,7 +237,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v92（2026-08-05 観察の画面だけで飛翔経路も記録：止まっている／飛んでいる／両方）';
+const APP_VERSION = 'v93（2026-08-06 観察入力を作り直し：地図のP（止まり）とF（飛翔）で記録）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1114,7 +1114,9 @@ function render(){
   routeLayer=null; routeLine=null; routeEndMarker=null;   // 破棄済み地図のルート描画層への参照を残さない
   // GPSインジケータ監視は画面ごとに張り直す（出しっぱなし＝電池消耗の防止）。
   // ただし調査画面内の再描画（さらに表示等）では止めない（瞬断と測位再起動の負荷を避ける）
-  if(typeof stopGps==='function' && (STACK[STACK.length-1]||{}).name!=='survey') stopGps();
+  // 観察入力でも観察者の位置を保存に使うので、調査画面と同じくGPSを動かしたままにする
+  {const _n=(STACK[STACK.length-1]||{}).name;
+   if(typeof stopGps==='function' && _n!=='survey' && _n!=='obsEdit') stopGps();}
   // 歩行ルート記録（WALK）はここでは止めない＝観察入力などに移っても記録は継続する。停止は⏹/保存/調査終了のみ。
   // ただし記録中の調査そのものが消えていたら（同期の完全削除など）止める
   if(WALK && !DB.survey(WALK.sv)){ stopWalk(true); try{ toast('記録中の調査が削除されたためルート記録を停止しました', 4000); }catch(e){} }
@@ -2082,137 +2084,128 @@ SCREENS.obsEdit = (argStr)=>{
   return {
     title: editing?'観察を編集':'観察を追加',
     html:`
+      <!-- 地図が主役。P=鳥がいた場所（点）、F=飛翔経路（線）。何を保存するかは地図の中身で決まる -->
+      <div class="card" style="background:var(--panel2); padding:8px;">
+        <div id="obsPosMap" style="height:300px; border-radius:var(--radius); border:1px solid var(--line);"></div>
+        <div class="row" style="margin-top:6px; gap:8px; align-items:center;">
+          <span class="tiny muted grow" id="mapInfo"></span>
+          <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapUndo()" title="1つ戻す">↶</button>
+          <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapClear()" title="消す">🗑</button>
+        </div>
+      </div>
       <form id="obForm">
-        <div class="field"><span class="lab">録音メモ（鳴き声など）</span>
-          <div id="recPanel"></div></div>
-        <div class="field"><span class="lab">写真・動画（カメラで撮影／ライブラリから選択）</span>
-          <div id="mediaPanel"></div></div>
-        <button type="button" class="btn ghost" id="voiceBtnWrap" style="margin-bottom:14px;" onclick="voiceDockToggle()">🎙 音声でまとめて入力（画面下に開く）</button>
-        ${editing?'':`<div class="field"><span class="lab">この鳥は</span>
-          <div class="seg" data-seg="rec_mode">
-            <button type="button" class="on" onclick="setRecMode(this,'perch')">止まっている</button>
-            <button type="button" onclick="setRecMode(this,'flight')">飛んでいる</button>
-            <button type="button" onclick="setRecMode(this,'both')">両方</button>
+        <details class="fold" id="foldMedia">
+          <summary><span class="lab" style="display:inline; margin:0;">📷 メディア記録</span>
+            <span class="small muted">写真・録音・動画・メモ</span></summary>
+          <div class="field"><span class="lab">録音メモ（鳴き声など）</span><div id="recPanel"></div></div>
+          <div class="field"><span class="lab">写真・動画</span><div id="mediaPanel"></div></div>
+          <button type="button" class="btn ghost" id="voiceBtnWrap" style="margin-bottom:10px;" onclick="voiceDockToggle()">🎙 音声でまとめて入力</button>
+          <label class="field"><span class="lab">観察メモ</span>
+            <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
+        </details>
+
+        <details class="fold" id="foldSpecies" open>
+          <summary><span class="lab" style="display:inline; margin:0;">🐦 種情報</span>
+            <span class="small muted">種名・数・齢・行動など</span></summary>
+          <label class="field"><span class="lab">種名（未入力でも保存可）</span>
+            <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
+              placeholder="和名で検索…" oninput="spSearch(this.value)">
+            <div id="spSuggest"></div>
+            <div class="chips" id="spQuick"></div>
+            <div class="chips" id="spRefLinks"></div>
+          </label>
+          <div class="two">
+            <label class="field"><span class="lab">個体数</span>
+              <input type="number" name="count" inputmode="numeric" min="0" value="${esc(o.count!=null?o.count:1)}"></label>
+            <label class="field"><span class="lab">齢</span>${segSelect('age_class',OPT.obsAge)}</label>
           </div>
-          <div class="tiny muted" id="recModeHelp" style="margin-top:4px;"></div></div>`}
-        <div id="flightSec" style="display:none;">
-          <div class="card" style="background:var(--panel2);">
-            <div class="small muted" id="fInfo">まだ点がありません。地図で経路を描いてください。</div>
-            <div class="btn-grid" style="margin-top:8px;">
-              <button type="button" class="btn ghost" onclick="flightUndo()">↶ 1つ戻す</button>
-              <button type="button" class="btn ghost" onclick="flightClear()">経路を消す</button>
+          <div class="two">
+            <label class="field"><span class="lab">性別</span>${segSelect('sex',OPT.sex)}</label>
+            <label class="field"><span class="lab">同定状態</span>${segSelect('identification_status',OPT.idStatus)}</label>
+          </div>
+          <div id="idHint" class="note" style="display:none; margin:2px 0 10px;"></div>
+          ${segFold('behavior','行動（複数選択可）',OPT.behavior)}
+          <div id="flBehWrap" style="display:none;">${segFold('fl_behavior','飛翔の行動（複数選択可）',OPT.flightBehavior)}</div>
+          <div id="breedHint" class="note" style="display:none; margin:2px 0 10px;"></div>
+          <div class="two">
+            <label class="field"><span class="lab">確認方法</span>${segSelect('detection_method',OPT.detection)}</label>
+            <label class="field"><span class="lab">確認方向（任意）</span>${segSelect('direction',OPT.direction,true)}</label>
+          </div>
+          <label class="field" id="flHeightWrap" style="display:none;"><span class="lab">飛翔高度</span>${segSelect('fl_height',OPT.flightHeight)}</label>
+          <label class="field"><span class="lab">信頼度</span>${segSelect('confidence',OPT.confidence)}</label>
+          <label class="field row" style="gap:12px; align-items:center;">
+            <input type="checkbox" id="needsReview" style="width:auto;" ${o.needs_review?'checked':''}>
+            <span class="lab" style="margin:0;">要確認フラグ（あとで見直す）</span></label>
+          <!-- 時刻と距離帯は地図の操作から自動で入る。新規では隠し、保存後の編集でだけ直せるようにする -->
+          <div id="autoWrap" style="display:${editing?'':'none'};">
+            <div class="two">
+              <label class="field"><span class="lab">観察日時</span>
+                <input type="datetime-local" name="observed_at" value="${esc(o.observed_at)}"></label>
+              <label class="field"><span class="lab">距離帯</span>${segSelect('distance_band',OPT.distBand,true)}</label>
+            </div>
+            <div class="two">
+              <label class="field"><span class="lab">飛翔の開始時刻</span>
+                <input type="datetime-local" id="flStart" value=""></label>
+              <label class="field"><span class="lab">終了時刻</span>
+                <input type="datetime-local" id="flEnd" value=""></label>
             </div>
           </div>
-          <label class="field"><span class="lab">飛翔高度</span>${seg('fl_height',OPT.flightHeight)}</label>
-          <div class="field"><details class="fold">
-            <summary><span class="lab" style="display:inline; margin:0;">飛翔の行動（複数選択可）</span>
-              <span class="small muted" id="segsum-fl_behavior">未選択</span></summary>
-            <div class="seg" data-seg="fl_behavior">${OPT.flightBehavior.map(x=>
-              `<button type="button" onclick="toggleMulti(this)">${esc(x)}</button>`).join('')}</div>${otherBox('fl_behavior','',false)}
-          </details></div>
-          <div class="two">
-            <label class="field"><span class="lab">飛翔の開始時刻</span>
-              <input type="datetime-local" id="flStart" value="${esc(localDatetimeValue())}"></label>
-            <label class="field"><span class="lab">終了時刻（任意）</span>
-              <input type="datetime-local" id="flEnd" value=""></label>
-          </div>
-        </div>
-        <div class="card" style="background:var(--panel2);">
-          <div class="row"><div class="grow small muted" id="posLabelWrap">位置：<span id="posLabel">${o.latitude?esc(o.latitude)+', '+esc(o.longitude)+(o.gps_accuracy?` (±${esc(o.gps_accuracy)}m)`:''):'未取得'}</span></div>
-            <button type="button" class="btn ghost" id="gpsBtn" style="width:auto; padding:6px 12px;" onclick="grabGps()">📍 現在地</button>
-            <button type="button" class="btn ghost" id="obsMapBtn" style="width:auto; padding:6px 12px;" onclick="toggleObsPosMap()">🗺 地図で指定</button></div>
-          <div id="obsPosMap" style="height:240px; margin-top:8px; border-radius:var(--radius); border:1px solid var(--line); display:none;"></div>
-          <!-- 位置の値そのものを持つ欄。数値を手で直す操作は現場で使われないため画面には出さない（2026-08-05）。
-               表示を消しても、📍現在地・🗺地図で指定・保存はすべてこの値を読み書きしている。
-               位置を直したいときは地図で指定すればよいので、直す手段が無くなるわけではない -->
-          <input type="hidden" id="latIn" value="${esc(o.latitude)}">
-          <input type="hidden" id="lonIn" value="${esc(o.longitude)}">
-        </div>
-        <label class="field"><span class="lab">種名（未入力でも保存可）</span>
-          <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
-            placeholder="和名で検索…" oninput="spSearch(this.value)">
-          <div id="spSuggest"></div>
-          <div class="chips" id="spQuick"></div>
-          <div class="chips" id="spRefLinks"></div>
-        </label>
-        <label class="field"><span class="lab" id="noteLab">観察メモ</span>
-          <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
-        <div class="two">
-          <label class="field"><span class="lab">個体数</span>
-            <input type="number" name="count" inputmode="numeric" min="0" value="${esc(o.count!=null?o.count:1)}"></label>
-          <label class="field"><span class="lab">観察日時</span>
-            <input type="datetime-local" name="observed_at" value="${esc(o.observed_at)}"></label>
-        </div>
-        <label class="field"><span class="lab">齢</span>${seg('age_class',OPT.obsAge)}</label>
-        <div id="obsOnlyFields">
-        ${segFold('behavior','行動（複数選択可）',OPT.behavior)}
-        <div id="breedHint" class="note" style="display:none; margin:2px 0 10px;"></div>
-        ${segFold('habitat','生息環境（複数選択可）',OPT.habitat)}
-        <label class="field"><span class="lab">性別</span>${seg('sex',OPT.sex)}</label>
-        <div class="two">
-          <label class="field"><span class="lab">距離帯（ルート/定点から・任意）</span>${segSelect('distance_band',OPT.distBand,true)}</label>
-          <label class="field"><span class="lab">確認方法</span>${segSelect('detection_method',OPT.detection)}</label>
-        </div>
-        <label class="field"><span class="lab">確認方向（任意）</span>${seg('direction',OPT.direction,true)}</label>
-        <label class="field"><span class="lab">同定状態</span>${seg('identification_status',OPT.idStatus)}</label>
-        <div id="idHint" class="note" style="display:none; margin:2px 0 10px;"></div>
-        <label class="field"><span class="lab">信頼度</span>${seg('confidence',OPT.confidence)}</label>
-        <button type="button" class="btn ghost" style="margin-bottom:14px;" onclick="addObsToGuide()">🕮 この鳴き声・写真を図鑑に登録（確定種）</button>
-        <label class="field"><span class="lab">外部写真番号・ファイル名</span>
-          <input name="external_photo_reference" value="${esc(o.external_photo_reference)}" placeholder="別カメラの写真番号など"></label>
-        <label class="field row" style="gap:12px; align-items:center;">
-          <input type="checkbox" id="needsReview" style="width:auto;" ${o.needs_review?'checked':''}>
-          <span class="lab" style="margin:0;">要確認フラグ（あとで見直す）</span></label>
-        </div>
-        <details class="fold" id="nestFold" ${(o.target_latitude||o.target_longitude||o.perch_size||o.perch_class||o.nest_tree_species||o.nest_tree_height||o.nest_state)?'open':''}>
-        <summary>🪵 対象の位置・とまり木・巣（猛禽などで必要なとき）</summary>
-        <div class="card" style="background:var(--panel2);">
-          <div class="row"><div class="grow small muted">対象の位置（止まり木・巣など・任意）：<span id="otLabel">${o.target_latitude?esc(o.target_latitude)+', '+esc(o.target_longitude):'未指定'}</span></div></div>
-          <div class="tiny muted" style="margin:4px 0 8px;">観察者の位置（上）とは別に、鳥が止まっている木や巣の場所を地図で指定できます。</div>
-          <div class="btn-grid">
-            <button type="button" class="btn ghost" onclick="toggleObsTargetMap()">🗺 地図で指定</button>
-            <button type="button" class="btn ghost" onclick="obsTargetFromGps()">📍 現在地を対象に</button>
-            <button type="button" class="btn ghost" onclick="clearObsTarget()">クリア</button>
-          </div>
-          <div id="otMap" style="height:240px; margin-top:8px; border-radius:var(--radius); border:1px solid var(--line); display:none;"></div>
-          <input type="hidden" id="otLat" value="${esc(o.target_latitude||'')}">
-          <input type="hidden" id="otLon" value="${esc(o.target_longitude||'')}">
-          <label class="field" style="margin-top:10px;"><span class="lab">とまり木の階層・サイズ（複数選択可・任意）</span>${segMulti('perch_size',OPT.perchSize)}</label>
+        </details>
+
+        <details class="fold" id="foldEnv">
+          <summary><span class="lab" style="display:inline; margin:0;">🌿 環境</span>
+            <span class="small muted">生息環境・止まり木・巣</span></summary>
+          ${segFold('habitat','生息環境（複数選択可）',OPT.habitat)}
+          <label class="field"><span class="lab">とまり木の階層・サイズ（複数選択可・任意）</span>${segMulti('perch_size',OPT.perchSize)}</label>
           <label class="field"><span class="lab">とまり木の分類（複数選択可・任意）</span>${segMulti('perch_class',OPT.perchClass)}</label>
           <div class="two">
             <label class="field"><span class="lab">樹種名（とまり木・営巣木）</span>
-              <input name="nest_tree_species" value="${esc(o.nest_tree_species||'')}" placeholder="例：アカエゾマツ、シラカンバ"></label>
+              <input name="nest_tree_species" value="${esc(o.nest_tree_species||'')}" placeholder="例：アカエゾマツ"></label>
             <label class="field"><span class="lab">樹高(m)</span>
               <input name="nest_tree_height" inputmode="decimal" value="${esc(o.nest_tree_height||'')}" placeholder="任意"></label>
           </div>
-          <label class="field"><span class="lab">巣の状態（営巣段階・任意）</span>${seg('nest_state',OPT.nestState,true)}</label>
-        </div>
+          <label class="field"><span class="lab">巣の状態（営巣段階・任意）</span>${segSelect('nest_state',OPT.nestState,true)}</label>
         </details>
+
+        <details class="fold" id="foldReg">
+          <summary><span class="lab" style="display:inline; margin:0;">🕮 登録</span>
+            <span class="small muted">図鑑登録・別カメラの番号</span></summary>
+          <button type="button" class="btn ghost" style="margin-bottom:10px;" onclick="addObsToGuide()">🕮 この鳴き声・写真を図鑑に登録（確定種）</button>
+          <label class="field"><span class="lab">外部写真番号・ファイル名</span>
+            <input name="external_photo_reference" value="${esc(o.external_photo_reference)}" placeholder="別カメラの写真番号など"></label>
+        </details>
+
+        <!-- 観察者の位置は画面に出さず保存時にGPSから入れる。otLat/otLon が P（鳥がいた場所） -->
+        <input type="hidden" id="latIn" value="${esc(o.latitude)}">
+        <input type="hidden" id="lonIn" value="${esc(o.longitude)}">
+        <input type="hidden" id="otLat" value="${esc(o.target_latitude||'')}">
+        <input type="hidden" id="otLon" value="${esc(o.target_longitude||'')}">
       </form>
-      <div id="obsExtraBtns">
-        ${!editing?`<div class="sp"></div><button class="btn" onclick="saveObs('${o.uuid}','${svUuid}',${editing},true)">＋ 保存して続けて別の種を追加</button>`:''}
-        <div class="sp"></div>
-        <button class="btn" onclick="saveObs('${o.uuid}','${svUuid}',${editing},'flight')">🛩 保存して、この鳥の飛翔経路を描く</button>
-        ${editing?'':`<div class="sp"></div>
-        <button type="button" class="btn ghost" onclick="toMultiFlight('${svUuid}')">🛩 複数羽を同時に追う（飛翔の画面へ）</button>`}
-      </div>
+      ${!editing?`<div class="sp"></div><button class="btn" onclick="saveObs('${o.uuid}','${svUuid}',${editing},true)">＋ 保存して続けて次の記録へ</button>`:''}
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteObs('${o.uuid}')">この記録を削除</button>`:''}
       <div class="sp"></div>
-      <div class="note" id="obsNote">種名が未入力なら「未同定」として保存されます。同じ場所で何種も見たときは「保存して続けて別の種を追加」で位置を引き継いで連続入力できます。</div>
+      <div class="note">地図の <b>P</b> で鳥がいた場所、<b>F</b> で飛んだ経路を記録します。落とした内容に応じて記録が作られ、時刻と距離帯は自動で入ります。</div>
       <div class="savebar"><button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing},false)">保存する</button></div>
     `,
     onMount:()=>{ SCREENS._obs=o; SCREENS._mediaCtx={kind:'obs', uuid:o.uuid, sv:o.survey_uuid};
       SCREENS._audio=(o.audio||[]).slice(); SCREENS._media=(o.media||[]).slice();
       // 記録モードは毎回「止まっている」から始める（前の画面の経路を持ち越さない）
-      SCREENS._recMode='perch'; flightPath=[]; flightLayer=null;
-      { const h=$('#recModeHelp'); if(h) h.textContent=REC_MODE_HELP.perch; }
+      // 地図の状態は毎回まっさらから始める（前の画面の内容を持ち越さない）
+      PF_MODE='P'; PF_POINT=null; PF_PTIME=''; PF_TIMES=[]; flightPath=[]; flightLayer=null; pfLayer=null;
+      if(editing){
+        // 既存記録を開いたとき: 鳥の位置は P として地図に出す
+        const tla=parseFloat(o.target_latitude), tlo=parseFloat(o.target_longitude);
+        if(validLatLon(String(o.target_latitude||''), String(o.target_longitude||''))) PF_POINT=[tla,tlo];
+      }
       SCREENS._chosenId=o.species_id||''; SCREENS._obsEditing=editing;
       // 精度の扱い: null=保存時に既存値を維持 / ''=不明（手入力座標） / 数値=確定値。初期値は画面に表示している精度と一致させる
       SCREENS._acc=(o.gps_accuracy===''||o.gps_accuracy==null)?null:o.gps_accuracy;
       const fEl=$('#obForm'); if(fEl){ ['input','change'].forEach(ev=>fEl.addEventListener(ev, ()=>{ SCREENS._dirty=true; })); }   // 文字・数値・日時・チェックの変更検知
       if(arg.voice) SCREENS._dirty=true;   // 音声の下書きが入っている＝未保存の入力として離脱時に確認する
       renderQuickSpecies(); renderRecPanel(); renderMediaPanel(); updateSpRefLinks(o.species_name_snapshot);
-      updateBreedHint(); updateIdHint();   // 編集で開いたときも選択済みの内容に合わせてヒントを出す
+      updateBreedHint(); updateIdHint();
+      if(typeof startGpsIndicator==='function') startGpsIndicator();   // 観察者の位置は保存時に使う
+      _mapTimer=setTimeout(()=>{ initObsPosMap(); pfSyncFlightFields(); }, 60);   // 地図は画面の主役なので最初から出す   // 編集で開いたときも選択済みの内容に合わせてヒントを出す
     }
   };
 };
@@ -2657,96 +2650,93 @@ function clearObsTarget(){
 /* ---------- 観察者の位置を地図タップで指定（開閉式） ----------
    対象位置マップと同じ型。地図インスタンスは mapObj 1本＝同時に開けるのは1枚のため、
    対象位置マップとは相互排他にする（片方を開くともう片方は閉じる） */
-/* ---------- 観察入力の記録モード（止まっている／飛んでいる／両方） ----------
-   現場では「止まっていた鳥が飛び立つ」「追っていた鳥が止まる」が続けて起きる。
-   画面を行き来せず、1つの画面で必要な記録を作れるようにする。
-   保存されるデータの形は従来どおり（観察=点／飛翔=線の2種類）。1回の保存で必要な方を作る */
-function recMode(){ return SCREENS._recMode||'perch'; }
-function toMultiFlight(svUuid){
-  // 個体数は遷移先で整数へ丸められる。黙って値が変わらないよう、渡す前に観察と同じ基準で見る
-  const cntEl=document.querySelector('#obForm [name="count"]');
-  if(cntEl && cntEl.validity && cntEl.validity.badInput){ toast('個体数は数値で入力してください'); return; }
-  const rawC=((cntEl&&cntEl.value)||'').trim();
-  if(rawC!==''){ const n=Number(rawC);
-    if(!Number.isInteger(n) || n<0){ toast('個体数は0以上の整数で入力してください'); return; } }
-  const name=(($('#spInput')&&$('#spInput').value)||'').trim();
-  const keep={ species_id:SCREENS._chosenId||'', species_name:name,
-    count:rawC, age_class:segVal('age_class') };
-  // 離脱確認はここで1回だけ通し、nav() は使わず履歴を置き換える。
-  // leaveGuardOk のあとに goBack()+nav() を呼ぶと同じ関門をもう一度通り、録音中などに確認が二重に出る。
-  // 2回目を断ったときだけ「片付けは済んだのに画面は残る」ちぐはぐな状態になるため
-  const arg=JSON.stringify({sv:svUuid, keep});
-  if(!leaveGuardOk()) return;
-  SCREENS._dirty=false;
-  STACK.pop(); STACK.push({name:'flightEdit', arg}); render();
+/* ---------- 観察入力: 地図の P / F ----------
+   P = 鳥がいた場所（点。1つだけ）、F = 飛翔経路（線）。
+   何を保存するかは「地図に何が落ちているか」で決まる:
+     P だけ → 観察1件 ／ F だけ → 飛翔1件 ／ 両方 → 2件を同じ目印で結び付け
+   観察者の位置は画面に出さず、保存時にGPSから入れる。距離帯は観察者とPの距離から自動で決める */
+let PF_MODE='P';          // 地図タップの意味
+let PF_POINT=null;        // [lat,lon] 鳥がいた場所
+let PF_PTIME='';          // Pを落とした時刻（観察日時になる）
+let PF_TIMES=[];          // 経路の各点を落とした時刻（最初=開始・最後=終了）
+function pfSet(mode){
+  PF_MODE=mode;
+  const b1=$('#pfP'), b2=$('#pfF');
+  if(b1) b1.classList.toggle('on', mode==='P');
+  if(b2) b2.classList.toggle('on', mode==='F');
+  pfInfo();
+  // 飛翔の項目は線が引かれているときだけ出す（仕様書）
+  pfSyncFlightFields();
 }
-function recModeHasFlight(){ const m=recMode(); return m==='flight'||m==='both'; }
-function recModeHasObs(){ const m=recMode(); return m==='perch'||m==='both'; }
-const REC_MODE_HELP={
-  perch:'止まっている鳥の記録を作ります。',
-  flight:'飛翔経路だけを記録します。写真・録音を付けるときは「両方」にするか、飛翔経路の画面をお使いください。',
-  both:'観察と飛翔経路の両方を作り、同じ鳥として結び付けます（集計で二重に数えません）。止まった場所は、位置が空なら経路の終点になります。',
-};
-function setRecMode(btn,mode){
-  // 「飛んでいる」は観察記録を作らない＝写真・録音の持ち主がいなくなる。
-  // 既に付いている（または録音中の）ときは切り替えさせず、「両方」を案内する
-  if(mode==='flight'){
-    // 判定は「実際に付いている添付」だけを見る。仮記録(_ghost)が残っているだけの状態でも
-    // 切り替えられるようにし、仮記録は保存の直前に片付ける（案内どおり外せば進める）
-    const hasMedia=(SCREENS._audio&&SCREENS._audio.length)||(SCREENS._media&&SCREENS._media.length);
-    if(typeof recBusy==='function' && recBusy()){
-      toast('録音中は「飛んでいる」に切り替えられません。録音を停止してください', 4000); return; }
-    if(mediaBusy()){
-      toast('写真・動画を取り込み中です。終わってから切り替えてください', 4000); return; }
-    // 観察だけの項目には飛翔側の保存先が無い。どの欄が入力済みかを1つずつ数える方式は
-    // 欄を足すたびに漏れる（実際に監査で位置・確認方法・信頼度・音声由来の値と漏れ続けた）ので、
-    // 数えずに一度だけ確認する。これなら将来欄が増えても取りこぼさない
-    if(!confirm('「飛んでいる」では飛翔経路だけを保存します。観察だけの項目（位置・行動・確認方法・生息環境など）は保存されません。両方を残したいときは「両方」を選んでください。このまま進みますか？')) return;
-    if(hasMedia){
-      toast('写真・録音が付いています。「両方」を選ぶと観察側に残せます（飛翔だけにするなら先に外してください）', 5000); return; }
+function pfSyncFlightFields(){
+  const on=flightPath.length>0;
+  const h=$('#flHeightWrap'); if(h) h.style.display=on?'':'none';
+  const b=$('#flBehWrap'); if(b) b.style.display=on?'':'none';
+}
+function pfInfo(){
+  const el=$('#mapInfo'); if(!el) return;
+  const parts=[];
+  parts.push(PF_MODE==='P'?'P：タップで鳥がいた場所':'F：タップで経路を描く');
+  if(PF_POINT) parts.push('P あり');
+  if(flightPath.length) parts.push('経路 '+flightPath.length+'点');
+  el.textContent=parts.join(' ・ ');
+}
+// 地図に落とす（P は1点だけ・上書き。F は追加）
+function pfDrop(lat,lon){
+  if(PF_MODE==='P'){
+    PF_POINT=[lat,lon]; PF_PTIME=localDatetimeValue();
+    const la=$('#otLat'), lo=$('#otLon');
+    if(la) la.value=String(lat.toFixed?lat.toFixed(6):lat);
+    if(lo) lo.value=String(lon.toFixed?lon.toFixed(6):lon);
+  } else {
+    flightPath.push([lat,lon]); PF_TIMES.push(localDatetimeValue());
   }
-  if(btn){ btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); }
-  SCREENS._recMode=mode; SCREENS._dirty=true;
-  const sec=$('#flightSec'); if(sec) sec.style.display=recModeHasFlight()?'':'none';
-  const h=$('#recModeHelp'); if(h) h.textContent=REC_MODE_HELP[mode]||'';
-  // 飛翔だけのときは写真・録音を隠す（持ち主になる観察記録が作られないため）
-  const hideMedia=(mode==='flight');
-  [$('#recPanel'),$('#mediaPanel')].forEach(el=>{ if(el&&el.parentElement) el.parentElement.style.display=hideMedia?'none':''; });
-  const mb=$('#obsMapBtn'); if(mb) mb.textContent=recModeHasFlight()?'🗺 経路を描く':'🗺 地図で指定';
-  // 「飛んでいる」だけのときは観察記録を作らないので、止まった位置の表示と現在地ボタンは出さない
-  const posOnly=(mode!=='flight');
-  const pw=$('#posLabelWrap'); if(pw) pw.style.display=posOnly?'':'none';
-  const gb=$('#gpsBtn'); if(gb) gb.style.display=posOnly?'':'none';
-  // 「飛んでいる」「両方」では、この画面で経路まで作る。別の作り方へ分岐する補助ボタンは
-  // 表示と実際の動きが食い違う（例: 両方で保存した直後にもう1本の飛翔入力へ飛ぶ）ので隠す
-  const ex=$('#obsExtraBtns'); if(ex) ex.style.display=(mode==='perch')?'':'none';
-  const nt=$('#obsNote'); if(nt) nt.style.display=(mode==='perch')?'':'none';   // 隠したボタンを案内する文も一緒に隠す
-  // メモは飛翔だけのときも飛翔記録に残る。見出しだけモードに合わせる
-  const nl=$('#noteLab'); if(nl) nl.textContent=(mode==='flight')?'メモ（飛翔経路に残ります）':'観察メモ';
-  // 観察にしかない項目は、飛翔だけのときは保存先が無い。入力できるのに消えるのを防ぐため隠す
-  const only=(mode!=='flight');
-  const of=$('#obsOnlyFields'); if(of) of.style.display=only?'':'none';
-  // 音声のまとめ入力は、確認方法・行動・方向など観察専用の欄へ値を入れる。
-  // 飛翔だけのモードでは行き先が無いので、ボタンを隠し、開いていれば閉じる
-  const vb=$('#voiceBtnWrap'); if(vb) vb.style.display=only?'':'none';
-  if(!only && document.getElementById('voiceDock') && typeof voiceDockClose==='function') voiceDockClose();
-  const nf=$('#nestFold'); if(nf) nf.style.display=only?'':'none';
-  // 観察日時も飛翔には無い（飛翔は開始・終了時刻で持つ）
-  const dt=document.querySelector('#obForm [name="observed_at"]');
-  if(dt&&dt.parentElement) dt.parentElement.style.display=only?'':'none';
-  // 地図が開いていれば、タップの意味が変わるので組み直す（描いた経路・位置は地図の外にあるので消えない）
-  const el=$('#obsPosMap');
-  if(el && el.style.display!=='none') initObsPosMap();
+  SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields();
+}
+function obsMapUndo(){
+  if(PF_MODE==='P'){ if(!PF_POINT) return; PF_POINT=null; PF_PTIME='';
+    const la=$('#otLat'), lo=$('#otLon'); if(la) la.value=''; if(lo) lo.value=''; }
+  else { if(!flightPath.length) return; flightPath.pop(); PF_TIMES.pop(); }
+  SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields();
+}
+function obsMapClear(){
+  if(!PF_POINT && !flightPath.length) return;
+  if(!confirm('地図に落とした内容（Pと経路）を全部消しますか？')) return;
+  PF_POINT=null; PF_PTIME=''; flightPath=[]; PF_TIMES=[];
+  const la=$('#otLat'), lo=$('#otLon'); if(la) la.value=''; if(lo) lo.value='';
+  SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields();
+}
+let pfLayer=null;
+function pfRedraw(){
+  if(!mapObj) return;
+  if(pfLayer){ try{ mapObj.removeLayer(pfLayer); }catch(e){} }
+  pfLayer=L.layerGroup().addTo(mapObj);
+  if(flightPath.length){
+    if(flightPath.length>1) L.polyline(flightPath,{color:'#e0a030',weight:4,opacity:.9}).addTo(pfLayer);
+    const badge=(t,bg)=>L.divIcon({className:'',html:'<div style="background:'+bg+';border:2px solid #fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:700">'+t+'</div>',iconSize:[24,24],iconAnchor:[12,12]});
+    L.marker(flightPath[0],{icon:badge('始','#3fb984')}).addTo(pfLayer);
+    flightPath.forEach((pt,i)=>{ if(i>0&&i<flightPath.length-1) L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(pfLayer); });
+    if(flightPath.length>1) L.marker(flightPath[flightPath.length-1],{icon:badge('終','#d05555')}).addTo(pfLayer);
+  }
+  if(PF_POINT){
+    const ic=L.divIcon({className:'',html:'<div style="background:#3fb984;border:2px solid #fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;font-weight:700">P</div>',iconSize:[26,26],iconAnchor:[13,13]});
+    L.marker(PF_POINT,{icon:ic}).addTo(pfLayer);
+  }
+}
+// 観察者の位置と鳥の位置から距離帯を決める（区分は既存のまま）
+function distBandFrom(obsLat,obsLon,tLat,tLon){
+  if(!validLatLon(String(obsLat),String(obsLon)) || !validLatLon(String(tLat),String(tLon))) return '';
+  let d=null;
+  try{ d=(mapObj?mapObj.distance([+obsLat,+obsLon],[+tLat,+tLon]):null); }catch(e){}
+  if(d==null){
+    // 地図が無いときの簡易計算（緯度1度=111320m、経度は緯度で縮む）
+    const R=Math.PI/180, dy=(+tLat-+obsLat)*111320, dx=(+tLon-+obsLon)*111320*Math.cos(+obsLat*R);
+    d=Math.hypot(dx,dy);
+  }
+  if(!Number.isFinite(d)) return '';
+  return d<=25?'〜25m':(d<=50?'〜50m':'50m超');
 }
 let obsPosMarker=null;
-function toggleObsPosMap(){
-  const el=$('#obsPosMap'); if(!el) return;
-  if(el.style.display==='none'){
-    const ot=$('#otMap');
-    if(ot && ot.style.display!=='none'){ ot.style.display='none'; obsTargetMarker=null; }   // 対象位置側を閉じる
-    el.style.display='block'; initObsPosMap();
-  } else { el.style.display='none'; destroyMap(); obsPosMarker=null; }
-}
 function initObsPosMap(){
   const el=$('#obsPosMap'); if(!el) return;
   destroyMap(); obsPosMarker=null;
@@ -2758,29 +2748,37 @@ function initObsPosMap(){
   let center=[43.06,141.35], zoom=13;
   if(okPos){ center=[la,lo]; zoom=16; }
   else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=16; }
-  // 飛翔を描くモードでは、経路があればそこを中心にする
-  if(recModeHasFlight() && flightPath.length){ center=flightPath[0]; zoom=15; }
+  if(PF_POINT){ center=PF_POINT; zoom=16; }
+  else if(flightPath.length){ center=flightPath[0]; zoom=15; }
   mapObj=createBaseMap('obsPosMap', center, zoom, {});
-  if(recModeHasFlight()){
-    // 地図は1枚だけ（mapObjはグローバル1本の設計）。モードでタップの意味を変える。
-    // 十字ボタンは観察用と飛翔用がどちらも左下に出るため、片方だけ登録する
-    mapObj.on('click', e=>{ if(flightCrossMode) return;
-      flightPath.push([e.latlng.lat, e.latlng.lng]); SCREENS._dirty=true; redrawFlight(); });
-    addFlightCrosshair(mapObj);
-    // 同じ調査の他の飛翔経路を薄く重ねる（飛翔画面と同じ見え方）
-    const svU=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
-    if(svU){ DB.flightsOf(svU).forEach(of=>{
-      const pth=(of.path||[]).filter(validPathPt);
-      if(pth.length<2) return;
-      L.polyline(smoothPath(pth),{color:'#e0a030',weight:3,opacity:.3,dashArray:'4,4'}).addTo(mapObj);
-    }); }
-    redrawFlight();
-    if(flightPath.length>1){ try{ mapObj.fitBounds(flightPath,{padding:[40,40]}); }catch(e){} }
-  } else {
-    if(okPos) obsPosMarkerUpdate(la,lo);   // 既存値の初期表示
-    mapObj.on('click', e=>setObsPos(e.latlng.lat, e.latlng.lng));
-    addCrosshairControl(mapObj, (la2,lo2)=>setObsPos(la2,lo2));
-  }
+  mapObj.on('click', e=>{ if(flightCrossMode) return; pfDrop(e.latlng.lat, e.latlng.lng); });
+  addPfControl(mapObj);
+  addCrosshairControl(mapObj, (la2,lo2)=>pfDrop(la2,lo2), '＋');
+  // 同じ調査の他の飛翔経路を薄く重ねる
+  const svU=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
+  if(svU){ DB.flightsOf(svU).forEach(of=>{
+    const pth=(of.path||[]).filter(validPathPt);
+    if(pth.length<2) return;
+    L.polyline(smoothPath(pth),{color:'#e0a030',weight:3,opacity:.25,dashArray:'4,4'}).addTo(mapObj);
+  }); }
+  pfRedraw(); pfInfo();
+  if(flightPath.length>1){ try{ mapObj.fitBounds(flightPath,{padding:[40,40]}); }catch(e){} }
+}
+// 地図の上の P / F 切替（アイコンのみ・仕様書）
+function addPfControl(m){
+  const C=L.Control.extend({ onAdd:function(){
+    const box=L.DomUtil.create('div','');
+    box.style.cssText='display:flex; flex-direction:column; gap:6px;';
+    const mk=(id,txt,mode)=>{ const b=L.DomUtil.create('button','locate-btn pf-btn',box);
+      b.type='button'; b.id=id; b.textContent=txt;
+      b.title=(mode==='P')?'鳥がいた場所を落とす':'飛翔経路を描く';
+      if(PF_MODE===mode) b.classList.add('on');
+      L.DomEvent.disableClickPropagation(b);
+      L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>pfSet(mode));
+      return b; };
+    mk('pfP','P','P'); mk('pfF','F','F');
+    return box; }});
+  new C({position:'topleft'}).addTo(m);
 }
 // 観察者位置マーカー（緑丸）の再描画のみ。値は書き換えない（GPS取得時の精度を消さないため分離）
 function obsPosMarkerUpdate(lat,lon){
@@ -2797,14 +2795,15 @@ function setObsPos(lat,lon){
   SCREENS._dirty=true;                 // 地図タップはinput監視に乗らないため明示
   obsPosMarkerUpdate(lat,lon);
 }
-// 統合画面から作る飛翔レコードを組み立てる。検査に落ちたら null を返す（保存は始めない）
-function buildFlightFromObsForm(svUuid, name, count, ageCls, indKey, memo){
-  if(flightPath.length<2){ toast('地図で2点以上の経路を描いてから保存してください'); return null; }
-  const st=($('#flStart')&&$('#flStart').value)||'';
-  const en=($('#flEnd')&&$('#flEnd').value)||'';
-  // 飛翔側には元々日時の検査が無いが、統合画面から作る分は観察と同じ基準で見る
-  for(const [v,lab] of [[st,'開始時刻'],[en,'終了時刻']]){
-    if(v && !okStamp(v)){ toast('飛翔の'+lab+'が正しくありません'); return null; }
+// 地図に線が引かれているときに作る飛翔レコード。検査に落ちたら null を返す（保存は始めない）
+function buildFlightRec(svUuid, name, count, ageCls, indKey, memo, needsReview){
+  if(flightPath.length<2){ toast('経路は2点以上必要です（Fにして地図をタップ）'); return null; }
+  // 時刻は落とした時刻から自動で入る。編集画面で直された値があればそちらを優先
+  const stEl=$('#flStart'), enEl=$('#flEnd');
+  const st=((stEl&&stEl.value)||'') || PF_TIMES[0] || localDatetimeValue();
+  const en=((enEl&&enEl.value)||'') || PF_TIMES[PF_TIMES.length-1] || '';
+  for(const pair of [[st,'開始時刻'],[en,'終了時刻']]){
+    if(pair[0] && !okStamp(pair[0])){ toast('飛翔の'+pair[1]+'が正しくありません'); return null; }
   }
   if(st && en && en<st){ toast('飛翔の終了時刻が開始時刻より前です'); return null; }
   return { uuid:uuid(), survey_uuid:svUuid,
@@ -2814,11 +2813,8 @@ function buildFlightFromObsForm(svUuid, name, count, ageCls, indKey, memo){
     height_class:segVal('fl_height')||'不明',
     age_class:ageCls||'不明', individual_label:'',
     behavior:otherMerge(segVals('fl_behavior'),'fl_behavior'),
-    // メモは飛翔側にも残す。飛翔だけのモードでは観察記録を作らないので、
-    // ここで拾わないと利用者が書いた内容が保存成功の表示ごと消える（2026-08-06 監査 Critical）
-    count:count, memo:String(memo||'').trim(), needs_review:false,
+    count:count, memo:String(memo||'').trim(), needs_review:!!needsReview,
     individual_key:indKey||'',
-    // 写真・録音は観察側に付く（両方モード）。飛翔だけのモードではパネル自体を隠している
     audio:[], media:[] };
 }
 function saveObs(u, svUuid, editing, cont){
@@ -2852,6 +2848,8 @@ function saveObs(u, svUuid, editing, cont){
   const rec = Object.assign({}, base||{uuid:u}, {
     uuid:u, survey_uuid:svUuid,
     observed_at: g('observed_at')? new Date(g('observed_at')).toISOString() : nowISO(),
+    // 観察者の位置は画面に出さず、ここでGPSから入れる（Pは鳥がいた場所）。
+    // 距離帯は観察者とPの距離から自動で決める（ユーザー仕様）
     latitude: lat, longitude: lon,
     // 精度: 座標なしなら必ず空 / _acc===null は「この画面で位置に触れていない」＝既存値を維持 / ''や数値はその値
     gps_accuracy: (!lat && !lon) ? '' : (SCREENS._acc===null ? ((base||{}).gps_accuracy||'') : SCREENS._acc),
@@ -2901,69 +2899,66 @@ function saveObs(u, svUuid, editing, cont){
   //   永遠に外せない」ループになる。編集時も理由の警告トーストは出すので、見落としにはならない）
   if(reasons.length && !rec.needs_review && !editing) rec.needs_review=true;
 
-  /* --- 記録モードによる書き分け（統合画面）---
-     検査は全部先に済ませ、書き込みは「飛翔 → 観察」の順。観察の保存に失敗したら飛翔を取り消す。
-     片方だけ残る状態を作らないため（v88の仮説削除で同じ型の指摘を受けている） */
-  const mode = editing ? 'perch' : recMode();   // 既存記録の編集は従来どおり観察のみ
-  // 取り込み中に「飛翔だけ」で保存すると、遅れて完了した写真の持ち主が居なくなる
-  if(mode==='flight' && mediaBusy()){ toast('写真・動画を取り込み中です。終わってから保存してください', 4000); return; }
-  if(mode==='flight' && typeof recBusy==='function' && recBusy()){
-    toast('録音の保存中です。終わってから保存してください', 4000); return; }
-  let flRec=null;
-  if(mode!=='perch'){
-    // 両方のときは同じ目印で結び付ける（v90の仕組み）
-    if(mode==='both' && !rec.individual_key) rec.individual_key=uuid();
-    flRec=buildFlightFromObsForm(svUuid, name, rec.count, rec.age_class,
-      mode==='both'?rec.individual_key:'', g('note'));
-    if(!flRec) return;   // 検査に落ちた。何も保存しない
-    // 飛翔の要確認は、飛翔に保存される値（種名・個体数）だけから決める。
-    // 観察側の理由（観察日時が調査日と合わない等）は飛翔に無い項目が根拠なので持ち込まない
-    flRec.needs_review = (!name) || (!!name && !speciesByName(name)) || (indCount(rec.count)===0);
-    // 飛翔だけのときは観察を作らないので、位置は使わない。両方で位置が空なら経路の終点を使う
-    if(mode==='both' && !rec.latitude && !rec.longitude){
-      const last=flRec.path[flRec.path.length-1];
-      rec.latitude=String(last[0]); rec.longitude=String(last[1]); rec.gps_accuracy='';
-    }
+  // 観察者の位置は画面に出さないので、ここでGPSの最新の測位から入れる（Pは鳥がいた場所）
+  if(!editing){
+    const fx=freshFix();
+    if(fx){ rec.latitude=fx.lat.toFixed(6); rec.longitude=fx.lon.toFixed(6); rec.gps_accuracy=Math.round(fx.acc); }
   }
-  // 巻き戻し用に、飛翔を書き足す前の配列を控える。
-  // 容量不足で観察の保存が落ちる状況では hardDelete（墓標を足す＝データが増える）も落ちやすい。
-  // 「追加前の配列を書き戻す」ならデータが減る方向なので、同じ状況でも通りやすい
+  // 距離帯は観察者とPの距離から自動で決める。手で選び直されていればそれを優先する
+  if(!segVal('distance_band')){
+    const band=distBandFrom(rec.latitude, rec.longitude, rec.target_latitude, rec.target_longitude);
+    if(band) rec.distance_band=band;
+  }
+
+  /* --- 地図の中身で書き分ける ---
+     P だけ → 観察1件 ／ F だけ → 飛翔1件 ／ 両方 → 2件を同じ目印で結び付け。
+     検査は全部先に済ませ、書き込みは「飛翔 → 観察」の順。観察が失敗したら飛翔を書き戻す */
+  const hasP = editing ? true : !!PF_POINT;          // 編集は従来どおり観察として扱う
+  const hasF = !editing && flightPath.length>=2;
+  if(!editing && !hasP && !hasF){
+    toast('地図で P（鳥がいた場所）か F（飛翔経路）を落としてください', 4000); return; }
+  let flRec=null;
+  if(hasF){
+    if(hasP && !rec.individual_key) rec.individual_key=uuid();
+    flRec=buildFlightRec(svUuid, name, rec.count, rec.age_class,
+      hasP?rec.individual_key:'', g('note'),
+      (!name) || (!!name && !speciesByName(name)) || (indCount(rec.count)===0));
+    if(!flRec) return;
+  }
+  // 巻き戻し用に、飛翔を書き足す前の配列を控える（データが減る方向なので容量不足でも通りやすい）
   const flBefore = flRec ? DB.load(DB.key.fl) : null;
-  if(flRec && !DB.upsertFlight(flRec)) return;   // 保存失敗。観察もまだ書いていない
-  if(mode==='flight'){
-    // 飛翔だけのときは観察を作らないので、写真・録音の都合で作られた仮の観察記録を片付ける。
-    // **飛翔が書けたあとに**行う。先に消すと、飛翔の保存に失敗したときに墓標だけが残り、
-    // 同じUUIDで保存し直した記録が後の同期で消される（2026-08-05 監査 Critical）
+  if(flRec && !DB.upsertFlight(flRec)) return;
+  if(!hasP){
+    // 飛翔だけ。観察は作らないので、写真・録音の都合で作られた仮記録を片付ける
     const gh=SCREENS._ghost;
     if(gh){
-      // 遅れて完了する写真・録音の処理が仮記録を作り直さないよう、先に破棄名簿へ入れる
       DISCARDED.add(gh.uuid);
       if(!DB.hardDelete(gh.key, gh.uuid)){
         DISCARDED.delete(gh.uuid);
         const back = DB.save(DB.key.fl, flBefore) && !DB.flight(flRec.uuid);
-        toast(back
-          ? '空き容量不足のため、書きかけの記録を片付けられませんでした。空きを確保してからもう一度お試しください'
-          : '保存に失敗し、先に書いた飛翔経路を取り消せませんでした。空き容量を確保して、データ点検・修復画面で確認してください', 8000);
+        toast(back?'空き容量不足のため、書きかけの記録を片付けられませんでした'
+                  :'保存に失敗し、飛翔経路を取り消せませんでした。データ点検・修復画面で確認してください', 8000);
         return;
       }
-      SCREENS._ghost=null; mediaGcAll().catch(()=>{});
+      SCREENS._ghost=null; mediaGcAll().catch(function(){});
     }
     if(name) DB.pushRecent(name);
     SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
     SCREENS._dirty=false; SCREENS._ghost=null;
-    flightPath=[]; SCREENS._recMode='perch';
+    flightPath=[]; PF_TIMES=[]; PF_POINT=null; PF_PTIME='';
     toast('飛翔経路を保存しました');
-    goBack(); return;
+    if(cont===true){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid})); } else goBack();
+    return;
   }
   if(!DB.upsertObs(rec)){
-    // 観察が保存できなかった。先に書いた飛翔を取り消して、片方だけ残さない
     if(flRec){
       const back = DB.save(DB.key.fl, flBefore) && !DB.flight(flRec.uuid);
-      if(!back) toast('保存に失敗し、先に書いた飛翔経路を取り消せませんでした。空き容量を確保して、データ点検・修復画面で確認してください', 8000);
+      if(!back) toast('保存に失敗し、先に書いた飛翔経路を取り消せませんでした。データ点検・修復画面で確認してください', 8000);
     }
     return;   // 保存失敗(DB.saveが警告済み)。成功表示も画面遷移もしない
   }
-  if(flRec){ flightPath=[]; SCREENS._recMode='perch'; }
+  if(flRec){ flightPath=[]; PF_TIMES=[]; }
+  PF_POINT=null; PF_PTIME='';
   if(name) DB.pushRecent(name);
   const keep={ lat:rec.latitude, lon:rec.longitude, acc:rec.gps_accuracy };   // 「続けて」用に、保存した位置と精度をそのまま引き継ぐ
   SCREENS._acc=null; SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
