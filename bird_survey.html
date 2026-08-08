@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v150（2026-08-07 監査52巡目：観察日時の扱い・起動順の整理・閲覧専用の仕上げ）';
+const APP_VERSION = 'v151（2026-08-07 監査53巡目：日時指定の保護・共有項目の絞り込み・連鎖削除の原子性）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1516,6 +1516,9 @@ function saveSurvey(u, editing){
 // 調査を関連データごとソフト削除（ごみ箱から戻せる）
 function softDeleteSurveyCascade(u){
   const walkingHere = WALK && WALK.sv===u;
+  // 途中で失敗したら書いた分を戻すため、変更前の各配列を控える
+  const before={}; [DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.fl].forEach(k=>{ before[k]=DB.load(k); });
+  const undo=()=>{ [DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.fl].forEach(k=>{ try{ DB.save(k,before[k]); }catch(e){} }); };
   if(walkingHere && !stopWalk(true)){
     // ルート本保存ができない状態。削除自体が成功することを確かめてから、下書きに残して強制停止する
     if(!DB.softDelete(DB.key.sv,u)) return false;   // 削除も失敗（容量不足）→記録は継続（DB.saveが警告済み）
@@ -1523,10 +1526,13 @@ function softDeleteSurveyCascade(u){
   } else {
     if(!DB.softDelete(DB.key.sv,u)) return false;
   }
-  DB.obsOf(u).forEach(o=>DB.softDelete(DB.key.ob,o.uuid));
-  DB.notesOf(u).forEach(n=>DB.softDelete(DB.key.nt,n.uuid));
-  DB.hypOf(u).forEach(h=>DB.softDelete(DB.key.hy,h.uuid));
-  DB.flightsOf(u).forEach(f=>DB.softDelete(DB.key.fl,f.uuid));
+  // 付随する記録も全部の成否を確かめる。1件でも失敗したら、親だけ消えた状態を残さず全部戻す
+  let ok=true;
+  DB.obsOf(u).forEach(o=>{ if(!DB.softDelete(DB.key.ob,o.uuid)) ok=false; });
+  DB.notesOf(u).forEach(n=>{ if(!DB.softDelete(DB.key.nt,n.uuid)) ok=false; });
+  DB.hypOf(u).forEach(h=>{ if(!DB.softDelete(DB.key.hy,h.uuid)) ok=false; });
+  DB.flightsOf(u).forEach(f=>{ if(!DB.softDelete(DB.key.fl,f.uuid)) ok=false; });
+  if(!ok){ undo(); return false; }
   return true;
 }
 function deleteSurvey(u){
@@ -2536,6 +2542,10 @@ SCREENS.obsEdit = (argStr)=>{
       if(bEl) bEl.addEventListener('change', ()=>{ SCREENS._bandTouched=true; });
       const iEl=document.querySelector('[data-seg="identification_status"]');
       if(iEl) iEl.addEventListener('change', ()=>updateIdHint());   // 手で変えたときも案内を追随させる
+      // 観察日時を触ったかどうか。触った指定を、P を落とした時刻で上書きしないため
+      SCREENS._obsAtTouched=false;
+      const _oaEl=$('#obForm [name="observed_at"]');
+      if(_oaEl) ['input','change'].forEach(ev=>_oaEl.addEventListener(ev, ()=>{ SCREENS._obsAtTouched=true; }));
       // 齢を触ったかどうか。触っていない保存では、既存の飛翔の齢（空を含む）をそのまま残す
       SCREENS._ageTouched=false;
       const aEl=document.querySelector('[data-seg="age_class"]');
@@ -3906,10 +3916,10 @@ function saveObs(u, svUuid, editing, cont){
     flRecs.push(fr);
   }
   // 観察をまとめて組み立てる（1つ目は rec、2つ目以降は場所と時刻だけ差し替えた写し）
-  // 同じ鳥の記録で「共有する」と決めた項目（種名・個体数・齢など）。
-  // 画面に載らない位置なしの兄弟にも、この項目だけはそろえる（種や数が記録ごとに割れないように）
-  const OBS_SHARED_F=['species_id','species_name_snapshot','count','age_class','sex','detection_method',
-    'behavior','habitat','direction','identification_status','confidence'];
+  // 同じ鳥の記録で「個体全体として共有する」項目だけを兄弟にそろえる。
+  // 確認方法・行動・環境・方向は観察の場面ごとに違い得るので、そろえない（各記録の値を守る）
+  const OBS_SHARED_F=['species_id','species_name_snapshot','count','age_class','sex',
+    'identification_status','confidence'];
   const obRecs=[];
   // 軸の経路から観察を作る場合、添付・メモは軸の経路が持つ（観察に写すと二重参照になる）
   if(anchorFlId){ rec.audio=[]; rec.media=[]; rec.note=''; }
@@ -3979,7 +3989,8 @@ function saveObs(u, svUuid, editing, cont){
     // もとからあった記録は、画面の「観察日時」を正とする（Pを置き直しても過去の日時を失わない）。
     // まとめ読みした他の記録の日時はその記録のまま。落とした時刻を使うのは、新しく作られる記録だけ
     if(sibSrc){ r2.observed_at = sibSrc.observed_at; }
-    else if(!(editing && r2===rec) && sg.time && okStamp(sg.time)) r2.observed_at = new Date(sg.time).toISOString();
+    // 開いた記録（editing）と、画面で日時を直した記録は、画面の「観察日時」を正とする
+    else if(!((editing || SCREENS._obsAtTouched) && r2===rec) && sg.time && okStamp(sg.time)) r2.observed_at = new Date(sg.time).toISOString();
     // 距離帯は観察者とその止まり位置の距離から決める（手で選び直されていればそれを優先）
     // 手で選び直していれば（「なし」も含めて）その指定を優先する
     if(!SCREENS._bandTouched){
