@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v151（2026-08-07 監査53巡目：日時指定の保護・共有項目の絞り込み・連鎖削除の原子性）';
+const APP_VERSION = 'v152（2026-08-07 監査54巡目：歩行中の削除の順序・個体ラベルの編集）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1516,16 +1516,29 @@ function saveSurvey(u, editing){
 // 調査を関連データごとソフト削除（ごみ箱から戻せる）
 function softDeleteSurveyCascade(u){
   const walkingHere = WALK && WALK.sv===u;
-  // 途中で失敗したら書いた分を戻すため、変更前の各配列を控える
-  const before={}; [DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.fl].forEach(k=>{ before[k]=DB.load(k); });
-  const undo=()=>{ [DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.fl].forEach(k=>{ try{ DB.save(k,before[k]); }catch(e){} }); };
-  if(walkingHere && !stopWalk(true)){
-    // ルート本保存ができない状態。削除自体が成功することを確かめてから、下書きに残して強制停止する
-    if(!DB.softDelete(DB.key.sv,u)) return false;   // 削除も失敗（容量不足）→記録は継続（DB.saveが警告済み）
-    routeDraftSave(); forceStopWalk();
-  } else {
-    if(!DB.softDelete(DB.key.sv,u)) return false;
+  // 歩行中なら先にルートの本保存を試す。本保存できないときは下書きに控えておき、
+  // 歩行の強制停止は「全部の削除が成功した後」にだけ行う（途中で止めると下書きごと失う）
+  let walkStopped=false;
+  if(walkingHere){
+    if(stopWalk(true)) walkStopped=true;
+    else routeDraftSave();
   }
+  // 控えはルートの本保存が済んだ「後」に取る（先に取ると、戻したとき確定済みのルートまで消える）
+  const KEYS=[DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.fl];
+  const before={}; KEYS.forEach(k=>{ before[k]=DB.load(k); });
+  const undo=()=>{
+    let all=true;
+    KEYS.forEach(k=>{
+      try{
+        if(!DB.save(k,before[k])){ all=false; return; }
+        // 戻ったことを読み直して確かめる（戻せていないのに黙って続けない）
+        if(JSON.stringify(DB.load(k))!==JSON.stringify(before[k])) all=false;
+      }catch(e){ all=false; }
+    });
+    if(!all){ try{ toast('削除を取り消せませんでした。データ点検・修復画面で確認してください', 8000); }catch(e){} }
+    return all;
+  };
+  if(!DB.softDelete(DB.key.sv,u)) return false;   // 親の削除も失敗（容量不足）→記録は継続（DB.saveが警告済み）
   // 付随する記録も全部の成否を確かめる。1件でも失敗したら、親だけ消えた状態を残さず全部戻す
   let ok=true;
   DB.obsOf(u).forEach(o=>{ if(!DB.softDelete(DB.key.ob,o.uuid)) ok=false; });
@@ -1533,6 +1546,7 @@ function softDeleteSurveyCascade(u){
   DB.hypOf(u).forEach(h=>{ if(!DB.softDelete(DB.key.hy,h.uuid)) ok=false; });
   DB.flightsOf(u).forEach(f=>{ if(!DB.softDelete(DB.key.fl,f.uuid)) ok=false; });
   if(!ok){ undo(); return false; }
+  if(walkingHere && !walkStopped) forceStopWalk();   // 下書きは確保済み。全件成功したのでここで停止
   return true;
 }
 function deleteSurvey(u){
@@ -2340,6 +2354,8 @@ SCREENS.obsEdit = (argStr)=>{
             <input type="checkbox" id="needsReview" style="width:auto;" ${o.needs_review?'checked':''}>
             <span class="lab" style="margin:0;">要確認フラグ（あとで見直す）</span></label>
           <!-- 時刻と距離帯は地図の操作から自動で入る。新規では隠し、保存後の編集でだけ直せるようにする -->
+          ${flAnchor?`<label class="field"><span class="lab">個体ラベル（この経路）</span>
+            <input id="flIndLabel" autocomplete="off" value="${esc(flAnchor.individual_label||'')}" placeholder="例：個体A／左翼損傷"></label>`:''}
           <div id="autoWrap" style="display:${(editing||flAnchor)?'':'none'};">
             <div class="two">
               <label class="field obs-only"><span class="lab">観察日時</span>
@@ -4027,6 +4043,7 @@ function saveObs(u, svUuid, editing, cont){
       fr.media=(SCREENS._media||[]).slice();
       fr.memo=String(g('note')||'').trim();
       fr.needs_review=!!($('#needsReview') && $('#needsReview').checked);
+      const il=$('#flIndLabel'); if(il) fr.individual_label=String(il.value||'').trim();
     }
   }
   // 飛翔だけの保存で写真・録音があれば、書き込む前に、その1本の経路の記録へ付ける。
