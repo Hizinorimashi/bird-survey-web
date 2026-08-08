@@ -126,9 +126,12 @@ self.addEventListener('message', e => {
         const scopePath = new URL(self.registration.scope).pathname;   // 例: /bird-survey-web/
         // この場所のアプリ画面だけを数える（完全一致）。同じ場所の別のHTMLや別の場所のアプリを巻き込まない
         const okPaths = new Set([scopePath, scopePath + 'bird_survey.html', scopePath + 'index.html']);
+        // 保存領域はオリジン全体で共有なので、別の場所に置いた bird_survey.html も検査する。
+        //（index.html は場所ごとに別物があり得るので、この場所のものだけ）
         const cs = all.filter(c => {
-          try{ return okPaths.has(new URL(c.url).pathname); }
-          catch(err){ return false; }
+          try{ const path = new URL(c.url).pathname;
+            return okPaths.has(path) || /\/bird_survey\.html$/.test(path);
+          }catch(err){ return false; }
         });
         let legacy = 0;
         await Promise.all(cs.map(c => new Promise(res => {

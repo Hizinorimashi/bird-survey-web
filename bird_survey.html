@@ -3359,7 +3359,7 @@ function perchStore(){
   // 実際に変わったときだけ「書きかけ」にする（チップを選んだだけで破棄確認が出ないように）
   const changed=Object.keys(next).some(k=>String(cur[k]||'')!==String(next[k]||''));
   sg.perch=next;
-  if(changed) SCREENS._dirty=true;
+  if(changed){ SCREENS._dirty=true; sg.perchEdited=true; }   // 触った P だけ、種類別の絞り込みの対象にする
 }
 function perchTypeChanged(){ perchStore(); perchSyncBranch(); }
 // 種類に応じて出す欄を切り替える
@@ -3993,6 +3993,14 @@ function saveObs(u, svUuid, editing, cont){
     }
     r2.target_latitude = String(sg.pt[0]); r2.target_longitude = String(sg.pt[1]);
     // その P で選んだ「止まっていたもの」を、その観察だけに入れる
+    // 触っていない既存の P は、元の記録の止まり情報を全項目そのまま保つ。
+    //（種類別の絞り込みを無条件に通すと、種類と別種類の詳細が併存する取込データが
+    //  開いて保存しただけで削られる）
+    const srcPerchRec=(editing && sg.srcUuid && !sg.perchEdited) ? (sg.srcUuid===u ? base : sibSrc) : null;
+    if(srcPerchRec){
+      ['perch_type','perch_size','perch_class','perch_species','perch_height','perch_artificial','perch_note']
+        .forEach(k=>{ r2[k]=srcPerchRec[k]||''; });
+    } else {
     const pc = sg.perch || {};
     r2.perch_type = pc.type||'';
     // 知らない種類（同期や取込で入った独自の値）は、読み込んだ内容をそのまま残す。
@@ -4010,6 +4018,7 @@ function saveObs(u, svUuid, editing, cont){
       r2.perch_height = (pc.type==='木') ? (pc.height||'') : '';
       r2.perch_artificial = (pc.type==='人工物') ? (pc.art||'') : '';
       r2.perch_note = (pc.type==='人工物'||pc.type==='その他') ? (pc.note||'') : '';
+    }
     }
     // もとからあった記録は、画面の「観察日時」を正とする（Pを置き直しても過去の日時を失わない）。
     // まとめ読みした他の記録の日時はその記録のまま。落とした時刻を使うのは、新しく作られる記録だけ
@@ -9397,7 +9406,9 @@ if('serviceWorker' in navigator){
     let got=false;
     try{
       await new Promise(resolve=>{
-        navigator.locks.request('bird-survey-single-tab:'+new URL('./',location.href).pathname, {ifAvailable:true}, lock=>{
+        // 保存領域（localStorage / IndexedDB）はオリジン全体で共有なので、使用権もオリジンで1つにする。
+        // 場所ごとに分けると、別の場所に置いた同じアプリと同時に書けてしまう
+        navigator.locks.request('bird-survey-single-tab', {ifAvailable:true}, lock=>{
           if(!lock){ resolve(); return; }
           got=true; resolve();
           return new Promise(()=>{});   // 使用権を持ち続ける（タブを閉じれば自動で解放）
