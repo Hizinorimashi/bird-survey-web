@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v155（2026-08-08 監査57巡目：併存する止まり情報の保持・使用権のオリジン共通化）';
+const APP_VERSION = 'v156（2026-08-08 監査58巡目：旧版タブの常時見張り・止まり情報の完全保持）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3541,7 +3541,9 @@ function obsMapUndo(){
   const st=JSON.parse(PF_HIST.pop());
   PF_SEGS=st.segs; PF_NEST=st.nest; PF_NEWLINE=st.newline; PF_SEL=st.sel; PERCH_IDX=st.perch;
   PF_SEGS.forEach(sg=>{ const nowSg=cur.get(sg.id); if(!nowSg) return;
-    if(nowSg.perch) sg.perch=nowSg.perch;
+    // 止まり情報は値だけでなく「触った」印も一緒に残す。印が落ちると、
+    // 画面には編集値が見えるのに保存では元の値へ戻ってしまう
+    if(nowSg.perch){ sg.perch=nowSg.perch; if(nowSg.perchEdited) sg.perchEdited=true; }
     if(nowSg.ov) sg.ov=nowSg.ov;
     if(nowSg.fl) sg.fl=nowSg.fl;   // 高度・行動も「↶」で巻き戻さない（入力は地図の操作ではない）
   });
@@ -3999,7 +4001,7 @@ function saveObs(u, svUuid, editing, cont){
     const srcPerchRec=(editing && sg.srcUuid && !sg.perchEdited) ? (sg.srcUuid===u ? base : sibSrc) : null;
     if(srcPerchRec){
       ['perch_type','perch_size','perch_class','perch_species','perch_height','perch_artificial','perch_note']
-        .forEach(k=>{ r2[k]=srcPerchRec[k]||''; });
+        .forEach(k=>{ r2[k]=srcPerchRec[k]; });   // 値をそのまま写す（0・false・null も変えない。無い項目は無いまま）
     } else {
     const pc = sg.perch || {};
     r2.perch_type = pc.type||'';
@@ -9398,6 +9400,52 @@ if('serviceWorker' in navigator){
     }
   });
 }
+// 旧版タブの有無をSWに尋ねる（起動時の確認と、起動後の見張りとで共用）
+async function countLegacyAsk(){
+  try{
+    const reg=await navigator.serviceWorker.getRegistration();
+    const sw=navigator.serviceWorker.controller || (reg && reg.active) || null;
+    if(!sw) return null;
+    return await new Promise(res=>{
+      const ch=new MessageChannel();
+      const tm=setTimeout(()=>res(null), 1500);
+      ch.port1.onmessage=ev=>{ clearTimeout(tm);
+        const d=ev.data;
+        res((d && d.ok===true && d.guardV===2 && typeof d.legacy==='number') ? d : null); };
+      try{ sw.postMessage({type:'countLegacy'},[ch.port2]); }
+      catch(e){ clearTimeout(tm); res(null); }
+    });
+  }catch(e){ return null; }
+}
+// 起動後に古い版のタブが開かれたときの見張り。古い版は使用権の仕組みを知らないため、
+// 起動時の1回きりの確認では、あとから開かれた場合を防げない（2026-08-08 監査58巡目）
+let GUARD_FROZEN=false;
+function guardFreezeShow(){
+  if(document.getElementById('guardFreeze')) return;
+  const el=document.createElement('div');
+  el.id='guardFreeze';
+  el.style.cssText='position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,.6);'
+    +'display:flex;align-items:center;justify-content:center;padding:24px;';
+  el.innerHTML='<div style="background:#fff;border-radius:14px;padding:20px;max-width:340px;text-align:center;font-size:14px;line-height:1.7;color:#222;">'
+    +'古い版のこのアプリが別のタブで開かれました。<br>記録が食い違わないよう、保存を一時停止しています。<br>そのタブを閉じてから、下のボタンを押してください。'
+    +'<br><br><button class="btn primary" onclick="guardRecheck()">閉じたので再開する</button></div>';
+  document.body.appendChild(el);
+}
+async function guardWatchTick(){
+  if(GUARD_FROZEN || !window.WRITE_OK) return;
+  const ans=await countLegacyAsk();
+  if(ans && ans.legacy>0){
+    GUARD_FROZEN=true; window.WRITE_OK=false;   // 確実に分かったときだけ止める（通信の失敗では止めない）
+    guardFreezeShow();
+  }
+}
+async function guardRecheck(){
+  const ans=await countLegacyAsk();
+  if(!ans || ans.legacy>0){ toast('まだ古い版のタブが見つかります。閉じてからもう一度押してください', 5000); return; }
+  GUARD_FROZEN=false; window.WRITE_OK=true;
+  const el=document.getElementById('guardFreeze'); if(el) el.remove();
+  toast('保存を再開しました');
+}
 (async function bootGuard(){
   bootNoticeSet('起動時の確認をしています…（この間は保存できません）');
   // 1) 使用権（Web Locks）を先に取る。同時に開いても勝者は必ず1つに決まり、
@@ -9442,25 +9490,17 @@ if('serviceWorker' in navigator){
     for(let i2=0;i2<10 && !ans;i2++){
       // 更新直後は前の版のSWが受け持っていて答えられない。
       // 試すたびに「いま有効なSW」を取り直す（新しいSWは skipWaiting/claim ですぐ切り替わる）
-      const sw=navigator.serviceWorker.controller || (reg && reg.active) || null;
-      if(sw){
-        ans=await new Promise(res=>{
-          const ch=new MessageChannel();
-          const tm=setTimeout(()=>res(null), 1500);
-          ch.port1.onmessage=ev=>{ clearTimeout(tm);
-            const d=ev.data;
-            // 世代番号（guardV）が一致する答えだけを受理する。
-            // 更新直後の前の版のSWは guardV を知らないため、その答えでは進まない
-            res((d && d.ok===true && d.guardV===2 && typeof d.legacy==='number') ? d : null); };
-          try{ sw.postMessage({type:'countLegacy'},[ch.port2]); }
-          catch(e){ clearTimeout(tm); res(null); }
-        });
-      }
+      // 世代番号（guardV）が一致する答えだけを受理する（countLegacyAsk 内で検査）。
+      // 更新直後の前の版のSWは guardV を知らないため、その答えでは進まない
+      ans=await countLegacyAsk();
       if(!ans) await new Promise(r=>setTimeout(r,500));   // 新しいSWへの切り替わりを待つ
     }
     if(!ans || ans.legacy>0){ multiTabBlockShow(); return; }
   }
   startApp();
+  // 起動後も、古い版のタブが開かれていないかを定期的に・画面へ戻ったときに確かめる
+  setInterval(guardWatchTick, 12000);
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) guardWatchTick(); });
 })();
 </script>
 </body>
