@@ -1,4 +1,4 @@
-const CACHE = 'bird-survey-v161';
+const CACHE = 'bird-survey-v162';
 // 必須資産（これが揃わないとアプリが成立しない）。install時に全部揃わなければ失敗させ、不完全キャッシュで有効化しない
 const CORE = [
   './bird_survey.html',
