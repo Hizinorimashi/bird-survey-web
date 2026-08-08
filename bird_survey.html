@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v97（2026-08-06 地図の下に P1・L1・P2 の一覧：選んで位置直し・描き足し・削除）';
+const APP_VERSION = 'v144（2026-08-07 監査46巡目：添付削除の順序・世代番号の厳密化等5件）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -296,7 +296,7 @@ function okTombstone(t){ return !!t && typeof t==='object' && !Array.isArray(t)
 // 1レコードの不正箇所を列挙する（点検・修復用）。name は種別（業務日時の項目を引くため）。
 // okRecord（取込・同期の合否）はこの結果が空かどうかで決める。判定を2か所に持つと
 // 「点検では正常なのに同期は拒否する」ずれが生じるため、必ずこの関数を唯一の正とする。
-const REF_ID_FIELDS = ['id','survey_uuid','hypothesis_uuid','ref_id','individual_key'];
+const REF_ID_FIELDS = ['id','survey_uuid','hypothesis_uuid','ref_id','individual_key','nest_id'];
 function recordIssues(name, x){
   if(!x || typeof x!=='object' || Array.isArray(x)) return ['record'];
   const bad=[];
@@ -306,6 +306,15 @@ function recordIssues(name, x){
   for(const f of (STAMP_FIELDS[name]||[])){ if(!okStamp(x[f])) bad.push(f); }
   if(!okMediaList(x.audio)) bad.push('audio');
   if(!okMediaList(x.media)) bad.push('media');
+  // 座標の対（観察者・鳥がいた場所・巣）。片方だけ・範囲外は、地図・書き出しで黙って落ちる値なので
+  // 取込・同期では拒否し、起動点検では修復対象として見えるようにする
+  if(name==='observations'){
+    for(const pr of [['latitude','longitude'],['target_latitude','target_longitude'],['nest_latitude','nest_longitude']]){
+      const a=(x[pr[0]]==null)?'':String(x[pr[0]]), b=(x[pr[1]]==null)?'':String(x[pr[1]]);
+      if(a==='' && b==='') continue;
+      if(!validLatLon(a,b)) bad.push(pr[0]);
+    }
+  }
   // 修復メモ（点検・修復機能が元の値を控える欄）。細工バックアップで巨大な文字列を
   // 持ち込まれて保存領域やメモリを圧迫されないよう、正式な検査項目として上限を課す
   if(!(x.repair_note==null || (typeof x.repair_note==='string' && x.repair_note.length<=REPAIR_NOTE_MAX))) bad.push('repair_note');
@@ -376,7 +385,9 @@ const DB = {
   // GCやバックアップなど、空を鵜呑みにするとデータ喪失につながる処理はこちらを使う。
   loadRaw(k){ const s=localStorage.getItem(k); if(s==null||s==='') return []; return JSON.parse(s); },
   // 保存に失敗（多くは端末の空き容量不足）したら黙って失わせず、必ず警告する。成功時のみtrue。
-  save(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }
+  save(k,v){
+    if(!writeAllowed()) return false;
+    try{ localStorage.setItem(k, JSON.stringify(v)); }
     catch(e){ try{ toast('⚠ 空き容量不足で保存できませんでした。写真・動画を整理するかバックアップ後に空けてください'); }catch(_){}
       try{ console.error('localStorage save failed', e); }catch(_){}
       return false; }
@@ -438,7 +449,17 @@ function tombstonesList(){ try{
   return (JSON.parse(localStorage.getItem('bs_tombstones')||'[]')||[])
     .filter(t=>t&&typeof t.uuid==='string'&&t.uuid&&typeof t.at==='string'&&t.at);
 }catch(e){ return []; } }
-function tombstonesSave(a){ try{ localStorage.setItem('bs_tombstones', JSON.stringify(a)); return true; }catch(e){ return false; } }
+// 使用権の確認（複数タブの検査）が済むまでは、どの経路からも記録を書き込まない。
+// 画面の無効化だけに頼ると、確認中や対応していないブラウザで別のタブと同時に書けてしまう。
+// 記録に関わる書き込みは必ずこの門を通す（DB.save・墓標・マイ図鑑・図鑑資料・メディア保存）。
+// 端末ごとの好み（テーマ・地図の表示設定・下書き）は記録ではないので対象外
+function writeAllowed(){
+  if(window.WRITE_OK) return true;
+  try{ toast('起動時の確認が終わるまで保存できません。数秒待ってからやり直してください', 5000); }catch(_){}
+  return false;
+}
+function tombstonesSave(a){ if(!writeAllowed()) return false;
+  try{ localStorage.setItem('bs_tombstones', JSON.stringify(a)); return true; }catch(e){ return false; } }
 // 保存の成否を返す。falseのときは呼び出し側が完全削除を中止する（墓標なしで消すと他端末から復活してしまうため）
 function tombstoneAdd(uuid){ if(!uuid) return false; const a=tombstonesList();
   if(!a.some(t=>t.uuid===uuid)) a.push({uuid, at:nowISO()});
@@ -470,7 +491,10 @@ function openMediaDB(){
 }
 // requestの成功だけでなく transaction 全体の完了(commit)を待って解決する。
 // これにより await store.put(...) が「確実に保存された」ことを意味し、途中でabortしたのに成功扱いする事故を防ぐ。
-function idbDo(store, mode, fn){ return openMediaDB().then(db=>new Promise((res,rej)=>{
+function idbDo(store, mode, fn){
+  // 変更を伴うときは、書き込みの門を通す（録音・写真・保存フォルダの記憶なども含む）
+  if(mode==='readwrite' && !writeAllowed()) return Promise.reject(new Error('write not allowed yet'));
+  return openMediaDB().then(db=>new Promise((res,rej)=>{
   const tx=db.transaction(store,mode); const st=tx.objectStore(store); const q=fn(st);
   let result;
   q.onsuccess=()=>{ result=q.result; };
@@ -510,7 +534,8 @@ const RefDB = {
   del(id){ return idbDo('refdoc','readwrite', st=>st.delete(id)); },
 };
 function refdocList(){ try{ return JSON.parse(localStorage.getItem('bs_refdocs')||'[]'); }catch(e){ return []; } }
-function refdocSave(list){ localStorage.setItem('bs_refdocs', JSON.stringify(list)); }
+function refdocSave(list){ if(!writeAllowed()) return false;
+  try{ localStorage.setItem('bs_refdocs', JSON.stringify(list)); return true; }catch(e){ return false; } }
 
 // オフライン鳴き声（同梱CC音源を端末に保存）。store 'call' に 和名→blob
 const CallDB = {
@@ -1031,6 +1056,104 @@ function dedupCount(records){
   byKey.forEach(v=>{ sum+=v; });
   return sum;
 }
+// 座標の書き方をそろえる。数値の 0 を「空」と取り違えないようにする
+function coordStr(v){ return (v==null)?'':String(v); }
+// 有効なら両方の値、そうでなければ両方空を返す。
+// 地図・件数・書き出しで「この位置を使うかどうか」の判断をそろえるため
+function coordPair(lat,lon){
+  const a=coordStr(lat), b=coordStr(lon);
+  return validLatLon(a,b) ? [a,b] : ['',''];
+}
+// 止まりが複数あると、同じ巣の情報が記録ごとに写される。
+// 数えるとき・地図に出すとき・書き出すときは、同じ巣を1つにまとめる（数え方を1か所に決める）
+// 巣の目印。空でなく、IDとして安全な文字だけ（同期・点検の検査と同じ条件）を通す
+//（緩くすると、細工された目印が伝播して同期で拒否され続ける記録を作れてしまう）
+function nestId(o){
+  const v=(o && typeof o.nest_id==='string') ? o.nest_id : '';
+  return (v && /^[\w-]+$/.test(v)) ? v : '';
+}
+function nestHasPos(o){ return validLatLon(coordStr(o.nest_latitude), coordStr(o.nest_longitude)); }
+// 巣の位置の鍵（両方空なら ","）と、内容の鍵。目印の無い旧記録の同一性はこれで判断する。
+// 位置は数値として比べる（"43" と "43.0" のような表記の違いで別の巣にしない）
+function nestPosKey(o){
+  const a=coordStr(o.nest_latitude), b=coordStr(o.nest_longitude);
+  if(a==='' && b==='') return ',';
+  if(!validLatLon(a,b)) return 'bad:'+a+','+b;   // 壊れた座標は「位置なし」とも「有効」とも混ぜない
+  return String(Number(a))+','+String(Number(b));
+}
+function nestFpKey(o){
+  // JSONで直列化する（'|' 連結だと「状態=a|b」と「樹種=b|c」の組み合わせ違いが同じ鍵になる）
+  return JSON.stringify([nestPosKey(o), String(o.nest_state==null?'':o.nest_state),
+    String(o.nest_tree_species==null?'':o.nest_tree_species), String(o.nest_tree_height==null?'':o.nest_tree_height)]);
+}
+function nestPosValid(k){ return k!==',' && k.slice(0,4)!=='bad:'; }
+function nestHasInfo(o){ return nestHasPos(o) || !!(o.nest_state||o.nest_tree_species||o.nest_tree_height); }
+// 巣の同一性は、ここ1か所だけで決める（地図・件数・書き出し・報告書で食い違わせない）。
+// 同じ調査・同じ鳥のまとまりに1つでも目印があれば、目印の無い古い記録もそこへ寄せる
+function nestGroups(list){
+  const arr=(list||[]).filter(o=>o && nestHasInfo(o));
+  const groupOf=o=>coordStr(o.survey_uuid)+'|'+coordStr(o.individual_key);
+  // まとまり（調査＋鳥）ごとの目印の集まり。目印が1つに定まるときだけ、目印の無い記録をそこへ寄せる
+  //（2つ以上あるまとまりで寄せると、別の巣どうしを混ぜてしまう）
+  const ids=new Map();
+  const idPos=new Map();   // 調査＋目印 → その巣がある位置の集まり（別の調査の位置を混ぜない）
+  const idFp=new Map();    // 調査＋目印 → その巣の内容の集まり
+  const idPosKey=(sv,id)=>coordStr(sv)+'|'+id;
+  (list||[]).forEach(o=>{ if(!o) return; const id=nestId(o); if(!id) return;
+    const pk=idPosKey(o.survey_uuid, id);
+    if(!idPos.has(pk)) idPos.set(pk, new Set());
+    idPos.get(pk).add(nestPosKey(o));
+    if(!idFp.has(pk)) idFp.set(pk, new Set());
+    idFp.get(pk).add(nestFpKey(o));
+    if(!o.individual_key) return;
+    if(!ids.has(groupOf(o))) ids.set(groupOf(o), new Set());
+    ids.get(groupOf(o)).add(id); });
+  const keyOf=o=>{
+    // 目印が同じでも、調査が違えば別の巣として数える（別の日の調査の巣を1つにまとめない）
+    const id=nestId(o); if(id) return 'id:'+coordStr(o.survey_uuid)+'|'+id;
+    if(o.individual_key){ const set=ids.get(groupOf(o));
+      if(set){
+        // 「位置が一致」または「内容が完全に一致（写し）」する目印の候補を集め、
+        // 1つに定まるときだけ寄せる（0個・複数なら独立のまま。推測で寄せない）
+        const cands=[...set].filter(tid=>{
+          const pk=idPosKey(o.survey_uuid, tid);
+          return (nestPosValid(nestPosKey(o)) && (idPos.get(pk)||new Set()).has(nestPosKey(o)))
+              || (idFp.get(pk)||new Set()).has(nestFpKey(o));
+        });
+        if(cands.length===1) return 'id:'+coordStr(o.survey_uuid)+'|'+cands[0];
+      }
+    }
+    // 目印なしどうしは、位置があれば「場所」単位、無ければ「内容」単位でまとめる
+    //（同じ場所なら状態の書き方が違っても同じ巣。保存で目印が付いた後と同じ数え方になる）
+    const own=coordStr(o.individual_key||o.uuid);
+    return nestPosValid(nestPosKey(o))
+      ? 'p:'+[coordStr(o.survey_uuid), own, nestPosKey(o)].join('|')
+      : 'f:'+[coordStr(o.survey_uuid), own, nestFpKey(o)].join('|');
+  };
+  const g=new Map();
+  arr.forEach(o=>{ const k=keyOf(o); if(!g.has(k)) g.set(k, []); g.get(k).push(o); });
+  const out=[];
+  g.forEach((recs, gk)=>{
+    // 新しい記録を基準にし、欠けている項目だけ同じ巣の他の記録から補う
+    //（位置だけの記録と、状態だけの記録が別々にあっても取りこぼさない）
+    const sorted=recs.slice().sort((a,b)=>String(b.updated_at||'').localeCompare(String(a.updated_at||'')));
+    const repRec=Object.assign({}, sorted[0]);
+    sorted.forEach(o=>{
+      if(!nestHasPos(repRec) && nestHasPos(o)){ repRec.nest_latitude=o.nest_latitude; repRec.nest_longitude=o.nest_longitude; }
+      ['nest_state','nest_tree_species','nest_tree_height'].forEach(f=>{ if(!repRec[f] && o[f]) repRec[f]=o[f]; });
+    });
+    // 代表が目印の無い旧記録でも、まとまりを決めた目印は書き出しに乗せる（CSVと食い違わせない）
+    if(!nestId(repRec)){
+      const withId=recs.find(r=>nestId(r));
+      if(withId) repRec.nest_id=nestId(withId);
+      else if(gk.slice(0,3)==='id:') repRec.nest_id=gk.split('|').pop();
+    }
+    out.push(repRec);
+  });
+  return out;
+}
+function nestRecords(list){ return nestGroups(list); }
+function uniqNests(list){ return nestGroups(list).filter(nestHasPos); }
 // 齢の表記をそろえる。以前の観察は 成/若/幼 で保存されているため、読むときに新しい語彙へ写す。
 // 保存済みデータの一括書き換えはしない（全件の updated_at が動くと同期が大量に走り、
 // 途中で失敗すると中途半端な状態が残る）。開いて保存し直せば新しい語彙で書かれる
@@ -1066,11 +1189,12 @@ const DISCARDED=new Set();
 const GUARD_SCREENS=['obsEdit','noteEdit','flightEdit','routeEdit','voiceObs',
   'obsBatch','hypEdit','hypVerify','surveyEnd'];
 // 入力があった時点で「いまが保護対象の画面か」を見る。画面ごとに見張りを張り替えないための判定
-function markDirtyIfGuarded(){
+function markDirtyIfGuarded(){ if(SCREENS._flLoading) return;
   const cur=STACK[STACK.length-1]||{};
   if(GUARD_SCREENS.indexOf(cur.name)>=0 || (cur.name==='surveyEdit' && SCREENS._editing)) SCREENS._dirty=true;
 }
 function leaveGuardOk(){
+  if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY){ toast('保存の処理中です。少し待ってください'); return false; }
   const cur=STACK[STACK.length-1]||{};
   const editScreen=(GUARD_SCREENS.indexOf(cur.name)>=0
     ||(cur.name==='surveyEdit' && SCREENS._editing));   // 既存調査の途中編集も保護（新規は下書き自動保存があるので対象外）
@@ -1614,7 +1738,7 @@ function resumeSurvey(u){ const s=DB.survey(u); if(!s) return;
   s.status='調査中'; s.end_datetime='';
   if(!DB.upsertSurvey(s)) return;
   toast('調査を再開しました'); render(); }
-function startSurvey(u){ const s=DB.survey(u); if(!s) return;
+function startSurvey(u){ if(!writeAllowed()) return; const s=DB.survey(u); if(!s) return;
   s.status='調査中'; if(!s.start_datetime) s.start_datetime=nowISO(); DB.upsertSurvey(s);
   toast('調査を開始しました'); render(); }
 
@@ -2008,11 +2132,11 @@ function voiceApplyToForm(){
   const p=parseVoiceObs(txt);
   const pick=voicePickFor(rawTxt,p);   // 候補をタップして選び直していればそれを使う
   if(pick.name) chooseSpecies((speciesByName(pick.name)||{}).species_id||'', pick.name);
-  if(p.count){ const el=$('#obForm [name="count"]'); if(el) el.value=p.count; }
-  if(p.detection_method){ const el=document.querySelector('[data-seg="detection_method"]'); if(el) el.value=p.detection_method; }
-  if(p.distance_band){ const el=document.querySelector('[data-seg="distance_band"]'); if(el) el.value=p.distance_band; }
-  if(p.direction){ const b=[...document.querySelectorAll('[data-seg="direction"] button')].find(x=>x.textContent===p.direction);
-    if(b && !b.classList.contains('on')) b.click(); }
+  if(p.count){ const el=$('#obForm [name="count"]');
+    if(el){ el.value=p.count; el.dispatchEvent(new Event('input',{bubbles:true})); } }   // 手入力と同じ扱いにする
+  if(p.detection_method) segSet('detection_method', p.detection_method);
+  if(p.distance_band) segSet('distance_band', p.distance_band);   // 話して入れた指定は守る（changeで指定済みになる）
+  if(p.direction) segSet('direction', p.direction);
   if(p.behavior){ p.behavior.split('・').forEach(v=>{
     const b=[...document.querySelectorAll('[data-seg="behavior"] button')].find(x=>x.textContent===v);
     if(b && !b.classList.contains('on')) b.click(); }); }   // click経由＝繁殖ヒント・見出し更新も従来どおり動く
@@ -2047,7 +2171,18 @@ SCREENS.obsEdit = (argStr)=>{
         o.species_id=(speciesByName(k.species_name)||{}).species_id||''; }
       if(k.count!=null && k.count!=='') o.count=k.count;   // 0羽もそのまま引き継ぐ（0は未指定ではない）
       if(k.age_class) o.age_class=k.age_class;
-      if(k.individual_key) o.individual_key=k.individual_key;
+      if(k.individual_key){
+        o.individual_key=k.individual_key;
+        // その鳥にすでに巣があるなら、画面にも読み込む。
+        // 読み込まないと、見えていない巣をこの画面の操作で知らずに消してしまう
+        const ng=nestGroups(DB.obsOf(svUuid).filter(x=>x.individual_key===k.individual_key));
+        if(ng.length===1){ const n0=ng[0];
+          o.nest_id=nestId(n0);
+          o.nest_latitude=coordStr(n0.nest_latitude); o.nest_longitude=coordStr(n0.nest_longitude);
+          o.nest_tree_species=n0.nest_tree_species||''; o.nest_tree_height=n0.nest_tree_height||'';
+          o.nest_state=n0.nest_state||'';
+        }
+      }
     }
     else { const fx=freshFix(); if(fx){ o.latitude=fx.lat.toFixed(6); o.longitude=fx.lon.toFixed(6); o.gps_accuracy=Math.round(fx.acc); } }
     // 音声入力（voiceObs）からの下書き。解析できた項目だけ初期値を上書き（保存は利用者の確認後）
@@ -2055,16 +2190,17 @@ SCREENS.obsEdit = (argStr)=>{
       if(v.species_name){ o.species_name_snapshot=v.species_name;
         o.species_id=(speciesByName(v.species_name)||{}).species_id||''; }
       if(v.count) o.count=v.count;
-      if(v.behavior) o.behavior=v.behavior;
-      if(v.detection_method) o.detection_method=v.detection_method;
-      if(v.distance_band) o.distance_band=v.distance_band;
-      if(v.direction) o.direction=v.direction;
       if(v.note) o.note=v.note;
+      // 行動・確認方法・距離帯・確認方向は観察にしか置き場所が無い。
+      // ここで入れると「最初からそうだった」ことになり、経路だけで保存したとき黙って消える。
+      // 画面を組んだあと（初期状態を控えたあと）に入れる（onMount 参照）
     }
   } else if(o.observed_at && o.observed_at.length>16){ o.observed_at=localDatetimeValue(new Date(o.observed_at)); }
 
   // 「その他（記入内容）」をボタン一致用の値と記入欄の初期値に分解
-  const oOther={}; ['behavior','habitat','perch_size','perch_class'].forEach(f=>{ const p=otherParse(o[f]); o[f]=p.v; oOther[f]=p.other; });
+  // 「その他（記入内容）」の分解は、記入欄を持つ項目だけに行う。
+  // 止まり木は記入欄が無いので分解すると記入内容が消える（選択肢に無い値はそのまま残す作りになっている）
+  const oOther={}; ['behavior','habitat'].forEach(f=>{ const p=otherParse(o[f]); o[f]=p.v; oOther[f]=p.other; });
   // 齢は語彙をそろえた（成→成鳥 等）。古い値のままだとどのボタンにも当たらず未選択に見えるので、
   // 画面を組む前に写しておく。ここで写せば、保存し直したときに新しい語彙で書かれる
   o.age_class=ageNorm(o.age_class);
@@ -2102,6 +2238,10 @@ SCREENS.obsEdit = (argStr)=>{
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapUndo()" title="1つ戻す">↶</button>
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapClear()" title="全部消す">🗑</button>
         </div>
+        <div class="note" id="obsOnlyNote" style="display:none;">飛翔経路だけの記録です。観察にしか残せない項目（性別・確認方法・生息環境・巣など）は入力できません。止まった場所を記録するなら <b>P</b> を落としてください。
+          <div class="sp"></div><button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsOnlyReset()">観察の項目を最初の状態に戻す</button></div>
+        <div class="note" id="legacyPosNote" style="display:none;">この記録の位置は、以前の画面では「止まり木・巣など」の位置でした。巣の位置なら下のボタンで移せます。
+          <div class="sp"></div><button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="legacyPosToNest()">この位置を巣にする</button></div>
         <!-- 落としたものの一覧。選ぶと地図で光り、位置直しや削除ができる（P=止まり／L=経路） -->
         <div class="chips" id="segChips" style="margin-top:6px;"></div>
         <div class="row" id="segEditBar" style="display:none; margin-top:6px; gap:8px; align-items:center;">
@@ -2136,20 +2276,20 @@ SCREENS.obsEdit = (argStr)=>{
               <input type="number" name="count" inputmode="numeric" min="0" value="${esc(o.count!=null?o.count:1)}"></label>
             <label class="field"><span class="lab">齢</span>${segSelect('age_class',OPT.obsAge)}</label>
           </div>
-          <div class="two">
+          <div class="two obs-only">
             <label class="field"><span class="lab">性別</span>${segSelect('sex',OPT.sex)}</label>
             <label class="field"><span class="lab">同定状態</span>${segSelect('identification_status',OPT.idStatus)}</label>
           </div>
           <div id="idHint" class="note" style="display:none; margin:2px 0 10px;"></div>
-          ${segFold('behavior','行動（複数選択可）',OPT.behavior)}
+          <div class="obs-only">${segFold('behavior','行動（複数選択可）',OPT.behavior)}</div>
           <div id="flBehWrap" style="display:none;">${segFold('fl_behavior','飛翔の行動（複数選択可）',OPT.flightBehavior)}</div>
           <div id="breedHint" class="note" style="display:none; margin:2px 0 10px;"></div>
-          <div class="two">
+          <div class="two obs-only">
             <label class="field"><span class="lab">確認方法</span>${segSelect('detection_method',OPT.detection)}</label>
             <label class="field"><span class="lab">確認方向（任意）</span>${segSelect('direction',OPT.direction,true)}</label>
           </div>
           <label class="field" id="flHeightWrap" style="display:none;"><span class="lab">飛翔高度</span>${segSelect('fl_height',OPT.flightHeight)}</label>
-          <label class="field"><span class="lab">信頼度</span>${segSelect('confidence',OPT.confidence)}</label>
+          <label class="field obs-only"><span class="lab">信頼度</span>${segSelect('confidence',OPT.confidence)}</label>
           <label class="field row" style="gap:12px; align-items:center;">
             <input type="checkbox" id="needsReview" style="width:auto;" ${o.needs_review?'checked':''}>
             <span class="lab" style="margin:0;">要確認フラグ（あとで見直す）</span></label>
@@ -2158,18 +2298,18 @@ SCREENS.obsEdit = (argStr)=>{
             <div class="two">
               <label class="field"><span class="lab">観察日時</span>
                 <input type="datetime-local" name="observed_at" value="${esc(o.observed_at)}"></label>
-              <label class="field"><span class="lab">距離帯</span>${segSelect('distance_band',OPT.distBand,true)}</label>
+              <label class="field obs-only"><span class="lab">距離帯</span>${segSelect('distance_band',OPT.distBand,true)}</label>
             </div>
-            <div class="two">
+            <div class="two" id="flTimeWrap" style="display:none;">
               <label class="field"><span class="lab">飛翔の開始時刻</span>
-                <input type="datetime-local" id="flStart" value=""></label>
+                <input type="datetime-local" id="flStart" value="" oninput="flTimeEdit('start')"></label>
               <label class="field"><span class="lab">終了時刻</span>
-                <input type="datetime-local" id="flEnd" value=""></label>
+                <input type="datetime-local" id="flEnd" value="" oninput="flTimeEdit('end')"></label>
             </div>
           </div>
         </details>
 
-        <details class="fold" id="foldEnv">
+        <details class="fold obs-only" id="foldEnv">
           <summary><span class="lab" style="display:inline; margin:0;">🌿 環境</span>
             <span class="small muted">生息環境・止まり木・巣</span></summary>
           <div class="lab" style="margin-top:4px;">まわりの環境（どんな場所か・複数選択可）</div>
@@ -2214,7 +2354,7 @@ SCREENS.obsEdit = (argStr)=>{
             <input id="perchNote" placeholder="どんなものに止まっていたか" oninput="perchStore()"></label>
         </details>
 
-        <details class="fold" id="foldNest">
+        <details class="fold obs-only" id="foldNest">
           <summary><span class="lab" style="display:inline; margin:0;">🪺 営巣木・巣</span>
             <span class="small muted" id="sumNest">地図のNで位置を指定</span></summary>
           <div class="note">営巣木は「止まっていた場所」とは限りません。地図の <b>N</b> に切り替えてタップすると、巣の位置を指定できます。</div>
@@ -2226,13 +2366,14 @@ SCREENS.obsEdit = (argStr)=>{
               <input name="nest_tree_height" inputmode="decimal" value="${esc(o.nest_tree_height||'')}" placeholder="任意"></label>
           </div>
           <label class="field"><span class="lab">巣の状態（記入）</span>
-            <input name="nest_state" value="${esc(o.nest_state||'')}" list="nestStateList" placeholder="例：抱卵、育雛、巣立ち後">
+            <input name="nest_state" value="${esc(o.nest_state||'')}" list="nestStateList" placeholder="例：抱卵、育雛、巣立ち後"
+              oninput="syncDisabledStates()">
             <datalist id="nestStateList">${OPT.nestState.map(x=>`<option value="${esc(x)}">`).join('')}</datalist></label>
           <input type="hidden" id="nestLat" value="${esc(o.nest_latitude||'')}">
           <input type="hidden" id="nestLon" value="${esc(o.nest_longitude||'')}">
         </details>
 
-        <details class="fold" id="foldReg">
+        <details class="fold obs-only" id="foldReg">
           <summary><span class="lab" style="display:inline; margin:0;">🕮 登録</span>
             <span class="small muted">図鑑登録・別カメラの番号</span></summary>
           <button type="button" class="btn ghost" style="margin-bottom:10px;" onclick="addObsToGuide()">🕮 この鳴き声・写真を図鑑に登録（確定種）</button>
@@ -2257,23 +2398,149 @@ SCREENS.obsEdit = (argStr)=>{
       // 記録モードは毎回「止まっている」から始める（前の画面の経路を持ち越さない）
       // 地図の状態は毎回まっさらから始める（前の画面の内容を持ち越さない）
       PF_MODE='P'; PF_SEGS=[]; PF_NEWLINE=true; flightPath=[]; flightLayer=null; pfLayer=null;
-      PF_NEST=null; PERCH_IDX=0; PF_SEL=-1;
-      if(validLatLon(String(o.nest_latitude||''), String(o.nest_longitude||''))){
+      PF_NEST=null; PF_NEST_ID=nestId(o); PERCH_IDX=0; PF_SEL=-1;
+      SCREENS._flSeg=null; PF_HIST=[]; PF_SEQ=0;
+      // 「保存して続けて」で位置を引き継いだときは、その位置を守る（空のまま引き継いだ場合も）
+      SCREENS._keepPos = !!(arg.keep && ('lat' in arg.keep));
+      // 位置が無いために P を出せない古い記録でも、止まり木の情報は持っている。
+      // あとから P を足したとき、その P に引き継ぐ（空で上書きして失わないように）
+      SCREENS._pendingPerch=null; SCREENS._hadP=false;
+      // 「この画面で指定した」だけを指定済みとする。新規で最初から値がある＝音声や引き継ぎでの指定
+      //（編集で開いただけの既存値は、そのままでは他のPにまで配られてしまうので別扱いにする）
+      SCREENS._bandTouched=(!editing) && !!o.distance_band;
+      if(validLatLon(coordStr(o.nest_latitude), coordStr(o.nest_longitude))){
         PF_NEST=[parseFloat(o.nest_latitude), parseFloat(o.nest_longitude)];
       }
-      if(editing && validLatLon(String(o.target_latitude||''), String(o.target_longitude||''))){
-        // 既存記録を開いたとき: 鳥の位置は P として地図に出す
-        PF_SEGS.push({t:'P', pt:[parseFloat(o.target_latitude), parseFloat(o.target_longitude)], time:o.observed_at||''});
+      if(editing && validLatLon(coordStr(o.target_latitude), coordStr(o.target_longitude))){
+        // 既存記録を開いたとき: 鳥の位置は P として地図に出す。
+        // 「止まっていたもの」も一緒に読み込む（読み込まないと、開いて保存し直すだけで消える）
+        PF_SEGS.push({t:'P', id:pfId(), fromExisting:true, srcUuid:o.uuid, pt:[parseFloat(o.target_latitude), parseFloat(o.target_longitude)], time:o.observed_at||'',
+          perch:{ // 古い記録には「種類」が無い。木の項目だけが入っていれば木として読み替える。
+                  // 人工物・メモも混ざっているときは推定しない（推定すると木以外の項目が保存で削られる）
+                  type:o.perch_type||((!o.perch_artificial && !o.perch_note
+                    && (o.perch_size||o.perch_class||o.perch_species||o.perch_height))?'木':''),
+                  size:o.perch_size||'', cls:o.perch_class||'',
+                  species:o.perch_species||'', height:o.perch_height||'',
+                  art:o.perch_artificial||'', note:o.perch_note||'' }});
+      }
+      // 同じ鳥（individual_key）の他の記録もまとめて読み込む。
+      // 1羽を「止まり2か所＋経路1本」と分けて保存した記録を、開き直したときも1画面で扱えるように
+      SCREENS._loadedObs=[]; SCREENS._loadedFl=[];
+      if(editing && o.individual_key){
+        const perchOf=x=>({ type:x.perch_type||((!x.perch_artificial && !x.perch_note
+            && (x.perch_size||x.perch_class||x.perch_species||x.perch_height))?'木':''),
+          size:x.perch_size||'', cls:x.perch_class||'', species:x.perch_species||'', height:x.perch_height||'',
+          art:x.perch_artificial||'', note:x.perch_note||'' });
+        DB.obsOf(svUuid).filter(x=>x.individual_key===o.individual_key && x.uuid!==o.uuid)
+          .sort((a,b)=>String(a.observed_at||'').localeCompare(String(b.observed_at||'')))
+          .forEach(x=>{
+            if(!validLatLon(coordStr(x.target_latitude), coordStr(x.target_longitude))) return;
+            SCREENS._loadedObs.push(x.uuid);
+            PF_SEGS.push({t:'P', id:pfId(), fromExisting:true, srcUuid:x.uuid,
+              pt:[parseFloat(x.target_latitude), parseFloat(x.target_longitude)], time:x.observed_at||'',
+              perch:perchOf(x)});
+          });
+        DB.flightsOf(svUuid).filter(f=>f.individual_key===o.individual_key)
+          .sort((a,b)=>String(a.start_time||'').localeCompare(String(b.start_time||'')))
+          .forEach(f=>{
+            const path=(f.path||[]).filter(validPathPt);
+            if(path.length<2) return;
+            SCREENS._loadedFl.push(f.uuid);
+            PF_SEGS.push({t:'F', id:pfId(), fromExisting:true, srcUuid:f.uuid,
+              pts:path.map(pt=>pt.slice()), times:path.map(()=>''),
+              fl:{height:f.height_class||'', behavior:f.behavior||''},
+              ov:{start:f.start_time||'', end:f.end_time||''}});
+          });
+      }
+      // 飛翔経路から「止まったところを記録」で来たとき、終点を P として置く
+      if(!editing && arg.keep && validLatLon(String(arg.keep.plat||''), String(arg.keep.plon||''))){
+        PF_SEGS.push({t:'P', id:pfId(), pt:[parseFloat(arg.keep.plat), parseFloat(arg.keep.plon)],
+          time:localDatetimeValue(), perch:perchNew()});
+      }
+      // 兄弟から読み込んだPを混ぜない。「開いた記録自身にPがあったか」だけで判定する
+      //（混ぜると、位置なしの開いた記録の止まり木情報が、兄弟のPのせいで空にされる）
+      SCREENS._hadP = editing && validLatLon(coordStr(o.target_latitude), coordStr(o.target_longitude));
+      if(editing && !SCREENS._hadP){
+        const pk={ type:o.perch_type||((!o.perch_artificial && !o.perch_note
+          && (o.perch_size||o.perch_class||o.perch_species||o.perch_height))?'木':''),
+          size:o.perch_size||'', cls:o.perch_class||'', species:o.perch_species||'',
+          height:o.perch_height||'', art:o.perch_artificial||'', note:o.perch_note||'' };
+        if(Object.keys(pk).some(k=>pk[k])) SCREENS._pendingPerch=pk;
       }
       SCREENS._chosenId=o.species_id||''; SCREENS._obsEditing=editing;
       // 精度の扱い: null=保存時に既存値を維持 / ''=不明（手入力座標） / 数値=確定値。初期値は画面に表示している精度と一致させる
       SCREENS._acc=(o.gps_accuracy===''||o.gps_accuracy==null)?null:o.gps_accuracy;
-      const fEl=$('#obForm'); if(fEl){ ['input','change'].forEach(ev=>fEl.addEventListener(ev, ()=>{ SCREENS._dirty=true; })); }   // 文字・数値・日時・チェックの変更検知
+      // 距離帯は自動で入るが、手で選び直したらその指定を守る（「なし」も指定として扱う）
+      const bEl=document.querySelector('[data-seg="distance_band"]');
+      if(bEl) bEl.addEventListener('change', ()=>{ SCREENS._bandTouched=true; });
+      const iEl=document.querySelector('[data-seg="identification_status"]');
+      if(iEl) iEl.addEventListener('change', ()=>updateIdHint());   // 手で変えたときも案内を追随させる
+      // 齢を触ったかどうか。触っていない保存では、既存の飛翔の齢（空を含む）をそのまま残す
+      SCREENS._ageTouched=false;
+      const aEl=document.querySelector('[data-seg="age_class"]');
+      if(aEl) aEl.addEventListener('change', ()=>{ SCREENS._ageTouched=true; });
+      const fEl=$('#obForm'); if(fEl){ ['input','change'].forEach(ev=>fEl.addEventListener(ev, e=>{
+        if(SCREENS._flLoading) return;
+        SCREENS._dirty=true;
+        // 飛翔の高度は、変えた瞬間に対象の経路へ控える（↶や切り替えで入力を失わないように）
+        const t=e.target;
+        if(t && t.closest && (t.closest('[data-seg="fl_height"]') || t.getAttribute && t.getAttribute('data-other')==='fl_behavior')
+          && typeof flStoreInto==='function' && SCREENS._flSeg) flStoreInto(SCREENS._flSeg);
+      })); }   // 文字・数値・日時・チェックの変更検知
       if(arg.voice) SCREENS._dirty=true;   // 音声の下書きが入っている＝未保存の入力として離脱時に確認する
       renderQuickSpecies(); renderRecPanel(); renderMediaPanel(); updateSpRefLinks(o.species_name_snapshot);
       updateBreedHint(); updateIdHint();
       if(typeof startGpsIndicator==='function') startGpsIndicator();   // 観察者の位置は保存時に使う
-      _mapTimer=setTimeout(()=>{ initObsPosMap(); pfSyncFlightFields(); perchTabs(); perchLoad(); segChips(); }, 60);   // 地図は画面の主役なので最初から出す   // 編集で開いたときも選択済みの内容に合わせてヒントを出す
+      // 入力欄への読み込みは今すぐ行う。地図の用意（60ms待ち）を待つと、
+      // その前に保存された場合に空の入力欄で既存の値を上書きしてしまう
+      SCREENS._obsOnlyInit=null;
+      pfSyncFlightFields(); perchTabs(); perchLoad(); segChips(); nestLabelSync();
+      obsOnlyCapture();   // ここまでが「最初の状態」
+      // 個体数を利用者が触ったかを見分ける（巣だけの記録で、初期値の1羽を勝手に数えないため）。
+      // 値の比較ではなく操作で見分ける——一度変えて元に戻した「1羽」は利用者の指定なので守る
+      SCREENS._countTouched=false; SCREENS._nestTouchedMap=false; SCREENS._nestTouchedForm=false;
+      // この画面を開いたとき、巣が見えていたか。見えていなかった画面からの「巣を空にする」は
+      // 他の記録に配らない（見えないものは消せない、が原則）
+      SCREENS._hadNestAtOpen = !!(nestId(o)
+        || validLatLon(coordStr(o.nest_latitude), coordStr(o.nest_longitude))
+        || o.nest_state || o.nest_tree_species || o.nest_tree_height);
+      // 開いたとき見えていた巣の目印・位置・内容。伝播の照合はこれを基準にする
+      //（editing の元記録でも、引き継ぎで読み込んだ巣でも同じ扱いになる）
+      SCREENS._openNest = SCREENS._hadNestAtOpen
+        ? { id:nestId(o), pos:nestPosKey(o), fp:nestFpKey(o) } : null;
+      const _cEl=$('#obForm [name="count"]');
+      if(_cEl) ['input','change'].forEach(ev=>_cEl.addEventListener(ev, ()=>{ SCREENS._countTouched=true; }));
+      // 話して入れた個体数も、利用者が指定したものとして扱う（勝手に0羽へ書き換えない）
+      if(arg.voice && arg.voice.count) SCREENS._countTouched=true;
+      // 巣の記入欄を書いたら「巣を触った」扱いにする
+      ['nest_tree_species','nest_tree_height','nest_state'].forEach(n=>{
+        const el=$('#obForm [name="'+n+'"]');
+        if(el) ['input','change'].forEach(ev=>el.addEventListener(ev, ()=>{
+          SCREENS._nestTouchedForm=true;
+          syncDisabledStates();   // 最後の巣情報を消したら「経路だけ」に戻る——その瞬間に状態も合わせる
+        }));
+      });
+      // 音声の下書きのうち観察にしか置き場所が無い項目は、ここで入れる。
+      // こうすると「利用者が入れたもの」として扱われ、経路だけで保存しようとしたときに気づける
+      if(arg.voice){ const vd=arg.voice;
+        if(vd.detection_method) segSet('detection_method', vd.detection_method);
+        if(vd.distance_band) segSet('distance_band', vd.distance_band);
+        if(vd.direction) segSet('direction', vd.direction);
+        if(vd.behavior) String(vd.behavior).split('・').filter(Boolean).forEach(x=>{
+          const b=[...document.querySelectorAll('[data-seg="behavior"] button')].find(y=>y.textContent===x);
+          if(b && !b.classList.contains('on')) b.click(); });
+        updateBreedHint(); updateIdHint();
+      }
+      // 古い記録の位置は「止まり木・巣など」の共通の位置だった。巣の情報があるのに巣の位置が無いなら、
+      // その位置は巣かもしれない。勝手に決めず、移せるように案内だけ出す
+      PF_LEGACY_ID=null;
+      if(editing && pfPoints().length && !validLatLon(coordStr(o.nest_latitude), coordStr(o.nest_longitude))
+        && (o.nest_state||o.nest_tree_species||o.nest_tree_height)){
+        const ownP=PF_SEGS.find(sg=>sg.t==='P' && sg.srcUuid===o.uuid);
+        PF_LEGACY_ID=ownP?ownP.id:null;
+      }
+      legacyPosNoteSync();
+      _mapTimer=setTimeout(()=>{ initObsPosMap(); }, 60);   // 地図は画面の主役なので最初から出す   // 編集で開いたときも選択済みの内容に合わせてヒントを出す
     }
   };
 };
@@ -2285,6 +2552,22 @@ function pickObs(btn,field,val){
 function segVal(field){ const root=document.querySelector(`[data-seg="${field}"]`); if(!root) return '';
   if(root.tagName==='SELECT') return root.value;   // プルダウン版（「なし」は value="" なのでそのまま空）
   const on=root.querySelector('button.on'); return on? (on.textContent==='なし'?'':on.textContent):''; }
+// 選択欄に値を入れる。プルダウンでもボタン群でも同じ書き方で使えるようにする
+//（プルダウンに作り替えた項目にボタン向けの処理が残ると、音声や種名の選び直しが効かなくなる）
+function segSet(field, value){
+  const root=document.querySelector(`[data-seg="${field}"]`); if(!root) return false;
+  if(root.tagName==='SELECT'){
+    if(value && !Array.from(root.options).some(op=>op.value===value)){
+      const op=document.createElement('option'); op.value=value; op.textContent=value; root.appendChild(op);
+    }
+    root.value=value||'';
+    root.dispatchEvent(new Event('change',{bubbles:true}));
+    return true;
+  }
+  const b=[...root.querySelectorAll('button')].find(x=>x.textContent===(value||'なし'));
+  if(b && !b.classList.contains('on')) b.click();
+  return !!b;
+}
 function segVals(field){ return [...document.querySelectorAll(`[data-seg="${field}"] button.on`)].map(b=>b.textContent).filter(t=>t!=='なし').join('・'); }
 
 /* ---------- 入力中のライブガイド（Survey123の「条件つき質問」に相当） ----------
@@ -2303,7 +2586,7 @@ function updateBreedHint(){
   }else el.style.display='none';
   // 巣に関わる行動なら、巣・対象位置の入力欄を自動で開く（開くだけで閉じない——入力済みかもしれないため）。
   // 「さえずり」等のB該当だけでは開かない（最頻タグのため毎回開くと邪魔になる）
-  const fold=$('#nestFold');
+  const fold=$('#foldNest');
   if(fold && bs.split('・').some(b=>NEST_BEHAVIORS.includes(b))) fold.open=true;
 }
 function updateIdHint(){
@@ -2334,7 +2617,11 @@ function syncOther(field){
   const on=[...document.querySelectorAll(`[data-seg="${field}"] button.on`)].some(b=>b.textContent==='その他');
   inp.style.display=on?'':'none'; }
 function toggleMulti(btn){ btn.classList.toggle('on');
-  const seg=btn.closest('[data-seg]'); if(seg){ syncOther(seg.dataset.seg); segSumUpdate(seg.dataset.seg); } SCREENS._dirty=true;
+  const seg=btn.closest('[data-seg]'); if(seg){ syncOther(seg.dataset.seg); segSumUpdate(seg.dataset.seg); }
+  if(!SCREENS._flLoading) SCREENS._dirty=true;   // 経路の読み込みで押した分は「書きかけ」にしない
+  // 飛翔の行動は、押した瞬間に対象の経路へ控える（↶や切り替えで入力を失わないように）
+  if(seg && seg.dataset.seg==='fl_behavior' && !SCREENS._flLoading
+    && typeof flStoreInto==='function' && SCREENS._flSeg) flStoreInto(SCREENS._flSeg);
   if(seg && seg.dataset.seg==='behavior') updateBreedHint(); }
 // 折りたたみ式の複数選択で、閉じたままでも選択中の内容が見えるように見出しの表示を更新する
 //（要素が無い画面＝飛翔経路の行動・とまり木の項目では何もしない）
@@ -2350,8 +2637,7 @@ function spSearch(q){
     // 保存時は種名空＝未同定に強制されるため、画面の同定状態表示をそれに一致させる。
     // 同定状態のボタン群は観察入力にしかないので、飛翔経路の種名入力では何も起きない
     SCREENS._chosenId='';   // 内部に保持している種IDも消す（残すと「種名は空なのに前の鳥のIDが保存される」）
-    const seg=document.querySelector('[data-seg="identification_status"]');
-    if(seg){ [...seg.querySelectorAll('button')].forEach(b=>b.classList.toggle('on', b.textContent==='未同定')); updateIdHint(); }
+    segSet('identification_status','未同定'); updateIdHint();
     return; }
   // 内部の種IDを入力中の名前に常に追随させる（候補を選ばず別の種名へ直接書き換えたとき、
   // 前の鳥のIDが残って「新しい種名＋旧ID」の不整合データになるのを防ぐ。候補選択時は chooseSpecies が上書きする）
@@ -2367,12 +2653,10 @@ function spSearch(q){
 }
 function chooseSpecies(id,name){ $('#spInput').value=name; $('#spSuggest').innerHTML=''; updateSpRefLinks(name);
   SCREENS._dirty=true;
-  if(!name){ document.querySelectorAll('[data-seg="identification_status"] button').forEach(b=>{
-    b.classList.toggle('on', b.textContent==='未同定'); }); }
+  if(!name) segSet('identification_status','未同定');
   else if(segVal('identification_status')==='未同定'){
     // 「候補になし→未同定」の後に種を選び直したら「確定」へ戻す（「仮同定」等の手動選択は上書きしない）
-    document.querySelectorAll('[data-seg="identification_status"] button').forEach(b=>{
-      b.classList.toggle('on', b.textContent==='確定'); });
+    segSet('identification_status','確定');
   }
   updateIdHint();   // 種名クリア→未同定など、ボタンをプログラムで書き換えた場合もヒントを追随させる
   SCREENS._chosenId=id; }
@@ -2730,7 +3014,9 @@ let PF_MODE='P';          // 地図タップの意味
 let PF_SEGS=[];
 let PF_NEWLINE=true;      // 次にFで落とすとき、新しい線を始めるか
 function pfSet(mode){
-  if(PF_MODE!==mode) PF_NEWLINE=true;   // 切り替えたら、次の線は新しく始める
+  // P/F/N を押したら必ず「次は新しく始める」。同じボタンをもう一度押したときも同じ
+  //（押し直しても前の線が伸びる、という取り違えを防ぐ）
+  PF_NEWLINE=true;
   PF_MODE=mode;
   PF_SEL=-1;   // モードを選び直したら「新しく落とす」に戻す
   if(typeof segChips==='function') segChips();
@@ -2739,7 +3025,20 @@ function pfSet(mode){
 }
 function pfPoints(){ return PF_SEGS.filter(x=>x.t==='P'); }
 let PF_NEST=null;         // 巣の位置 [lat,lon]（1つだけ）
+let PF_NEST_ID='';        // 巣そのものの目印。同じ鳥の記録すべてに同じ値を入れて、1つの巣として扱う
 let PF_SEL=-1;            // 直している対象（PF_SEGSの番号）。-1 は「新しく落とす」
+// 「↶」用の履歴。この画面でした操作の直前の状態を積む。
+// 末尾を削る作りだと、既存記録を開いただけで保存済みの位置を消せてしまうため（2026-08-06 監査）
+let PF_HIST=[];
+let PF_SEQ=0;
+function pfId(){ return ++PF_SEQ; }   // 戻すときに同じものだと分かるように、落としたものに番号を振る
+function pfSnap(){
+  if(typeof flStoreInto==='function' && SCREENS._flSeg) flStoreInto(SCREENS._flSeg);   // 画面の値を経路へ控えてから状態を残す
+  PF_HIST.push(JSON.stringify({segs:PF_SEGS, nest:PF_NEST, newline:PF_NEWLINE, sel:PF_SEL, perch:PERCH_IDX,
+    pending:(SCREENS._pendingPerch||null), legacy:PF_LEGACY_ID,
+    nestTouched:!!SCREENS._nestTouchedMap}));   // 引き継ぎ待ちの情報・「地図で巣を触ったか」も一緒に戻す
+  if(PF_HIST.length>60) PF_HIST.shift();
+}
 // 落としたものの一覧を作る。P=止まり、L=経路（利用者の言い方に合わせる）
 function segLabel(i){
   let np=0, nl=0;
@@ -2755,6 +3054,145 @@ function segChips(){
   box.innerHTML='<span class="tiny muted" style="align-self:center; margin-right:4px;">直す：</span>'+items.join('');
   segEditBar();
 }
+// 観察にしか置き場所が無い入力のまとまり（class="obs-only"）をひとまとめに扱う。
+// 項目名を並べて覚えさせる作りは、追加のたびに数え漏れる（前の版で何度も起きた）
+function obsOnlyEls(){
+  const out=[];
+  document.querySelectorAll('.obs-only').forEach(box=>{
+    box.querySelectorAll('input,select,textarea,button').forEach(el=>out.push(el));
+  });
+  return out;
+}
+function obsOnlyVals(){
+  const parts=[];
+  document.querySelectorAll('.obs-only').forEach(box=>{
+    box.querySelectorAll('input,select,textarea').forEach(el=>{
+      parts.push(el.type==='checkbox' ? (el.checked?'1':'0') : String(el.value||''));
+    });
+    box.querySelectorAll('[data-seg]').forEach(seg=>{
+      parts.push([...seg.querySelectorAll('button.on')].map(b=>b.textContent).join('・'));
+    });
+  });
+  return parts.join('\u0001');
+}
+function obsOnlyChanged(){ return SCREENS._obsOnlyInit!=null && obsOnlyVals()!==SCREENS._obsOnlyInit; }
+// 入力を触れなくする理由は2つ（経路だけ／Pが無い）。別々に書くと互いに解除し合うので1か所にまとめる
+// 巣の情報があるか（位置でも、樹種・樹高・状態でも）。巣は止まった場所とは限らないので単独で記録できる
+function nestFilled(){
+  if(PF_NEST) return true;
+  const f=$('#obForm'); if(!f) return false;
+  return ['nest_tree_species','nest_tree_height','nest_state'].some(n=>{
+    const el=f.querySelector('[name="'+n+'"]'); return !!(el && String(el.value||'').trim());
+  });
+}
+// 観察の記録を作るかどうか。編集中は必ず作る（Pを消しても記録そのものは残すため）
+function willSaveObs(){ return !!SCREENS._obsEditing || pfPoints().length>0 || nestFilled(); }
+function isFlightOnly(){ return pfPaths().length>0 && !willSaveObs(); }
+function syncDisabledStates(){
+  const ps=pfPoints();
+  const flightOnly = isFlightOnly();
+  obsOnlyEls().forEach(el=>{ el.disabled=flightOnly; });
+  // 止まり木は P が無ければ置き場所が無い（この指定が後に来るように書く）
+  if(typeof PERCH_FIELDS!=='undefined')
+    PERCH_FIELDS.forEach(id=>{ const el=$('#'+id); if(el) el.disabled = flightOnly || ps.length===0; });
+  const note=$('#obsOnlyNote'); if(note) note.style.display=flightOnly?'':'none';
+}
+// 最初の状態を覚えておく（「触られたか」を見比べるため／戻すため）
+function obsOnlyCapture(){
+  document.querySelectorAll('.obs-only').forEach(box=>{
+    box.querySelectorAll('input,select,textarea').forEach(el=>{
+      el._initVal=(el.type==='checkbox')?el.checked:el.value; });
+    box.querySelectorAll('[data-seg]').forEach(seg=>{
+      seg._initOn=[...seg.querySelectorAll('button.on')].map(b=>b.textContent).join('・'); });
+  });
+  SCREENS._obsOnlyInit=obsOnlyVals();
+  // 画面の入力欄だけでなく、地図に置いた巣と「距離帯を指定したか」も一緒に控える
+  SCREENS._obsOnlyInitNest = PF_NEST ? PF_NEST.slice() : null;
+  SCREENS._obsOnlyInitBand = !!SCREENS._bandTouched;
+}
+// 触れない状態でも戻せるように、最初の状態へ戻す手段を用意する
+function obsOnlyReset(){
+  if(!confirm('観察にしか残せない項目の入力を、最初の状態に戻しますか？')) return;
+  document.querySelectorAll('.obs-only').forEach(box=>{
+    box.querySelectorAll('input,select,textarea').forEach(el=>{
+      const was=el.disabled; el.disabled=false;
+      if(el.type==='checkbox') el.checked=!!el._initVal;
+      else el.value=(el._initVal!=null?el._initVal:'');
+      el.disabled=was;
+    });
+    box.querySelectorAll('[data-seg]').forEach(seg=>{
+      const want=String(seg._initOn||'').split('・').filter(Boolean);
+      seg.querySelectorAll('button').forEach(b=>{
+        if(b.classList.contains('on')!==want.includes(b.textContent)){
+          const was=b.disabled; b.disabled=false; b.click(); b.disabled=was; }
+      });
+    });
+  });
+  const _nestChanged = JSON.stringify(PF_NEST) !== JSON.stringify(SCREENS._obsOnlyInitNest||null);
+  PF_NEST = SCREENS._obsOnlyInitNest ? SCREENS._obsOnlyInitNest.slice() : null;
+  SCREENS._bandTouched = !!SCREENS._obsOnlyInitBand;
+  if(PF_SEL===-2 && !PF_NEST) PF_SEL=-1;   // 消えたものを「直しています」と言わない
+  PF_NEWLINE=true;                          // 戻したあとは「新しく落とす」状態に
+  if(_nestChanged) nestTouch();             // 巣が実際に動いたときだけ「触った」にする
+  nestSync();
+  if(typeof updateBreedHint==='function') updateBreedHint();
+  if(typeof updateIdHint==='function') updateIdHint();
+  pfRedraw(); pfInfo(); segChips();
+  toast('観察の項目を最初の状態に戻しました');
+}
+// 古い記録の「止まり木・巣など」の位置を、巣の位置として移す。
+// 対象は「開いたときに読み込んだその位置」だけ。あとから落とした P を巻き込まない
+let PF_LEGACY_ID=null;
+function legacyPosNoteSync(){
+  const lp=$('#legacyPosNote'); if(!lp) return;
+  const alive = PF_LEGACY_ID!=null && PF_SEGS.some(x=>x.id===PF_LEGACY_ID && x.t==='P');
+  lp.style.display = (alive && !PF_NEST) ? '' : 'none';
+}
+function legacyPosToNest(){
+  const sg=PF_SEGS.find(x=>x.id===PF_LEGACY_ID && x.t==='P');
+  if(!sg){ legacyPosNoteSync(); return; }
+  // 開いた記録自身のPだけが対象。兄弟のPを巣に移すと、その兄弟の記録ごと消えてしまう
+  if(sg.srcUuid && SCREENS._obs && sg.srcUuid!==SCREENS._obs.uuid){ PF_LEGACY_ID=null; legacyPosNoteSync(); return; }
+  if(PF_NEST && !confirm('すでに指定した巣の位置を置き換えますか？')) return;
+  if(!confirm('この位置を「巣の位置」に移しますか？')) return;
+  pfSnap();
+  PF_NEST=[sg.pt[0], sg.pt[1]];
+  PF_SEGS.splice(PF_SEGS.indexOf(sg),1);
+  PF_SEL=-1; PERCH_IDX=0;
+  PF_LEGACY_ID=null;
+  nestTouch(); nestSync();
+  SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); perchTabs(); perchLoad(); segChips();
+}
+// 巣の位置は PF_NEST が正本。隠し欄・ラベル・古い記録の案内は必ずここで合わせる
+//（別々に書くと、どれか1つを更新し忘れて食い違う）
+// 巣をこの画面で触ったか。触っていない保存では、同じ鳥の他の記録に手を出さない
+//（開いて保存し直しただけで、他の記録の巣が消えるのを防ぐ）
+// 地図での操作（N配置・移動・削除）と、記入欄（樹種・樹高・状態）の変更は別々に覚える。
+// 一緒にすると、「↶」で地図だけ戻したときに記入欄の変更まで「触っていない」ことになる
+function nestTouch(){ SCREENS._nestTouchedMap=true; }
+function nestTouched(){ return !!(SCREENS._nestTouchedMap || SCREENS._nestTouchedForm); }
+// 修復メモへの追記。上限に達していても、いちばん新しい理由を必ず残す
+//（末尾に足して頭から切ると、今回の元の値が丸ごと消えてしまう）
+function repairNoteAdd(prev, msg){
+  const t=(typeof prev==='string'&&prev ? prev+' / ' : '')+msg;
+  if(t.length<=REPAIR_NOTE_MAX) return t;
+  const m=msg.length>REPAIR_NOTE_MAX-1 ? msg.slice(0,REPAIR_NOTE_MAX-1)+'…' : msg;
+  const room=REPAIR_NOTE_MAX-m.length-4;
+  return (room>0 && typeof prev==='string' && prev) ? ('…'+prev.slice(-(room))+' / '+m) : m;
+}
+function nestSync(){
+  const nl=$('#nestLat'), no=$('#nestLon');
+  if(nl) nl.value = PF_NEST? String(PF_NEST[0]) : '';
+  if(no) no.value = PF_NEST? String(PF_NEST[1]) : '';
+  nestLabelSync();
+  if(typeof legacyPosNoteSync==='function') legacyPosNoteSync();
+  // 巣の有無で「観察の項目を触れるか」も変わる（経路だけ→巣を置いた、等）。ここで必ず同期する
+  if(typeof syncDisabledStates==='function') syncDisabledStates();
+}
+function nestLabelSync(){
+  const lab=$('#nestPosLabel'); if(lab) lab.textContent = PF_NEST ? '巣の位置：指定済み' : '巣の位置：未指定';
+  const sm=$('#sumNest'); if(sm) sm.textContent = PF_NEST ? '位置：指定済み' : '地図のNで位置を指定';
+}
 function segEditBar(){
   const bar=$('#segEditBar'), msg=$('#segEditMsg');
   if(!bar) return;
@@ -2769,6 +3207,8 @@ function segEditBar(){
 function segPick(i){
   if(typeof perchStore==='function') perchStore();
   PF_SEL=(PF_SEL===i)?-1:i;   // もう一度押したら選択を外す
+  if(PF_SEL===-1) PF_NEWLINE=true;   // 「新しく落とす」に戻ったら、次の線も新しく始める
+  if(typeof pfSyncFlightFields==='function') pfSyncFlightFields();   // 高度・行動の欄を選んだ経路に切り替える
   // 止まりを選んだら「止まっていたもの」の入力もその P に合わせる
   if(PF_SEL>=0 && PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='P'){
     const ps=pfPoints(); const idx=ps.indexOf(PF_SEGS[PF_SEL]);
@@ -2776,19 +3216,22 @@ function segPick(i){
   }
   segChips(); pfRedraw(); pfInfo();
 }
-function segEditDone(){ PF_SEL=-1; segChips(); pfRedraw(); pfInfo(); }
+function segEditDone(){ PF_SEL=-1; PF_NEWLINE=true; segChips(); pfRedraw(); pfInfo(); pfSyncFlightFields(); }
 function segEditDelete(){
   if(PF_SEL===-2){
     if(!confirm('巣の位置を消しますか？')) return;
+    pfSnap();
     PF_NEST=null;
-    const nl=$('#nestLat'), no=$('#nestLon'); if(nl) nl.value=''; if(no) no.value='';
-    const lab=$('#nestPosLabel'); if(lab) lab.textContent='巣の位置：未指定';
+    nestTouch(); nestSync();
   } else {
     const sg=PF_SEGS[PF_SEL]; if(!sg) return;
     if(!confirm(segLabel(PF_SEL)+' を消しますか？')) return;
+    pfSnap();
     PF_SEGS.splice(PF_SEL,1);
+    PF_NEWLINE=true;   // 消したあとのタップが、残っている別の経路の続きにならないように
   }
-  PF_SEL=-1; SCREENS._dirty=true;
+  PF_SEL=-1; PF_NEWLINE=true;   // 何を消したあとでも、次のタップは新しく始める
+  SCREENS._dirty=true;
   if(typeof perchTabs==='function'){ PERCH_IDX=0; perchTabs(); perchLoad(); }
   segChips(); pfRedraw(); pfInfo(); pfSyncFlightFields();
 }
@@ -2798,38 +3241,59 @@ function perchNew(){ return { type:'', size:'', cls:'', species:'', height:'', a
 // 画面の入力欄 → いま選んでいる P へ書き戻す
 function perchStore(){
   const ps=pfPoints(); const sg=ps[PERCH_IDX]; if(!sg) return;
-  sg.perch=sg.perch||perchNew();
   const v=id=>{ const el=$('#'+id); return el?el.value:''; };
-  sg.perch.type=v('perchType'); sg.perch.size=v('perchSize'); sg.perch.cls=v('perchClass');
-  sg.perch.species=v('perchSpecies'); sg.perch.height=v('perchHeight');
-  sg.perch.art=v('perchArtSel'); sg.perch.note=v('perchNote');
-  SCREENS._dirty=true;
+  const next={ type:v('perchType'), size:v('perchSize'), cls:v('perchClass'),
+    species:v('perchSpecies'), height:v('perchHeight'), art:v('perchArtSel'), note:v('perchNote') };
+  const cur=sg.perch||perchNew();
+  // 実際に変わったときだけ「書きかけ」にする（チップを選んだだけで破棄確認が出ないように）
+  const changed=Object.keys(next).some(k=>String(cur[k]||'')!==String(next[k]||''));
+  sg.perch=next;
+  if(changed) SCREENS._dirty=true;
 }
 function perchTypeChanged(){ perchStore(); perchSyncBranch(); }
 // 種類に応じて出す欄を切り替える
 function perchSyncBranch(){
   const t=(($('#perchType')||{}).value)||'';
   const tr=$('#perchTree'), ar=$('#perchArt'), nt=$('#perchNoteWrap');
-  if(tr) tr.style.display=(t==='木')?'':'none';
-  if(ar) ar.style.display=(t==='人工物')?'':'none';
-  if(nt) nt.style.display=(t==='人工物'||t==='その他')?'':'none';
+  // 知らない種類（取込データ等）は、どの欄に値があるか分からないので全部見せる
+  const unknown = t && t!=='木' && t!=='人工物' && t!=='その他';
+  if(tr) tr.style.display=(t==='木'||unknown)?'':'none';
+  if(ar) ar.style.display=(t==='人工物'||unknown)?'':'none';
+  if(nt) nt.style.display=(t==='人工物'||t==='その他'||unknown)?'':'none';
 }
 // いま選んでいる P の内容を画面へ読み込む
 function perchLoad(){
   const ps=pfPoints(); const sg=ps[PERCH_IDX];
-  const set=(id,val)=>{ const el=$('#'+id); if(el) el.value=val||''; };
+  const set=(id,val)=>{
+    const el=$('#'+id); if(!el) return;
+    // 古い記録の値が今の選択肢に無いことがある。そのときは選択肢を足して残す（開いただけで消えないように）
+    if(el.tagName==='SELECT' && val && !Array.from(el.options).some(op=>op.value===val)){
+      const op=document.createElement('option'); op.value=val; op.textContent=val; el.appendChild(op);
+    }
+    el.value=val||'';
+  };
   const pc=(sg&&sg.perch)||perchNew();
   set('perchType',pc.type); set('perchSize',pc.size); set('perchClass',pc.cls);
   set('perchSpecies',pc.species); set('perchHeight',pc.height);
   set('perchArtSel',pc.art); set('perchNote',pc.note);
   perchSyncBranch();
 }
-function perchPick(i){ perchStore(); PERCH_IDX=i; perchTabs(); perchLoad(); pfRedraw(); }
+function perchPick(i){
+  perchStore(); PERCH_IDX=i;
+  // 地図で光るものと食い違わないよう、「直す」の選択もその P に合わせる
+  const sg=pfPoints()[i]; const at=sg?PF_SEGS.indexOf(sg):-1;
+  if(at>=0) PF_SEL=at;
+  perchTabs(); perchLoad();
+  if(typeof segChips==='function') segChips();
+  if(typeof pfRedraw==='function'){ pfRedraw(); pfInfo(); }
+}
 // P が複数あるときは P1・P2… のタブを出して、それぞれ別に選べるようにする
+const PERCH_FIELDS=['perchType','perchSize','perchClass','perchSpecies','perchHeight','perchArtSel','perchNote'];
 function perchTabs(){
   const box=$('#perchTabs'), which=$('#perchWhich'); if(!box) return;
   const ps=pfPoints();
   if(PERCH_IDX>=ps.length) PERCH_IDX=Math.max(0, ps.length-1);
+  if(typeof syncDisabledStates==='function') syncDisabledStates();   // 触れるかどうかは1か所で決める
   if(ps.length<=1){
     box.innerHTML='';
     if(which) which.textContent = ps.length? '地図の P について入力しています' : '地図で P を落とすと入力できます';
@@ -2840,10 +3304,70 @@ function perchTabs(){
 }
 
 function pfPaths(){ return PF_SEGS.filter(x=>x.t==='F' && x.pts.length>=2); }
+// 画面の高度・行動を、いま画面が指している経路（seg.fl）へ控える
+function flStoreInto(seg){
+  if(!seg || seg.t!=='F') return;
+  seg.fl={ height:segVal('fl_height')||'', behavior:otherMerge(segVals('fl_behavior'),'fl_behavior')||'' };
+}
+// 経路の高度・行動を画面へ読み込む。
+// 「その他（記入内容）」は標準の「その他」ボタン＋記入欄に分解して出す。
+// 選択肢に無いそれ以外の値は、印付きのボタンをその場で足して見せる（読み込み前に前回の分は片付ける）
+function flLoadFrom(seg){
+  SCREENS._flLoading=true;
+  try{
+    const fl=(seg&&seg.fl)||{height:'',behavior:''};
+    segSet('fl_height', fl.height||'');
+    const segEl=document.querySelector('[data-seg="fl_behavior"]');
+    if(segEl){
+      [...segEl.querySelectorAll('button[data-dyn]')].forEach(b=>b.remove());   // 前の経路で足したボタンを片付ける
+      const parsed=otherParse(fl.behavior||'');
+      const want=String(parsed.v||'').split('・').filter(Boolean);
+      const inp=document.querySelector('[data-other="fl_behavior"]');
+      if(inp) inp.value=parsed.other||'';   // 記入欄は経路ごとに入れ替える（前の経路の記入を持ち越さない）
+      // まず今の選択を全部外す
+      [...segEl.querySelectorAll('button.on')].forEach(b=>b.click());
+      want.forEach(vv=>{
+        let b=[...segEl.querySelectorAll('button')].find(x=>x.textContent===vv);
+        if(!b){
+          const sample=segEl.querySelector('button');
+          if(sample){ b=sample.cloneNode(false); b.textContent=vv; b.classList.remove('on');
+            b.setAttribute('data-dyn','1'); segEl.appendChild(b); }
+        }
+        if(b && !b.classList.contains('on')) b.click();
+      });
+      syncOther('fl_behavior');
+    }
+  } finally { SCREENS._flLoading=false; }
+}
 function pfSyncFlightFields(){
-  const on=pfPaths().length>0;
+  // 高度・行動・時刻は「どの経路の値か」で決まる。値は経路そのもの（seg.fl / seg.ov）に持たせ、
+  // 画面の欄は「経路が1本のときだけ出る、その経路の写し」にする。
+  // 画面に置いたままにすると、経路を消したり足したりしたとき別の経路に値が化ける
+  // 編集対象は「一覧で選んでいる経路」。選んでいなければ、経路が1本のときだけその経路
+  const selSeg=(PF_SEL>=0)?PF_SEGS[PF_SEL]:null;
+  const one=(selSeg && selSeg.t==='F') ? selSeg : ((pfPaths().length===1)?pfPaths()[0]:null);
+  const prev=SCREENS._flSeg||null;
+  if(prev && prev!==one && PF_SEGS.includes(prev)) flStoreInto(prev);   // 隠す前に、いままでの経路へ控える
+  if(one!==prev && one) flLoadFrom(one);
+  SCREENS._flSeg=one;
+  const on=!!one;
   const h=$('#flHeightWrap'); if(h) h.style.display=on?'':'none';
   const b=$('#flBehWrap'); if(b) b.style.display=on?'':'none';
+  if(typeof syncDisabledStates==='function') syncDisabledStates();
+  if(typeof legacyPosNoteSync==='function') legacyPosNoteSync();
+  const t=$('#flTimeWrap');
+  if(t) t.style.display=one?'':'none';
+  const ts=$('#flStart'), te=$('#flEnd');
+  if(ts) ts.value = one ? (('start' in (one.ov||{})) ? one.ov.start : (one.times[0]||'')) : '';
+  if(te) te.value = one ? (('end'   in (one.ov||{})) ? one.ov.end   : (one.times[one.times.length-1]||'')) : '';
+}
+// 飛翔の時刻を手で直したら、その経路に覚えさせる（空にしたのも「空という指定」）
+function flTimeEdit(which){
+  const one=SCREENS._flSeg; if(!one) return;   // 画面が指している経路（選択中 or 唯一の1本）
+  one.ov=one.ov||{};
+  const el=$(which==='start'?'#flStart':'#flEnd'); if(!el) return;
+  one.ov[which]=el.value;
+  SCREENS._dirty=true;
 }
 function pfInfo(){
   const el=$('#mapInfo'); if(!el) return;
@@ -2855,50 +3379,73 @@ function pfInfo(){
   el.textContent=parts.join(' ・ ');
 }
 function pfDrop(lat,lon){
+  pfSnap();   // 「↶」で戻せるように、変える前の状態を控える
   const now=localDatetimeValue();
   // 「直す」で対象が選ばれているときは、新しく落とさずその対象を動かす／描き足す
   if(PF_SEL===-2){
     PF_NEST=[lat,lon];
-    const nl=$('#nestLat'), no=$('#nestLon');
-    if(nl) nl.value=String(lat); if(no) no.value=String(lon);
-    SCREENS._dirty=true; pfRedraw(); pfInfo(); return;
+    nestTouch(); nestSync();
+    SCREENS._dirty=true; pfRedraw(); pfInfo(); segChips(); return;
   }
   if(PF_SEL>=0){
     const sg=PF_SEGS[PF_SEL];
     if(sg){
-      if(sg.t==='P'){ sg.pt=[lat,lon]; }
-      else { sg.pts.push([lat,lon]); sg.times.push(now); }
+      // 位置を変えたら「もとの記録のP」ではなくなる。距離帯も新しい位置から決め直す
+      if(sg.t==='P'){
+        sg.pt=[lat,lon]; sg.fromExisting=false;
+        // 古い記録の案内は「開いたときに読み込んだその位置」だけが対象。動かしたら終わりにする
+        if(sg.id===PF_LEGACY_ID){ PF_LEGACY_ID=null; }
+      }
+      else { sg.pts.push([lat,lon]); sg.times.push(now); sg.edited=true; }
       SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); return;
     }
   }
   if(PF_MODE==='N'){
     PF_NEST=[lat,lon];
-    const nl=$('#nestLat'), no=$('#nestLon');
-    if(nl) nl.value=String(lat); if(no) no.value=String(lon);
-    const lab=$('#nestPosLabel'); if(lab) lab.textContent='巣の位置：指定済み';
+    nestTouch(); nestSync();
     SCREENS._dirty=true; pfRedraw(); pfInfo(); segChips(); return;
   }
   if(PF_MODE==='P'){
-    PF_SEGS.push({t:'P', pt:[lat,lon], time:now, perch:perchNew()});
+    // 位置が無かった古い記録から引き継ぐ止まり木情報があれば、最初の P に移す
+    let _pk=perchNew();
+    if(SCREENS._pendingPerch){ _pk=SCREENS._pendingPerch; SCREENS._pendingPerch=null; }
+    PF_SEGS.push({t:'P', id:pfId(), pt:[lat,lon], time:now, perch:_pk});
     PERCH_IDX=pfPoints().length-1;   // 落としたばかりの P を編集対象にする
     perchTabs(); perchLoad();
   } else {
     const last=PF_SEGS[PF_SEGS.length-1];
-    if(PF_NEWLINE || !last || last.t!=='F'){ PF_SEGS.push({t:'F', pts:[[lat,lon]], times:[now]}); PF_NEWLINE=false; }
-    else { last.pts.push([lat,lon]); last.times.push(now); }
+    if(PF_NEWLINE || !last || last.t!=='F'){ PF_SEGS.push({t:'F', id:pfId(), pts:[[lat,lon]], times:[now], fl:{height:'',behavior:''}}); PF_NEWLINE=false; }
+    else { last.pts.push([lat,lon]); last.times.push(now); last.edited=true; }
   }
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips();
 }
 function obsMapUndo(){
-  const last=PF_SEGS[PF_SEGS.length-1]; if(!last) return;
-  if(last.t==='P') PF_SEGS.pop();
-  else { last.pts.pop(); last.times.pop(); if(!last.pts.length) PF_SEGS.pop(); }
+  // この画面でした操作を1つ戻す。開いただけの状態より前には戻さない
+  if(!PF_HIST.length){ toast('戻せる操作はありません'); return; }
+  // 戻すのは地図の操作（位置・経路・巣）だけ。あとから書いた「止まっていたもの」や
+  // 飛翔の時刻まで巻き戻すと、気づかないうちに入力が消える（2026-08-06 監査）
+  const cur=new Map(); PF_SEGS.forEach(sg=>{ if(sg.id!=null) cur.set(sg.id, sg); });
+  const st=JSON.parse(PF_HIST.pop());
+  PF_SEGS=st.segs; PF_NEST=st.nest; PF_NEWLINE=st.newline; PF_SEL=st.sel; PERCH_IDX=st.perch;
+  PF_SEGS.forEach(sg=>{ const nowSg=cur.get(sg.id); if(!nowSg) return;
+    if(nowSg.perch) sg.perch=nowSg.perch;
+    if(nowSg.ov) sg.ov=nowSg.ov;
+    if(nowSg.fl) sg.fl=nowSg.fl;   // 高度・行動も「↶」で巻き戻さない（入力は地図の操作ではない）
+  });
+  SCREENS._pendingPerch=st.pending||null;
+  PF_LEGACY_ID=(st.legacy==null)?null:st.legacy;
+  SCREENS._nestTouchedMap=!!st.nestTouched;   // 地図の操作を戻したら、その分の「触った」も戻す（記入欄の変更は残る）
+  nestSync();
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); perchTabs(); perchLoad(); segChips();
 }
 function obsMapClear(){
-  if(!PF_SEGS.length) return;
-  if(!confirm('地図に落とした内容（止まりと経路）を全部消しますか？')) return;
+  if(!PF_SEGS.length && !PF_NEST) return;
+  if(!confirm('地図に落とした内容（止まり・経路・巣）を全部消しますか？')) return;
+  pfSnap();
   PF_SEGS=[]; PF_NEWLINE=true; PERCH_IDX=0; PF_SEL=-1;
+  if(PF_NEST) nestTouch();   // 巣が無かったなら、巣を触ったことにはしない
+  PF_NEST=null;
+  nestSync();
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); perchTabs(); perchLoad(); segChips();
 }
 let pfLayer=null;
@@ -2957,8 +3504,11 @@ function initObsPosMap(){
   const _p0=pfPoints()[0], _f0=pfPaths()[0];
   if(_p0){ center=_p0.pt; zoom=16; }
   else if(_f0){ center=_f0.pts[0]; zoom=15; }
+  else if(PF_NEST){ center=PF_NEST; zoom=16; }   // 巣だけがある記録でも画面に入るように
   mapObj=createBaseMap('obsPosMap', center, zoom, {});
-  mapObj.on('click', e=>{ if(flightCrossMode) return; pfDrop(e.latlng.lat, e.latlng.lng); });
+  // 観察の地図は自前の十字ボタンを持つ。飛翔画面の十字モードには影響されない
+  //（見ないと、飛翔画面で十字を使った端末では地図タップが全部効かなくなる）
+  mapObj.on('click', e=>{ pfDrop(e.latlng.lat, e.latlng.lng); });
   addPfControl(mapObj);
   addCrosshairControl(mapObj, (la2,lo2)=>pfDrop(la2,lo2), '＋');
   // 同じ調査の他の飛翔経路を薄く重ねる
@@ -2970,6 +3520,7 @@ function initObsPosMap(){
   }); }
   pfRedraw(); pfInfo();
   const all=[]; PF_SEGS.forEach(sg=>{ if(sg.t==='P') all.push(sg.pt); else sg.pts.forEach(x=>all.push(x)); });
+  if(PF_NEST) all.push(PF_NEST);
   if(all.length>1){ try{ mapObj.fitBounds(all,{padding:[40,40]}); }catch(e){} }
 }
 // 地図の上の P / F 切替（アイコンのみ・仕様書）
@@ -3004,27 +3555,59 @@ function setObsPos(lat,lon){
   obsPosMarkerUpdate(lat,lon);
 }
 // 経路1本から飛翔レコードを作る。検査に落ちたら null を返す（保存は始めない）
-function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsReview, override){
+function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsReview, override, useForm){
   if(!seg || seg.pts.length<2) return null;
   const ov=override||{};
-  const st=ov.start || seg.times[0] || localDatetimeValue();
-  const en=ov.end   || seg.times[seg.times.length-1] || '';
+  // 手で空にしたのも「空という指定」として扱う（||で判定すると自動の時刻に戻ってしまう）
+  const st=('start' in ov) ? ov.start : (seg.times[0] || localDatetimeValue());
+  const en=('end'   in ov) ? ov.end   : (seg.times[seg.times.length-1] || '');
   for(const pair of [[st,'開始時刻'],[en,'終了時刻']]){
     if(pair[0] && !okStamp(pair[0])){ toast('飛翔の'+pair[1]+'が正しくありません'); return null; }
   }
   if(st && en && en<st){ toast('飛翔の終了時刻が開始時刻より前です'); return null; }
+  const spId = name ? (SCREENS._chosenId||(speciesByName(name)||{}).species_id||'') : '';
+  // 高度・行動は経路そのもの（seg.fl）から。画面の欄は写しにすぎない
+  const heightRaw = (seg.fl&&seg.fl.height)||'';
+  const behaviorNew = (seg.fl&&seg.fl.behavior)||'';
+  // まとめ読みした既存の経路（srcUuid）は、その記録を基底にして、
+  // 共有の項目（種名・個体数・齢・結び付け）と経路・時刻だけを上書きする。
+  // 高度・行動は、経路が1本だけで画面に出ているとき（＝開いたとき読み込んである）だけ画面の値。
+  // メモ・要確認・添付・個体ラベル・作成日時などは、その記録のまま
+  const cur = seg.srcUuid ? (DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===seg.srcUuid) : null;
+  if(cur){
+    return Object.assign({}, cur, {
+      survey_uuid:svUuid,
+      species_id:spId, species_name_snapshot:name,
+      // 経路を触っていなければ、元の点をそのまま残す（検査で除いた点を黙って消さない）
+      path:(seg.srcUuid && !seg.edited) ? ((cur.path||[]).slice()) : seg.pts.slice(),
+      start_time:st, end_time:en,
+      // 既存の記録では、空は空のまま残す（触っていない項目を「不明」に化けさせない）。
+      // 齢は画面で触ったときだけそろえる（触っていないのに観察の齢で埋めない）
+      age_class:(SCREENS._ageTouched ? ageCls : (cur.age_class||'')), count:count, individual_key:indKey||'',
+      height_class: heightRaw,
+      behavior: behaviorNew,
+    });
+  }
   return { uuid:uuid(), survey_uuid:svUuid,
-    species_id: name ? (SCREENS._chosenId||(speciesByName(name)||{}).species_id||'') : '',
+    species_id:spId,
     species_name_snapshot:name,
     path:seg.pts.slice(), start_time:st, end_time:en,
-    height_class:segVal('fl_height')||'不明',
+    height_class:heightRaw||'不明',
     age_class:ageCls||'不明', individual_label:'',
-    behavior:otherMerge(segVals('fl_behavior'),'fl_behavior'),
+    behavior:behaviorNew,
     count:count, memo:String(memo||'').trim(), needs_review:!!needsReview,
     individual_key:indKey||'',
     audio:[], media:[] };
 }
+let SAVE_BUSY=false;   // 添付の付け替えなど、保存の後処理が終わるまで真
 function saveObs(u, svUuid, editing, cont){
+  if(SAVE_BUSY){ toast('保存の処理中です。少し待ってください'); return; }
+  if(typeof flStoreInto==='function' && SCREENS._flSeg) flStoreInto(SCREENS._flSeg);   // 画面の高度・行動を経路へ控える
+  // 録音中・写真の取り込み中は、何も変えずに止める。
+  // 途中で保存すると、保存したあとの画面移動が録音の確認で止まり、
+  // 地図の中身だけ消えた状態が残る。そのあと「書きかけを破棄」で保存済みの記録まで消えてしまう
+  if(recBusy()){ toast('録音中です。録音を停止してから保存してください', 5000); return; }
+  if(mediaBusy()){ toast('写真・動画の取り込み中です。終わってから保存してください', 5000); return; }
   if(typeof perchStore==='function') perchStore();   // 開いている「止まっていたもの」の入力を取り込む
   const f=$('#obForm'); const g=n=>{const el=f.querySelector(`[name="${n}"]`); return el?el.value:'';};
   const name=$('#spInput').value.trim();
@@ -3036,7 +3619,11 @@ function saveObs(u, svUuid, editing, cont){
   const cntEl=f.querySelector('[name="count"]');
   if(cntEl && cntEl.validity && cntEl.validity.badInput){ toast('個体数は数値で入力してください'); return; }
   const rawCnt=g('count').trim();
-  const count = rawCnt==='' ? 1 : Number(rawCnt);   // 空は1（入力欄の初期値と同じ。以前は黙って0になっていた）
+  let count = rawCnt==='' ? 1 : Number(rawCnt);   // 空は1（入力欄の初期値と同じ。以前は黙って0になっていた）
+  // 鳥を見ていない「巣だけ」の記録では、初期値の1羽をそのまま数えない（巣を見つけただけで個体数が増えてしまう）
+  const nestOnly = !editing && !pfPoints().length && !pfPaths().length && nestFilled()
+    && !SCREENS._countTouched;
+  if(nestOnly) count=0;
   // 切り捨てる前の値で検査する（Math.trunc(-0.5)は-0になり負数検査をすり抜け、9999.9は確認を回避するため）
   if(!Number.isInteger(count) || count<0){ toast('個体数は0以上の整数で入力してください'); return; }
   if(count>9999 && !confirm(`個体数が${count}と非常に大きいですが、このまま保存しますか？`)) return;
@@ -3052,6 +3639,39 @@ function saveObs(u, svUuid, editing, cont){
     if(!confirm('対象位置（止まり木・巣）の数値が正しくありません。対象位置なしで保存しますか？')) return;
     tlat=''; tlon='';
   }
+
+  // 巣の目印をここで決める。PF_NEST_ID へ書くのは保存がすべて成功してから。
+  //（途中で保存が止まったのに決めかけの目印が残ると、次の保存で照合されずに別の巣と混ざる）
+  const resolvedNestId = nestFilled()
+    ? (PF_NEST_ID || (!nestTouched() ? '' : (function(){
+        const ik=(SCREENS._obs&&SCREENS._obs.individual_key)||((base||{}).individual_key||'');
+        if(ik){ const found=new Set(); const fPos=new Map(); const fFp=new Map();
+          // 候補は画面・件数と同じ「生きている記録」だけから集める。
+          // ごみ箱まで見ると、画面では1つの巣が保存時だけ複数候補になって分裂する
+          DB.obsOf(svUuid).forEach(o=>{ if(o.individual_key===ik && nestId(o)){
+            const nid0=nestId(o); found.add(nid0);
+            if(!fPos.has(nid0)) fPos.set(nid0, new Set());
+            fPos.get(nid0).add(nestPosKey(o));
+            if(!fFp.has(nid0)) fFp.set(nid0, new Set());
+            fFp.get(nid0).add(nestFpKey(o)); } });
+          // 「開いたときの巣」（無ければ、いま入力している巣の位置か内容）と一致する候補を集め、
+          // 1つに定まるときだけ引き継ぐ。同一性は開いたもので決まる（動かした先では決めない）
+          const on=SCREENS._openNest;
+          const pos=nestPosKey({nest_latitude:PF_NEST?PF_NEST[0]:'', nest_longitude:PF_NEST?PF_NEST[1]:''});
+          const curFp=nestFpKey({nest_latitude:PF_NEST?PF_NEST[0]:'', nest_longitude:PF_NEST?PF_NEST[1]:'',
+            nest_state:g('nest_state'), nest_tree_species:g('nest_tree_species'), nest_tree_height:g('nest_tree_height')});
+          const cands=[...found].filter(tid=>{
+            const ps=fPos.get(tid)||new Set(), fs=fFp.get(tid)||new Set();
+            if(on) return on.id===tid || (nestPosValid(on.pos) && ps.has(on.pos)) || fs.has(on.fp);
+            return (nestPosValid(pos) && ps.has(pos)) || fs.has(curFp);
+          });
+          if(cands.length===1) return cands[0];
+        }
+        return uuid();
+      })()))
+    // 巣の欄が空でも、この画面で巣を触っていないなら既存の目印は保持する
+    //（目印だけを持つ記録が、メモを直して保存しただけで目印を失わないように）
+    : (nestTouched() ? '' : (PF_NEST_ID||''));
 
   const rec = Object.assign({}, base||{uuid:u}, {
     uuid:u, survey_uuid:svUuid,
@@ -3072,8 +3692,19 @@ function saveObs(u, svUuid, editing, cont){
     perch_type:'', perch_size:'', perch_class:'', perch_artificial:'', perch_note:'',
     perch_species:'', perch_height:'',
     // 営巣木・巣は記録に1つ（止まっていた場所とは限らないので別に持つ）
-    nest_latitude: (($('#nestLat')&&$('#nestLat').value)||'').trim(),
-    nest_longitude: (($('#nestLon')&&$('#nestLon').value)||'').trim(),
+    // 巣の位置は地図の状態（PF_NEST）を正本にする。隠し欄と食い違っても取り違えない
+    nest_latitude: PF_NEST? String(PF_NEST[0]) : '',
+    nest_longitude: PF_NEST? String(PF_NEST[1]) : '',
+    // 巣の目印。既に同じ鳥のまとまりに目印が1つだけあるなら、それを引き継ぐ
+    //（新しい目印を発行すると、同じ巣が2つに分かれて数えられてしまう）
+    nest_id: resolvedNestId,
+    // 取込・同期で入ってきたおかしな巣座標（片方だけ・範囲外）は画面に出せない。
+    // 黙って消さず、元の値を記録内に控えてから空にする
+    repair_note: (function(){
+      const b=base||{}; const a=coordStr(b.nest_latitude), c=coordStr(b.nest_longitude);
+      if(!editing || PF_NEST || (a==='' && c==='') || validLatLon(a,c)) return b.repair_note;
+      return repairNoteAdd(b.repair_note, '巣の位置が不正だったため空にしました（元の値: '+a+','+c+'）');
+    })(),
     nest_tree_species: g('nest_tree_species'), nest_tree_height: g('nest_tree_height'), nest_state: g('nest_state'),
     identification_status: name? idStatus : '未同定',
     confidence: segVal('confidence'), needs_review: $('#needsReview').checked,
@@ -3084,6 +3715,18 @@ function saveObs(u, svUuid, editing, cont){
     individual_key: (SCREENS._obs&&SCREENS._obs.individual_key)||((base||{}).individual_key||'')
       || (cont==='flight' ? uuid() : ''),
   });
+
+  // 観察者の位置は画面に出さないので、ここでGPSの最新の測位から入れる（Pは鳥がいた場所）。
+  // 新規では、画面を開いた頃の古い測位を使わない。取れなければ空にする
+  //（古い位置を残すと、そこからの距離で誤った距離帯が入ってしまう）。
+  // 検査より前に確定させる——実際に保存する位置で範囲を見るため
+  // 新規では、保存した時点の測位をいちばん信用する（歩いて移動していても正しい位置になる）。
+  // 測位が取れないときだけ、「保存して続けて」で引き継いだ位置を使う
+  if(!editing){
+    const fx=freshFix();
+    if(fx){ rec.latitude=fx.lat.toFixed(6); rec.longitude=fx.lon.toFixed(6); rec.gps_accuracy=Math.round(fx.acc); }
+    else if(!SCREENS._keepPos){ rec.latitude=''; rec.longitude=''; rec.gps_accuracy=''; }
+  }
 
   /* --- 警告して通す検査（怪しい入力は「要確認」を自動で付けて、記録自体は残す。鳥は待ってくれない） --- */
   const reasons=[];
@@ -3105,92 +3748,389 @@ function saveObs(u, svUuid, editing, cont){
       }
     }
   }
-  if(count===0 && rec.detection_method!=='痕跡') reasons.push('個体数が0です');   // 痕跡（羽毛・糞）は0でもあり得る
-  if(lat && lon && !inJapanBounds(lat,lon)) reasons.push('位置が日本の範囲外です');
+  // 痕跡（羽毛・糞）や「巣だけ」の記録は0でもあり得る
+  if(count===0 && rec.detection_method!=='痕跡' && !nestOnly) reasons.push('個体数が0です');
+  if(rec.latitude && rec.longitude && !inJapanBounds(rec.latitude, rec.longitude)) reasons.push('位置が日本の範囲外です');
   // 自動付与は新規作成時のみ。編集時はチェックボックスの状態＝利用者の判断をそのまま尊重する
   //（編集のたびに付け直すと「仮同定のまま様子見にしたいのに、開いて保存するたび要確認が復活して
   //   永遠に外せない」ループになる。編集時も理由の警告トーストは出すので、見落としにはならない）
   if(reasons.length && !rec.needs_review && !editing) rec.needs_review=true;
 
   // 観察者の位置は画面に出さないので、ここでGPSの最新の測位から入れる（Pは鳥がいた場所）
-  if(!editing){
-    const fx=freshFix();
-    if(fx){ rec.latitude=fx.lat.toFixed(6); rec.longitude=fx.lon.toFixed(6); rec.gps_accuracy=Math.round(fx.acc); }
-  }
   /* --- 地図に落とした並びから記録を作る ---
      P の数だけ観察、経路の数だけ飛翔。2件以上になるときは同じ個体として結び付ける。
      検査は全部先に済ませ、書き込みは飛翔→観察の順。途中で失敗したら書いた分を全部戻す */
-  const pts = editing ? [] : pfPoints();
-  const paths = editing ? [] : pfPaths();
-  const nRec = editing ? 1 : (pts.length + paths.length);
-  if(!editing && nRec===0){
-    toast('地図で P（止まっていた場所）か F（飛翔経路）を落としてください', 4000); return; }
+  const pts = pfPoints();
+  const paths = pfPaths();
+  // 点が1つだけの経路は保存できない。黙って捨てず、直せるように知らせる
+  if(PF_SEGS.some(sg=>sg.t==='F' && sg.pts.length<2)){
+    toast('点が1つだけの経路があります。2点目を足すか、下の一覧から選んで消してください', 6000); return; }
+  // 経路が無いのに飛翔専用の入力（高度・飛翔の行動）が残っているときは、黙って捨てない
+  if(!paths.length && (segVal('fl_height') || segVals('fl_behavior'))){
+    if(!confirm('飛翔高度・飛翔の行動が入力されていますが、経路（F）がありません。\n'
+      +'このまま保存するとこれらの入力は保存されません。\n\n'
+      +'保存しますか？（キャンセルして F で経路を描くこともできます）')) return;
+  }
+  // 編集では、Pを消しても記録そのものは残す（位置だけ空になる）
+  // 巣だけを記録した場合も観察を1件作る（画面で入れられるのに保存先が無い、を作らない）
+  const nObs = editing ? Math.max(1, pts.length) : (pts.length || (nestFilled()?1:0));
+  const nRec = nObs + paths.length;
+  if(nRec===0){
+    toast('地図で P（止まっていた場所）か F（飛翔経路）、N（巣の位置）を落としてください', 5000); return; }
+  if(nObs===0){
+    // 飛翔だけを保存する場合。観察にしか置き場所が無い入力は残らないので、消える前に知らせる
+    if(((SCREENS._audio||[]).length + (SCREENS._media||[]).length)>0 && paths.length!==1){
+      // 経路が1本なら下でその経路に付ける。複数だと付け先が決まらないので止める
+      toast('写真・録音の付け先が決まりません。地図で P を落とすか、経路を1本にしてください', 7000); return; }
+    // 観察にしか置き場所が無い項目に入力があるまま経路だけ保存すると、その入力は消える。
+    // 気づかず失うより、止めて選んでもらう
+    if(obsOnlyChanged()){
+      toast('観察にしか残せない項目に入力があります。地図で P（止まっていた場所）を落とすか、その入力を消してから保存してください', 9000); return; }
+    if(!confirm('止まっていた場所（P）が無いので、飛翔経路だけを保存します。\n\n'
+      +'残るもの：種名・個体数・齢・メモ・飛翔高度・飛翔行動\n\n'
+      +'このまま保存しますか？')) return;
+  }
   const indKey = (nRec>1) ? (rec.individual_key || uuid()) : (rec.individual_key||'');
-  const flReview = (!name) || (!!name && !speciesByName(name)) || (indCount(rec.count)===0);
+  rec.individual_key = indKey;   // 位置なしの記録に経路だけ足したときも同じ目印で結ぶ
+  // 飛翔の「要確認」は、飛翔に残るもの（種名・個体数）と、利用者が自分で付けた印だけで決める。
+  // 観察日時や観察者の位置など、飛翔に無い項目を理由にすると身に覚えのない印が付く
+  const flReview = (!name) || (!!name && !speciesByName(name)) || (indCount(rec.count)===0)
+    || !!($('#needsReview') && $('#needsReview').checked);
 
   // 飛翔をまとめて組み立てる（1本でも検査に落ちたら何も保存しない）
   const flRecs=[];
   for(const seg of paths){
-    const fr=buildFlightRec(seg, svUuid, name, rec.count, rec.age_class, indKey, g('note'), flReview,
-      (paths.length===1)?{ start:(($('#flStart')&&$('#flStart').value)||''), end:(($('#flEnd')&&$('#flEnd').value)||'') }:null);
+    const fr=buildFlightRec(seg, svUuid, name, rec.count, rec.age_class, indKey, g('note'), flReview, seg.ov||null, paths.length===1);
     if(!fr) return;
     flRecs.push(fr);
   }
   // 観察をまとめて組み立てる（1つ目は rec、2つ目以降は場所と時刻だけ差し替えた写し）
+  // 同じ鳥の記録で「共有する」と決めた項目（種名・個体数・齢など）。
+  // 画面に載らない位置なしの兄弟にも、この項目だけはそろえる（種や数が記録ごとに割れないように）
+  const OBS_SHARED_F=['species_id','species_name_snapshot','count','age_class','sex','detection_method',
+    'behavior','habitat','direction','identification_status','confidence'];
   const obRecs=[];
-  if(editing) obRecs.push(rec);
-  else pts.forEach((sg,i)=>{
-    const r2 = (i===0) ? rec : Object.assign({}, rec, { uuid:uuid() });
+  if(!pts.length && nObs>0){
+    // 編集中にPを消した＝位置なしの記録として残す（記録そのものは消さない）
+    rec.target_latitude=''; rec.target_longitude='';
+    const PK=['perch_type','perch_size','perch_class','perch_species','perch_height','perch_artificial','perch_note'];
+    if(SCREENS._hadP){
+      // もとはPがあって、この画面で消した → 止まっていた場所の情報も一緒に外す。
+      // 距離帯は位置に付く情報なので、手で選んでいても位置が無くなれば外す
+      PK.forEach(k=>{ rec[k]=''; });
+      rec.distance_band='';
+    } else if(!editing){
+      PK.forEach(k=>{ rec[k]=''; });   // 巣だけの記録。止まっていた場所は無い
+    } else if(base){
+      // もともと位置が無い記録 → 画面で扱えていないので、もとの値をそのまま残す
+      PK.forEach(k=>{ rec[k]=base[k]||''; });
+    }
+    obRecs.push(rec);
+  }
+  else { const uClaimed = pts.some(sg=>sg.srcUuid===u); let assignedU=false;
+  // 編集中に足した新しいPの観察者位置は、開いた記録の古い位置ではなく、保存した今の測位を使う
+  const fxNow = editing ? freshFix() : null;
+  pts.forEach((sg,i)=>{
+    // 写真・録音の持ち主は最初の記録だけ。写しに同じIDを入れると、片方を消したときもう片方が壊れる。
+    // まとめ読みした他の記録（srcUuid）は、番号と添付・メモを保ったまま、
+    // 共有の項目（種名・個体数・齢・性別など）を開いた画面の内容にそろえる
+    const sibSrc = (editing && sg.srcUuid && sg.srcUuid!==u)
+      ? DB.observations().find(x=>x.uuid===sg.srcUuid) : null;
+    let r2;
+    if(editing && sg.srcUuid===u){ r2=rec; assignedU=true; }
+    else if(sibSrc){
+      // 兄弟の記録は「その記録」を基底にし、共有すると決めた項目だけを開いた画面の内容にそろえる。
+      // 観察者の位置・精度・日時・距離帯・メモ・添付・別カメラの番号・巣・作成日時はその記録のまま
+      r2=Object.assign({}, sibSrc);
+      OBS_SHARED_F.forEach(k=>{ r2[k]=rec[k]; });
+    }
+    else if(editing && !uClaimed && !assignedU){ r2=rec; assignedU=true; }   // 開いた記録（位置なしだった）に最初の新しいPを割り当てる
+    else if(!editing && i===0){ r2=rec; }
+    else { r2=Object.assign({}, rec, { uuid:uuid(), audio:[], media:[] }); }
     r2.individual_key = indKey;
+    if(editing && !sg.srcUuid){
+      // 新しく作る記録に、開いた記録の古い観察者位置を写さない
+      if(fxNow){ r2.latitude=fxNow.lat.toFixed(6); r2.longitude=fxNow.lon.toFixed(6); r2.gps_accuracy=Math.round(fxNow.acc); }
+      else { r2.latitude=''; r2.longitude=''; r2.gps_accuracy=''; }
+    }
     r2.target_latitude = String(sg.pt[0]); r2.target_longitude = String(sg.pt[1]);
     // その P で選んだ「止まっていたもの」を、その観察だけに入れる
     const pc = sg.perch || {};
     r2.perch_type = pc.type||'';
-    r2.perch_size = (pc.type==='木') ? (pc.size||'') : '';
-    r2.perch_class = (pc.type==='木') ? (pc.cls||'') : '';
-    r2.perch_species = (pc.type==='木') ? (pc.species||'') : '';
-    r2.perch_height = (pc.type==='木') ? (pc.height||'') : '';
-    r2.perch_artificial = (pc.type==='人工物') ? (pc.art||'') : '';
-    r2.perch_note = (pc.type==='人工物'||pc.type==='その他') ? (pc.note||'') : '';
-    if(sg.time && okStamp(sg.time)) r2.observed_at = new Date(sg.time).toISOString();
+    // 知らない種類（同期や取込で入った独自の値）は、読み込んだ内容をそのまま残す。
+    // 種類ごとの絞り込みは、今ある3種類のどれかを選んでいるときだけ行う
+    // 種類が空なのに詳細だけある（昔の形式・取込データ）場合も、絞り込まずそのまま残す
+    const _perchLegacy = !pc.type && !!(pc.art||pc.note);
+    if(_perchLegacy || (pc.type && pc.type!=='木' && pc.type!=='人工物' && pc.type!=='その他')){
+      r2.perch_size = pc.size||''; r2.perch_class = pc.cls||'';
+      r2.perch_species = pc.species||''; r2.perch_height = pc.height||'';
+      r2.perch_artificial = pc.art||''; r2.perch_note = pc.note||'';
+    } else {
+      r2.perch_size = (pc.type==='木') ? (pc.size||'') : '';
+      r2.perch_class = (pc.type==='木') ? (pc.cls||'') : '';
+      r2.perch_species = (pc.type==='木') ? (pc.species||'') : '';
+      r2.perch_height = (pc.type==='木') ? (pc.height||'') : '';
+      r2.perch_artificial = (pc.type==='人工物') ? (pc.art||'') : '';
+      r2.perch_note = (pc.type==='人工物'||pc.type==='その他') ? (pc.note||'') : '';
+    }
+    // もとからあった記録は、画面の「観察日時」を正とする（Pを置き直しても過去の日時を失わない）。
+    // まとめ読みした他の記録の日時はその記録のまま。落とした時刻を使うのは、新しく作られる記録だけ
+    if(sibSrc){ r2.observed_at = sibSrc.observed_at; }
+    else if(!(editing && r2===rec) && sg.time && okStamp(sg.time)) r2.observed_at = new Date(sg.time).toISOString();
     // 距離帯は観察者とその止まり位置の距離から決める（手で選び直されていればそれを優先）
-    if(!segVal('distance_band')){
-      const band=distBandFrom(r2.latitude, r2.longitude, r2.target_latitude, r2.target_longitude);
-      r2.distance_band = band || '';
+    // 手で選び直していれば（「なし」も含めて）その指定を優先する
+    if(!SCREENS._bandTouched){
+      const srcR = sibSrc || ((editing && sg.srcUuid===u) ? base : null);
+      if(editing && sg.fromExisting && srcR){
+        // 動かしていない元のPなら、もとの距離帯をそのまま（「なし」も指定として守る）
+        r2.distance_band = srcR.distance_band || '';
+      } else {
+        // 観察者の位置が取れていないときは、当てずっぽうの距離帯を入れずに空のままにする
+        const band=(r2.latitude&&r2.longitude)
+          ? distBandFrom(r2.latitude, r2.longitude, r2.target_latitude, r2.target_longitude) : '';
+        r2.distance_band = band || '';
+      }
     }
     obRecs.push(r2);
   });
+  if(editing && !obRecs.some(r=>r.uuid===u)){
+    // 開いた記録のPを一覧で消した（または元から無い）場合も、開いた記録自体は必ず保存する。
+    // 保存しないと、共有項目の変更が落ち、消したはずの位置が残ったまま再び現れる
+    rec.target_latitude=''; rec.target_longitude='';
+    const PK=['perch_type','perch_size','perch_class','perch_species','perch_height','perch_artificial','perch_note'];
+    const openedHadP = !!(base && validLatLon(coordStr(base.target_latitude), coordStr(base.target_longitude)));
+    if(openedHadP){ PK.forEach(k=>{ rec[k]=''; }); rec.distance_band=''; }
+    else if(base){ PK.forEach(k=>{ rec[k]=base[k]||''; }); }
+    obRecs.unshift(rec);
+  } }
 
-  // 巻き戻し用に、書き足す前の配列を控える（データが減る方向なので容量不足でも通りやすい）
-  const flBefore = flRecs.length ? DB.load(DB.key.fl) : null;
-  const obBefore = obRecs.length ? DB.load(DB.key.ob) : null;
+  // 飛翔だけの保存で写真・録音があれば、書き込む前に、その1本の経路の記録へ付ける。
+  // 実体（IndexedDB）の持ち主の控えも飛翔に付け替える（バックアップの中身と実態を食い違わせない）
+  let flOwnerJobs=null;
+  if(!obRecs.length && flRecs.length===1){
+    if((SCREENS._audio||[]).length) flRecs[0].audio=(SCREENS._audio||[]).slice();
+    if((SCREENS._media||[]).length) flRecs[0].media=(SCREENS._media||[]).slice();
+    const flId=flRecs[0].uuid;
+    // 実体の持ち主の控えの付け替え。実行は記録の書き込みが済んでから（下の完了処理で待つ）
+    flOwnerJobs={ flId, items:[] };
+    (SCREENS._audio||[]).forEach(a=>flOwnerJobs.items.push({db:AudioDB, id:a.id}));
+    (SCREENS._media||[]).forEach(m=>flOwnerJobs.items.push({db:PhotoDB, id:m.id}));
+  }
+  // 巻き戻しは「今回書いた記録」だけを対象にする。
+  // 配列全体を控えて丸ごと戻すと、その間に別のタブで保存された記録まで消してしまう
+  const undoLog=[];   // {key, uuid, prev（書く前の記録。無ければnull）, wrote（書いた直後のupdated_at）}
+  const writeOne=(key, rec, upsert)=>{
+    const arr0=DB.load(key)||[];
+    const cur=arr0.find(x=>x&&x.uuid===rec.uuid);
+    const prev=cur?JSON.parse(JSON.stringify(cur)):null;
+    if(!upsert(rec)) return false;
+    const arr1=DB.load(key)||[];
+    const now=arr1.find(x=>x&&x.uuid===rec.uuid);
+    undoLog.push({key, uuid:rec.uuid, prev, wrote:now?String(now.updated_at||''):''});
+    return true;
+  };
   const rollback = ()=>{
     let okAll=true;
-    if(flBefore && !DB.save(DB.key.fl, flBefore)) okAll=false;
-    if(obBefore && !DB.save(DB.key.ob, obBefore)) okAll=false;
+    const byKey=new Map();
+    // 後に書いたものから順に、今回書いた内容のまま（別のタブが書き換えていない）記録だけ戻す
+    for(let i=undoLog.length-1;i>=0;i--){ const e=undoLog[i];
+      if(!byKey.has(e.key)) byKey.set(e.key, DB.load(e.key)||[]);
+      const arr=byKey.get(e.key);
+      const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
+      if(idx>=0 && String(arr[idx].updated_at||'')===e.wrote){
+        if(e.prev) arr[idx]=e.prev; else arr.splice(idx,1);
+      }
+    }
+    byKey.forEach((arr,key)=>{ if(!DB.save(key,arr)) okAll=false; });
     if(!okAll) toast('保存に失敗し、書きかけを取り消せませんでした。データ点検・修復画面で確認してください', 8000);
   };
-  for(const fr of flRecs){ if(!DB.upsertFlight(fr)){ rollback(); return; } }
-  for(const r2 of obRecs){ if(!DB.upsertObs(r2)){ rollback(); return; } }
+  // 同じ鳥の記録が他にもあるとき、巣の内容は全部に同じものを配る。
+  // 1つだけ直すと、地図に古い巣と新しい巣が2つ出たり、消したはずの巣が復活したりする
+  const NEST_F=['nest_id','nest_latitude','nest_longitude','nest_tree_species','nest_tree_height','nest_state'];
+  const sibs=[];
+  // 巣が空になる保存でも、開いたとき巣が見えていなかった画面からは配らない（見えないものは消せない）
+  const nestWiping = !rec.nest_id;
+  if(indKey && obRecs.length && nestTouched() && !(nestWiping && !SCREENS._hadNestAtOpen)){
+    const mine=new Set(obRecs.map(r=>r.uuid));
+    const all=DB.load(DB.key.ob)||[];
+    // このまとまりにある巣の目印。1つだけなら、目印の無い記録も同じ巣とみなす
+    // 目印の解決は画面・件数と同じ「生きている記録」だけで行う（ごみ箱は伝播先としてだけ扱う）
+    const liveGroup=DB.obsOf(svUuid).filter(o=>o.individual_key===indKey);
+    const idsInGroup=new Set();
+    liveGroup.forEach(o=>{ if(nestId(o)) idsInGroup.add(nestId(o)); });
+    // 照合の基準は「開いたときに見えていた巣」。editing の元記録でも keep の読込でも同じ。
+    // 巣を全部消したときも、この基準で元の巣を持つ記録へ空が行き渡る
+    const ON=SCREENS._openNest||null;
+    let myNid=rec.nest_id || PF_NEST_ID || nestId(base||{}) || (ON&&ON.id||'');
+    if(!myNid && ON){
+      // 開いた巣が無印なら、「開いた巣と位置か内容が一致する目印」が1つに定まるときだけ、
+      // それを正として消し込み・変更を届ける（グループに目印が1つある、だけでは採用しない）
+      const gPos=new Map(), gFp=new Map();
+      liveGroup.forEach(o=>{
+        const id0=nestId(o); if(!id0) return;
+        if(!gPos.has(id0)) gPos.set(id0, new Set());
+        gPos.get(id0).add(nestPosKey(o));
+        if(!gFp.has(id0)) gFp.set(id0, new Set());
+        gFp.get(id0).add(nestFpKey(o)); });
+      const cands=[...idsInGroup].filter(tid=>
+        (nestPosValid(ON.pos) && (gPos.get(tid)||new Set()).has(ON.pos))
+        || (gFp.get(tid)||new Set()).has(ON.fp));
+      if(cands.length===1) myNid=cands[0];
+    }
+
+    // 別の巣（目印が違う・位置が違う）には手を出さない。
+    // 目印の無い相手は「内容が完全に一致（写し）」または「同じ位置」だけを同じ巣とみなす。
+    // 開いたとき巣が無く、この画面で初めて巣を付けた場合は、巣を何も持たない記録にだけ配る
+    const nestSameRec=o=>{
+      const oid=nestId(o);
+      return oid ? (!!myNid && oid===myNid)
+        : (ON ? (nestFpKey(o)===ON.fp
+              || (nestPosValid(nestPosKey(o)) && nestPosKey(o)===ON.pos))
+              : !nestHasInfo(o));
+    };
+    // まとめ読みで obRecs に入っている兄弟にも、同じ照合で巣を配る（合わなければその記録の巣のまま）
+    obRecs.forEach(r2=>{
+      if(r2===rec) return;
+      const src=DB.observations().find(x=>x.uuid===r2.uuid) || r2;
+      if(!nestSameRec(src)) return;
+      NEST_F.forEach(k=>{ r2[k]=rec[k]||''; });
+    });
+    // ごみ箱の中の記録にも配る。配らないと、あとで復元したときに古い巣が戻ってくる
+    all.forEach(o=>{
+      if(!o || mine.has(o.uuid) || o.survey_uuid!==svUuid || o.individual_key!==indKey) return;
+      if(!nestSameRec(o)) return;
+      const cp=Object.assign({}, o);
+      // 相手の巣座標が壊れていたら、その記録自身に元の値を控えてから置き換える
+      const a=coordStr(cp.nest_latitude), b=coordStr(cp.nest_longitude);
+      if(!(a==='' && b==='') && !validLatLon(a,b)){
+        cp.repair_note = repairNoteAdd(cp.repair_note, '巣の位置が不正だったため置き換えました（元の値: '+a+','+b+'）');
+      }
+      let diff=(cp.repair_note!==o.repair_note);
+      NEST_F.forEach(k=>{ const v=rec[k]||''; if(String(cp[k]||'')!==String(v)){ cp[k]=v; diff=true; } });
+      // 生きている兄弟なら、共有項目もここでそろえる（ごみ箱の記録の中身までは変えない）
+      if(!o.deleted_at) OBS_SHARED_F.forEach(k=>{ if(String(cp[k]??'')!==String(rec[k]??'')){ cp[k]=rec[k]; diff=true; } });
+      if(diff) sibs.push(cp);
+    });
+  }
+  // 巣の照合に入らなかった「生きている兄弟」（位置なしで画面に載らない記録など）にも共有項目をそろえる
+  if(editing && indKey){
+    const mine=new Set(obRecs.map(r=>r.uuid).concat(sibs.map(r=>r.uuid)));
+    DB.obsOf(svUuid).forEach(o2=>{
+      if(mine.has(o2.uuid) || o2.individual_key!==indKey) return;
+      const cp=Object.assign({}, o2);
+      let diff=false;
+      OBS_SHARED_F.forEach(k=>{ if(String(cp[k]??'')!==String(rec[k]??'')){ cp[k]=rec[k]; diff=true; } });
+      if(diff) sibs.push(cp);
+    });
+  }
+  for(const fr of flRecs){ if(!writeOne(DB.key.fl, fr, r=>DB.upsertFlight(r))){ rollback(); return; } }
+  for(const r2 of obRecs){ if(!writeOne(DB.key.ob, r2, r=>DB.upsertObs(r))){ rollback(); return; } }
+  for(const sb of sibs){ if(!writeOne(DB.key.ob, sb, r=>DB.upsertObs(r))){ rollback(); return; } }
+  // まとめ読みした記録のうち、画面の一覧で「✕ 消す」されたものは削除する（明示的に消したものだけ）
+  if(editing){
+    const keptObs=new Set(pts.map(sg=>sg.srcUuid).filter(Boolean));
+    for(const id of (SCREENS._loadedObs||[])){
+      if(keptObs.has(id)) continue;
+      // P を消しても記録そのものは消さない（開いた記録と同じ扱い）。
+      // 位置と、位置に付く情報（止まり木・距離帯）だけを外す。
+      // 記録ごと消すのは記録の削除ボタンの仕事（メモ・添付まで一緒に消えるため）
+      const sib0=DB.observations().find(x=>x.uuid===id);
+      if(!sib0) continue;
+      const cp=Object.assign({}, sib0, { target_latitude:'', target_longitude:'',
+        perch_type:'', perch_size:'', perch_class:'', perch_species:'', perch_height:'',
+        perch_artificial:'', perch_note:'' });
+      cp.distance_band='';   // 距離帯は位置に付く情報。位置を外したら必ず外す
+      if(!writeOne(DB.key.ob, cp, r=>DB.upsertObs(r))){ rollback(); return; }
+    }
+    const keptFl=new Set(paths.map(sg=>sg.srcUuid).filter(Boolean));
+    for(const id of (SCREENS._loadedFl||[])){
+      if(keptFl.has(id)) continue;
+      if(!writeOne(DB.key.fl, {uuid:id}, ()=>DB.softDelete(DB.key.fl, id))){ rollback(); return; }
+    }
+  }
+  PF_NEST_ID = resolvedNestId;   // 保存が成功したので、決めた目印を画面の状態にも反映する
 
   if(!obRecs.length){
-    // 飛翔だけ。観察を作らないので、写真・録音の都合で作られた仮記録を片付ける
-    const gh=SCREENS._ghost;
-    if(gh){
-      DISCARDED.add(gh.uuid);
-      if(!DB.hardDelete(gh.key, gh.uuid)){ DISCARDED.delete(gh.uuid); rollback(); return; }
-      SCREENS._ghost=null; mediaGcAll().catch(function(){});
-    }
-    if(name) DB.pushRecent(name);
-    SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
-    SCREENS._dirty=false; SCREENS._ghost=null;
-    PF_SEGS=[]; PF_NEWLINE=true;
-    toast('飛翔経路を'+flRecs.length+'本保存しました');
-    if(cont===true){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid})); } else goBack();
+    const finish=()=>{
+      // 観察を作らないので、写真・録音の都合で作られた仮記録を片付ける。
+      // 片付けに失敗したら false を返す（巻き戻すかは呼び出し側が決める——
+      // 添付の付け替えを先に戻さないと、実体が消えた飛翔を指したままになる）
+      const gh=SCREENS._ghost;
+      if(gh){
+        DISCARDED.add(gh.uuid);
+        if(!DB.hardDelete(gh.key, gh.uuid)){ DISCARDED.delete(gh.uuid); return false; }
+        SCREENS._ghost=null; mediaGcAll().catch(function(){});
+      }
+      if(name) DB.pushRecent(name);
+      SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
+      SCREENS._dirty=false; SCREENS._ghost=null;
+      PF_SEGS=[]; PF_NEWLINE=true;
+      toast('飛翔経路を'+flRecs.length+'本保存しました');
+      if(cont===true){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid})); } else goBack();
+      return true;
+    };
+    if(flOwnerJobs && flOwnerJobs.items.length){
+      // 付け替えは1件ずつ行い、途中で失敗したら付け替え済みの分を「戻せたことを確かめながら」全部戻す。
+      // 全部戻せたときだけ記録も巻き戻す（戻せないのに記録だけ消すと、実体が宙に浮く）。
+      // 終わるまで保存・離脱は SAVE_BUSY で止め、画面遷移は解除後に行う
+      SAVE_BUSY=true;
+      (async ()=>{
+        const doneUndo=[];
+        // 付け替え済みの分を戻す。1件ずつ書いて読み直し、戻ったことを確かめる
+        const restoreOwners=async ()=>{
+          let allOk=true;
+          for(const u2 of doneUndo.slice().reverse()){
+            try{
+              const r=await u2.db.get(u2.id);
+              if(!r){ allOk=false; continue; }   // 実体が見つからない＝戻せたとは言えない
+              r.obs_uuid=u2.prev.obs_uuid; r.flight_uuid=u2.prev.flight_uuid;
+              await u2.db.put(r);
+              const chk=await u2.db.get(u2.id);
+              if(!chk || chk.obs_uuid!==u2.prev.obs_uuid || chk.flight_uuid!==u2.prev.flight_uuid) allOk=false;
+            }catch(_){ allOk=false; }
+          }
+          return allOk;
+        };
+        let swapped=false;
+        try{
+          for(const j of flOwnerJobs.items){
+            const r=await j.db.get(j.id);
+            // 実体が見つからない＝参照だけの添付になる。成功扱いにせず止める
+            if(!r) throw new Error('missing media entity: '+j.id);
+            const prev={obs_uuid:r.obs_uuid, flight_uuid:r.flight_uuid};
+            r.obs_uuid=''; r.flight_uuid=flOwnerJobs.flId;
+            await j.db.put(r);
+            doneUndo.push({db:j.db, id:j.id, prev});
+          }
+          swapped=true;
+        }catch(e){
+          if(await restoreOwners()){ rollback(); SAVE_BUSY=false;
+            toast('写真・録音の付け替えに失敗しました。もう一度保存してください', 6000); }
+          else {
+            // 戻せなかった。この画面での保存・離脱を止めたまま、再読み込みで仕切り直してもらう
+            //（このまま再保存すると、同じ添付を別の記録が参照する二重状態になる）
+            toast('付け替えを完全に戻せませんでした。ページを再読み込みし、データ点検・修復画面で確認してください', 10000);
+          }
+        }
+        if(swapped){
+          SAVE_BUSY=false;
+          if(finish()===false){
+            // 仮記録を片付けられなかった。補償が終わるまで保存・離脱を再び止める
+            SAVE_BUSY=true;
+            if(await restoreOwners()){ rollback(); SAVE_BUSY=false;
+              toast('保存をやり直してください（空き容量を確認してください）', 6000); }
+            else {
+              toast('片付けに失敗しました。ページを再読み込みし、データ点検・修復画面で確認してください', 10000);
+            }
+          }
+        }
+      })();
+    } else { if(finish()===false){ rollback(); } }
     return;
   }
   PF_SEGS=[]; PF_NEWLINE=true;
-  if(nRec>1) toast('記録を'+nRec+'件（止まり'+pts.length+'・経路'+paths.length+'）保存しました', 3000);
+  { const nSaved=obRecs.length+flRecs.length;
+    if(nSaved>1) toast('記録を'+nSaved+'件（観察'+obRecs.length+'・経路'+flRecs.length+'）保存しました', 3000); }
   if(name) DB.pushRecent(name);
   const keep={ lat:rec.latitude, lon:rec.longitude, acc:rec.gps_accuracy };   // 「続けて」用に、保存した位置と精度をそのまま引き継ぐ
   SCREENS._acc=null; SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
@@ -3209,7 +4149,8 @@ function saveObs(u, svUuid, editing, cont){
 }
 /* ---------- マイ図鑑（自分の確定記録を種の図鑑に登録） ---------- */
 function myguideList(){ try{ return JSON.parse(localStorage.getItem('bs_myguide')||'[]'); }catch(e){ return []; } }
-function myguideSave(l){ try{ localStorage.setItem('bs_myguide', JSON.stringify(l)); return true; }
+function myguideSave(l){ if(!writeAllowed()) return false;
+  try{ localStorage.setItem('bs_myguide', JSON.stringify(l)); return true; }
   catch(e){ try{ toast('⚠ 空き容量不足で図鑑を保存できませんでした'); }catch(_){} return false; } }
 function myguideOf(sp){ return myguideList().filter(g=>g.species_name===sp); }
 // 観察編集画面から、確定種の鳴き声・写真を図鑑に登録
@@ -3224,11 +4165,11 @@ function addObsToGuide(){
   const l=myguideList(); const have=new Set(l.filter(g=>g.species_name===name).map(g=>g.ref_id)); let added=0;
   audio.forEach(a=>{ if(have.has(a.id)) return; l.push({ id:uuid(), species_name:name, kind:'audio', ref_id:a.id, ext:a.ext, mime:a.mime, source_obs:o.uuid, created_at:nowISO() }); added++; });
   media.forEach(m=>{ if(have.has(m.id)) return; l.push({ id:uuid(), species_name:name, kind:m.kind, ref_id:m.id, ext:m.ext, mime:m.mime, source_obs:o.uuid, created_at:nowISO() }); added++; });
-  myguideSave(l);
+  if(!myguideSave(l)) return;   // 保存できなかったときは成功と言わない（門・容量不足）
   toast(added?`図鑑に${added}件登録しました（${name}）`:'すでに登録済みです');
 }
 function removeFromGuide(id){
-  myguideSave(myguideList().filter(g=>g.id!==id));
+  if(!myguideSave(myguideList().filter(g=>g.id!==id))) return;
   toast('図鑑から外しました'); render(); mediaGcAll();
 }
 // 図鑑の切り抜き画像を取り込む（ファイル名＝和名で種に紐付け・端末内のみ）
@@ -3486,10 +4427,14 @@ function recFinalize(chunks, mime, t0, targetAtStart){
     scheduleFolderFull(); toast('録音を保存しました'); return true;
   }).catch(()=>{ toast('録音の保存に失敗しました'); return false; });
 }
-function delAudio(id){ const target=mediaTarget();
-  AudioDB.del(id).catch(()=>{}).then(()=>{
-    detachMediaMeta(target,'audio',id); scheduleFolderFull(); toast('録音を削除しました');
-  });
+function delAudio(id){
+  if(!writeAllowed()) return;
+  const target=mediaTarget();
+  // 参照を先に外す（実体を先に消すと、参照の保存に失敗したとき「開けない添付」が残る）
+  if(!detachMediaMeta(target,'audio',id)){ toast('削除できませんでした（空き容量を確認してください）'); return; }
+  AudioDB.del(id)
+    .then(()=>{ scheduleFolderFull(); toast('録音を削除しました'); })
+    .catch(()=>{ toast('実体の削除に失敗しました（参照は外れています。掃除で回収されます）', 5000); });
 }
 // メディアの持ち主（観察 or 飛翔）。飛翔画面では SCREENS._mediaCtx を設定する
 function mediaCtx(){ return SCREENS._mediaCtx || { kind:'obs', uuid:(SCREENS._obs&&SCREENS._obs.uuid)||'', sv:(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid }; }
@@ -3530,14 +4475,18 @@ function attachMediaMeta(target, field, meta){
   return ok;
 }
 function detachMediaMeta(target, field, id){
+  // 保存の成否を返す（失敗を成功扱いにすると、参照が画面からだけ消えて実体が掃除で失われる）
+  let saved=true;
   if(target.uuid){ const recKey=target.kind==='flight'?DB.key.fl:DB.key.ob;
     const list=DB.load(recKey); const i=list.findIndex(x=>x.uuid===target.uuid);
     if(i>=0){ list[i][field]=(list[i][field]||[]).filter(x=>x.id!==id);
-      if(target.kind==='flight') DB.upsertFlight(list[i]); else DB.upsertObs(list[i]); } }
+      saved = target.kind==='flight' ? !!DB.upsertFlight(list[i]) : !!DB.upsertObs(list[i]);
+      if(!saved) return false; } }
   const cur=mediaCtx();
   if(cur.kind===target.kind && cur.uuid===target.uuid){
     if(field==='audio'){ SCREENS._audio=(SCREENS._audio||[]).filter(x=>x.id!==id); renderRecPanel(); }
     else { SCREENS._media=(SCREENS._media||[]).filter(x=>x.id!==id); renderMediaPanel(); } }
+  return saved;
 }
 // パネル再構築や画面遷移の前に、割り当て済みのObject URLをまとめて解放する（メモリリーク防止）
 function revokePanelUrls(root, selector){ if(!root) return;
@@ -3605,10 +4554,13 @@ function pickMedia(input){
     scheduleFolderFull();
     if(fail) toast(`写真・動画：${ok}件追加・${fail}件失敗`); else toast('写真・動画を追加しました'); });
 }
-function delMedia(id){ const target=mediaTarget();
-  PhotoDB.del(id).catch(()=>{}).then(()=>{
-    detachMediaMeta(target,'media',id); scheduleFolderFull(); toast('削除しました');
-  });
+function delMedia(id){
+  if(!writeAllowed()) return;
+  const target=mediaTarget();
+  if(!detachMediaMeta(target,'media',id)){ toast('削除できませんでした（空き容量を確認してください）'); return; }
+  PhotoDB.del(id)
+    .then(()=>{ scheduleFolderFull(); toast('削除しました'); })
+    .catch(()=>{ toast('実体の削除に失敗しました（参照は外れています。掃除で回収されます）', 5000); });
 }
 function renderMediaPanel(){
   const box=$('#mediaPanel'); if(!box) return;
@@ -4394,8 +5346,9 @@ function saveFlight(u,svUuid,editing,cont){
     // 止まったところを観察として記録する。位置は経路の終点（＝止まった場所）を初期値にする
     const last=(rec.path||[])[ (rec.path||[]).length-1 ] || null;
     goBack();
+    // 終点＝止まった場所なので、観察者の位置ではなく P（鳥がいた場所）として渡す
     nav('obsEdit', JSON.stringify({sv:svUuid, keep:{
-      lat:last?last[0]:'', lon:last?last[1]:'', acc:'',
+      plat:last?last[0]:'', plon:last?last[1]:'',
       species_name:name, count:rec.count, age_class:age, individual_key:rec.individual_key }}));
   }
   else if(cont==='same'){
@@ -4825,17 +5778,19 @@ SCREENS.map = (u)=>{
   const notes=DB.notesOf(u).filter(n=>validLatLon(n.latitude,n.longitude));
   const flights=DB.flightsOf(u).filter(f=>(f.path||[]).filter(validPathPt).length>=2);
   const targets=DB.obsOf(u).filter(o=>validLatLon(o.target_latitude,o.target_longitude));
+  const nests=uniqNests(DB.obsOf(u));           // 地図に描ける巣（位置あり）
+  const nestAll=nestRecords(DB.obsOf(u));       // 位置が無くても巣の情報がある記録
   const route=(DB.survey(u)&&DB.survey(u).route||[]).filter(validPathPt);
   return {
     title:'地図',
-    sub:[`<span class="pill">観察地点 ${obs.length}</span>`, targets.length?`<span class="pill">止まり/巣 ${targets.length}</span>`:'', route.length>1?`<span class="pill">ルート 約${fmtDist(pathLength(route))}</span>`:'', flights.length?`<span class="pill">飛翔経路 ${flights.length}</span>`:''].filter(Boolean),
+    sub:[`<span class="pill">観察地点 ${obs.length}</span>`, targets.length?`<span class="pill">止まり ${targets.length}</span>`:'', nestAll.length?`<span class="pill">巣 ${nestAll.length}${nestAll.length!==nests.length?`（位置付き ${nests.length}）`:''}</span>`:'', route.length>1?`<span class="pill">ルート 約${fmtDist(pathLength(route))}</span>`:'', flights.length?`<span class="pill">飛翔経路 ${flights.length}</span>`:''].filter(Boolean),
     html:`<div id="map"></div>
       <div class="sp"></div>
-      <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ◆赤＝止まり・巣の位置 / ノート＝メモ / 色つき曲線＝飛翔経路（緑「始」→赤「終」）。左下の凡例で線の色分けを 種／齢／個体 に切り替えられます。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ。右上の重ねアイコンで、背景（標準／淡色／航空写真）を選び、さらに「陰影」「傾斜」を重ねられます。選択は次回も保持。</div>`,
-    onMount:()=>{ _mapTimer=setTimeout(()=>drawMap(obs,notes,flights,targets,route),50); }
+      <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ◆赤＝鳥がいた場所 / 巣＝巣の位置 / ノート＝メモ / 色つき曲線＝飛翔経路（緑「始」→赤「終」）。左下の凡例で線の色分けを 種／齢／個体 に切り替えられます。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ。右上の重ねアイコンで、背景（標準／淡色／航空写真）を選び、さらに「陰影」「傾斜」を重ねられます。選択は次回も保持。</div>`,
+    onMount:()=>{ _mapTimer=setTimeout(()=>drawMap(obs,notes,flights,targets,route,nests),50); }
   };
 };
-function drawMap(obs,notes,flights,targets,route){
+function drawMap(obs,notes,flights,targets,route,nests){
   const el=$('#map'); if(!el) return;
   let center=[35.68,139.77], zoom=13;
   const pts=obs.filter(o=>validLatLon(o.latitude,o.longitude));
@@ -4858,10 +5813,17 @@ function drawMap(obs,notes,flights,targets,route){
   notes.forEach(n=>{ const lat=parseFloat(n.latitude), lon=parseFloat(n.longitude);
     const m=mk(lat,lon,'✎','#5a7de0').addTo(mapObj);
     m.bindPopup(`<b>メモ:${esc(n.category||'')}</b><br>${esc((n.content||'').slice(0,80))}`); group.push([lat,lon]); });
-  // 対象位置（止まり木・巣など）を赤の◆で表示
+  // 鳥がいた場所を赤の◆で表示
   (targets||[]).forEach(o=>{ const lat=parseFloat(o.target_latitude), lon=parseFloat(o.target_longitude);
     const m=mk(lat,lon,'◆','#b03030').addTo(mapObj);
-    m.bindPopup(`<b>${esc(o.species_name_snapshot||'（未同定）')}</b> 止まり/巣の位置<br>${esc(o.nest_state||'')}${(o.perch_size||o.perch_class)?'<br>とまり木:'+esc([o.perch_size,o.perch_class].filter(Boolean).join('・')):''}${o.nest_tree_species?'<br>樹種:'+esc(o.nest_tree_species)+(o.nest_tree_height?'（'+esc(o.nest_tree_height)+'m）':''):''}`);
+    const perch=[o.perch_type,o.perch_size,o.perch_class,o.perch_artificial,o.perch_species,
+      o.perch_height?('樹高'+o.perch_height+'m'):'',o.perch_note].filter(Boolean).join('・');
+    m.bindPopup(`<b>${esc(o.species_name_snapshot||'（未同定）')}</b> 鳥がいた場所${perch?'<br>止まっていたもの:'+esc(perch):''}`);
+    group.push([lat,lon]); });
+  // 巣の位置は別に出す（止まった場所とは限らないため）
+  (nests||[]).forEach(o=>{ const lat=parseFloat(o.nest_latitude), lon=parseFloat(o.nest_longitude);
+    const m=mk(lat,lon,'巣','#8a6fd0').addTo(mapObj);
+    m.bindPopup(`<b>${esc(o.species_name_snapshot||'（未同定）')}</b> 巣の位置<br>${esc(o.nest_state||'')}${o.nest_tree_species?'<br>樹種:'+esc(o.nest_tree_species)+(o.nest_tree_height?'（'+esc(o.nest_tree_height)+'m）':''):''}`);
     group.push([lat,lon]); });
   // 調査ルート（青い線）
   const rp=(route||[]).filter(validPathPt);
@@ -5255,7 +6217,8 @@ SCREENS.trash = ()=>{
   };
 };
 function restoreItem(k,u){
-  DB.restore(k,u);
+  if(!writeAllowed()) return;
+  if(!DB.restore(k,u)){ toast('復元できませんでした（空き容量を確認してください）'); return; }
   // 仮説と一緒に消えた検証結果(deleted_with_hyp)を戻す
   const restoreHypResults=(hyUuid)=>{ const arr=DB.load(DB.key.hr); let ch=false;
     arr.forEach(r=>{ if(r.hypothesis_uuid===hyUuid && r.deleted_at && r.deleted_with_hyp){ delete r.deleted_at; delete r.deleted_with_hyp; ch=true; } });
@@ -5270,6 +6233,7 @@ function restoreItem(k,u){
   toast('復元しました'); render();
 }
 function purgeItem(k,u){
+  if(!writeAllowed()) return;
   if(!confirm('完全に削除すると元に戻せません。よろしいですか？')) return;
   if(k===DB.key.sv){
     DB.load(DB.key.ob).filter(o=>o.survey_uuid===u).forEach(o=>DB.hardDelete(DB.key.ob,o.uuid));
@@ -5285,6 +6249,7 @@ function purgeItem(k,u){
   DB.hardDelete(k,u); mediaGcAll(); toast('完全に削除しました'); render();
 }
 function purgeAll(){
+  if(!writeAllowed()) return;
   if(!confirm('ごみ箱の中身をすべて完全に削除します。元に戻せません。よろしいですか？')) return;
   [DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.hr,DB.key.fl].forEach(k=>
     DB.deleted(k).forEach(x=>DB.hardDelete(k,x.uuid)));
@@ -5464,16 +6429,37 @@ function updateSpRefLinks(name){
    ============================================================ */
 function importRefdoc(input){
   const f=(input.files||[])[0]; input.value=''; if(!f) return;
+  if(!writeAllowed()) return;
   if(f.type && f.type.indexOf('pdf')<0 && !/\.pdf$/i.test(f.name||'')){ toast('PDFファイルを選んでください'); return; }
   const meta={ id:uuid(), name:f.name||'図鑑.pdf', size:f.size, created_at:nowISO() };
   toast('取り込み中…（大きいPDFは少し時間がかかります）');
   RefDB.put({ id:meta.id, blob:f }).then(()=>{
-    const l=refdocList(); l.unshift(meta); refdocSave(l); toast('取り込みました'); render();
+    const l=refdocList(); l.unshift(meta);
+    if(!refdocSave(l)){
+      // 目録に載せられなかったら、入れた本体も回収する（見えない残骸を残さない）
+      RefDB.del(meta.id).catch(()=>{});
+      toast('取り込みに失敗しました'); return;
+    }
+    toast('取り込みました'); render();
   }).catch(()=>toast('取り込みに失敗しました'));
 }
+let REFDOC_BUSY=false;   // 資料の削除は1件ずつ（重ねると、古い控えで別の削除の結果を上書きしてしまう）
 function delRefdoc(id){
+  if(REFDOC_BUSY){ toast('前の削除が終わるまでお待ちください'); return; }
   if(!confirm('この資料を削除しますか？')) return;
-  RefDB.del(id).catch(()=>{}).then(()=>{ refdocSave(refdocList().filter(r=>r.id!==id)); toast('削除しました'); render(); });
+  // 先に目録から外す（本体を先に消すと、失敗したとき「開けない資料」が一覧に残る）
+  const item=refdocList().find(r=>r.id===id); if(!item) return;
+  if(!refdocSave(refdocList().filter(r=>r.id!==id))) return;
+  REFDOC_BUSY=true;
+  RefDB.del(id).then(()=>{ toast('削除しました'); render(); })
+    .catch(()=>{
+      // 本体を消せなかったら、対象の1件だけを今の目録に戻す（配列ごと戻すと他の変更を潰す）
+      const cur=refdocList();
+      if(!cur.some(r=>r.id===id)){ cur.unshift(item);
+        if(!refdocSave(cur)){ toast('目録を戻せませんでした。データ点検・修復画面で確認してください', 6000); } }
+      toast('削除に失敗しました'); render();
+    })
+    .finally(()=>{ REFDOC_BUSY=false; });
 }
 SCREENS.refdocs = ()=>{
   const list=refdocList();
@@ -5635,7 +6621,8 @@ function packStore(){ try{ const a=JSON.parse(localStorage.getItem('bs_map_packs
     && Number.isFinite(+p.count) && Number.isFinite(+p.mb));
 }catch(e){ return []; } }
 // 成否を返す（失敗を握りつぶすと「タイルは保存されたのに一覧に無い」隠れデータになるため）
-function packSave(list){ try{ localStorage.setItem('bs_map_packs', JSON.stringify(list)); return true; }catch(e){ return false; } }
+function packSave(list){ if(!writeAllowed()) return false;
+  try{ localStorage.setItem('bs_map_packs', JSON.stringify(list)); return true; }catch(e){ return false; } }
 
 // 保存するタイルの (z,x,y) 一覧。poly の形にかかるマスだけを選ぶ
 function packTiles(area, zmax){
@@ -5817,6 +6804,7 @@ function offlineEstimate(){
     <div class="tiny muted" style="margin-top:6px">${esc(offlineLayers().join('・'))}／z${PACK_MINZOOM}〜${offlineZoomMax()}</div>`;
 }
 async function offlineSave(sv){
+  if(!writeAllowed()) return;
   if(PACK_DL){ toast('別の保存が進行中です'); return; }   // 二重起動防止
   const poly=currentPoly();
   if(!poly){ toast('先に地図で3点以上囲んでください'); return; }
@@ -5958,6 +6946,7 @@ function recallPack(id){
   toast('保存済みの範囲を呼び出しました。「💾 この範囲を保存」で補完・更新できます', 3500);
 }
 async function deleteMapPack(id){
+  if(!writeAllowed()) return;
   const list=packStore(); const p=list.find(x=>x.id===id); if(!p) return;
   if(!confirm(`「${p.name||'保存範囲'}」の地図（約${(+p.mb).toFixed(0)}MB）を消しますか？\n※範囲が重なっている他の保存分のタイルも一緒に消えることがあります（保存し直せば戻せます）`)) return;
   const area = (p.poly && p.poly.length>=3) ? {poly:p.poly} : p.bbox;
@@ -6089,6 +7078,8 @@ const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','survey_
   'individual_key',
   // 止まっていたもの（種類で中身が変わる）と、巣の位置。**必ず末尾に足す**
   'perch_type','perch_artificial','perch_note','perch_species','perch_height',
+  // nest_id: 同じ巣を1つとして見分ける目印。同じ鳥の記録すべてに同じ値が入る
+  'nest_id',
   'nest_latitude','nest_longitude'];
 function csvCell(v){ v=v==null?'':String(v);
   // 数式インジェクション対策は「数値でない」文字列にだけ適用する。
@@ -6100,15 +7091,19 @@ function buildRows(surveys){
   surveys.forEach(s=>{ DB.obsOf(s.uuid).forEach(o=>{
     rows.push({ survey_id:s.uuid, survey_name:s.name, survey_date:fmtDate(s.survey_date), survey_method:s.survey_method,
       survey_season:s.season||'', survey_round:s.round_no||'',
-      observation_id:o.uuid, observed_at:isoLocal(o.observed_at), latitude:o.latitude, longitude:o.longitude,
+      observation_id:o.uuid, observed_at:isoLocal(o.observed_at),
+      latitude:coordPair(o.latitude,o.longitude)[0], longitude:coordPair(o.latitude,o.longitude)[1],
       // 位置の確からしさ。数値でないもの・負の値は空にする（GIS側で誤って距離として使われないように）
       gps_accuracy_m:accuracyM(o.gps_accuracy), individual_key:o.individual_key||'',
       perch_type:o.perch_type||'', perch_artificial:o.perch_artificial||'', perch_note:o.perch_note||'',
       perch_species:o.perch_species||'', perch_height:o.perch_height||'',
-      nest_latitude:o.nest_latitude||'', nest_longitude:o.nest_longitude||'',
+      nest_id:o.nest_id||'',
+      nest_latitude:coordPair(o.nest_latitude,o.nest_longitude)[0],
+      nest_longitude:coordPair(o.nest_latitude,o.nest_longitude)[1],
       species_name:o.species_name_snapshot, count:indCount(o.count), detection_method:o.detection_method,
       distance_band:o.distance_band||'', direction:o.direction||'',
-      target_latitude:o.target_latitude||'', target_longitude:o.target_longitude||'',
+      target_latitude:coordPair(o.target_latitude,o.target_longitude)[0],
+      target_longitude:coordPair(o.target_latitude,o.target_longitude)[1],
       perch_size:o.perch_size||'', perch_class:o.perch_class||'',
       nest_tree_species:o.nest_tree_species||'', nest_tree_height:o.nest_tree_height||'', nest_state:o.nest_state||'',
       behavior:o.behavior, habitat:o.habitat, age_class:ageNorm(o.age_class), sex:o.sex||'',
@@ -6136,55 +7131,135 @@ function exportReport(surveys, base){
   // 種ごとに集計（延べ個体数・記録件数・確認方法・繁殖ランク最高・保全指定）。観察＋飛翔経路を合流
   const bySp={}; const svCols=[];   // svCols: {uuid,label} 調査ごとに一意の列
   const svLabel=s=>`${s.name||'（無題）'}${s.round_no?` 第${s.round_no}回`:''}${s.survey_date?' '+fmtDate(s.survey_date):''}`;
-  const addRec=(s,nm,c,method,behavior,hasName)=>{
+  // 1個体を「止まり2か所＋経路1本」のように分けて保存するので、
+  // 実数は目印（individual_key）ごとに重複を除いて数える（集計画面と同じ数え方）。
+  // 種で分ける前に調査ごとにまとめる——同じ目印に別の種名が付いていても二重に数えないため
+  // Map / 素性のないオブジェクトを使う（調査IDが __proto__ などでも壊れないように）
+  const svRecs=new Map();
+  const addRec=(s,nm,rec,method,behavior,hasName)=>{
     const key=nm||'（未同定）';
-    const m=bySp[key]||(bySp[key]={name:key, total:0, records:0, methods:new Set(), rank:'', bySurvey:{}});
-    m.total+=c; m.records++;
+    const m=bySp[key]||(bySp[key]={name:key, total:0, totalRaw:0, records:0, methods:new Set(), rank:'', bySurvey:Object.create(null)});
+    m.records++;
+    m.totalRaw+=indCount(rec.count);   // 延べ数（重複除外なし）も別に持つ
     if(method) m.methods.add(method);
     const r=breedingRank(behavior, hasName);
     if(BREED_ORDER[r]>BREED_ORDER[m.rank]) m.rank=r;
-    m.bySurvey[s.uuid]=(m.bySurvey[s.uuid]||0)+c;
+    if(!svRecs.has(s.uuid)) svRecs.set(s.uuid, []);
+    svRecs.get(s.uuid).push({sp:key, key:String(rec.individual_key||'').trim(), c:indCount(rec.count)});
   };
   surveys.forEach(s=>{ svCols.push({uuid:s.uuid, label:svLabel(s)});
-    DB.obsOf(s.uuid).forEach(o=>{ const c=indCount(o.count);
-      addRec(s, o.species_name_snapshot, c, o.detection_method, o.behavior, !!o.species_name_snapshot); });
+    DB.obsOf(s.uuid).forEach(o=>{
+      addRec(s, o.species_name_snapshot, {individual_key:o.individual_key||'', count:o.count},
+        o.detection_method, o.behavior, !!o.species_name_snapshot); });
     // 飛翔経路も種一覧に合流（集計画面と同じく2点以上の経路のみ）
     DB.flightsOf(s.uuid).forEach(f=>{ if((f.path||[]).filter(validPathPt).length<2) return;
-      const c=indCount(f.count);
-      addRec(s, f.species_name_snapshot, c, '飛翔', f.behavior, !!f.species_name_snapshot); });
+      addRec(s, f.species_name_snapshot, {individual_key:f.individual_key||'', count:f.count},
+        '飛翔', f.behavior, !!f.species_name_snapshot); });
   });
   const names=Object.keys(bySp);
   if(!names.length){ toast('書き出す観察記録がありません'); return; }
+  // 目印が同じ記録は「同じ1羽」。いちばん多い個体数を、その記録の種に1回だけ足す
+  svRecs.forEach((list, su)=>{
+    const best=new Map();
+    list.forEach(r=>{
+      if(!r.key){ const m=bySp[r.sp]; m.bySurvey[su]=(m.bySurvey[su]||0)+r.c; return; }
+      const cur=best.get(r.key);
+      // 種は最初に出てきたものに固定し、個体数だけ多い方を採る（集計画面と同じ扱い）
+      if(cur==null) best.set(r.key, {sp:r.sp, c:r.c});
+      else if(r.c>cur.c) best.set(r.key, {sp:cur.sp, c:r.c});
+    });
+    best.forEach(v=>{ const m=bySp[v.sp]; m.bySurvey[su]=(m.bySurvey[su]||0)+v.c; });
+  });
+  names.forEach(nm=>{ const m=bySp[nm];
+    m.total=Object.keys(m.bySurvey).reduce((n,su)=>n+m.bySurvey[su], 0);
+  });
   // 種の分類順（種名マスタの並び）でソート。未同定・マスタ外は末尾
   const ord=nm=>{ const sp=speciesByName(nm); return sp? sp.species_id : 99999; };
   names.sort((a,b)=>ord(a)-ord(b)||a.localeCompare(b));
 
   // 1) 種一覧表
-  const listCols=['和名','学名','延べ個体数','記録件数','確認方法','繁殖ランク','環境省RL','北海道RL','種の保存法','天然記念物'];
+  // 「延べ個体数」＝記録された数の単純合計、「実数」＝同じ鳥（目印が同じ記録）を1羽と数えた値。
+  // 集計画面と同じ分け方。1つの数字だけ出すと、どちらの意味か取り違えられる
+  const listCols=['和名','学名','延べ個体数','実数（同一個体の重複除外）','記録件数','確認方法','繁殖ランク','環境省RL','北海道RL','種の保存法','天然記念物'];
   const listRows=names.map(nm=>{ const m=bySp[nm]; const sp=speciesByName(nm);
-    return [nm, sp?sp.scientific_name:'', m.total, m.records, [...m.methods].join('・'),
+    return [nm, sp?sp.scientific_name:'', m.totalRaw, m.total, m.records, [...m.methods].join('・'),
       (BREED_LABEL[m.rank]||''), csvConserv(nm,'e'), csvConserv(nm,'k'), csvConserv(nm,'h'), csvConserv(nm,'t')]; });
   const listCsv='﻿'+[listCols.join(',')].concat(listRows.map(r=>r.map(csvCell).join(','))).join('\r\n');
   download(`${base}_species_list.csv`, listCsv, 'text/csv;charset=utf-8');
 
-  // 2) 地点×種マトリクス（行=種, 列=調査（一意）, 値=延べ個体数）。同名の別回次でも列を分ける
-  const matCols=['和名'].concat(svCols.map(c=>c.label));
+  // 2) 地点×種マトリクス（行=種, 列=調査（一意）, 値=実数＝同一個体の重複除外）。同名の別回次でも列を分ける
+  const matCols=['和名（値は実数＝同一個体の重複除外）'].concat(svCols.map(c=>c.label));
   const matRows=names.map(nm=>{ const m=bySp[nm];
     return [nm].concat(svCols.map(c=>m.bySurvey[c.uuid]||0)); });
   const matCsv='﻿'+[matCols.map(csvCell).join(',')].concat(matRows.map(r=>r.map(csvCell).join(','))).join('\r\n');
   download(`${base}_site_species_matrix.csv`, matCsv, 'text/csv;charset=utf-8');
-  toast('報告書用（種一覧・地点×種）を書き出しました');
+
+  // 3) 止まり・巣の明細（新しく記録できるようになった項目を、報告書でも使えるように出す）
+  const detCols=['調査','記録ID','同一個体の目印','和名','観察日時',
+    '鳥の緯度','鳥の経度','止まっていたもの','高さ・サイズ','樹種の分類','樹種名','樹高(m)','人工物','メモ',
+    '巣の緯度','巣の経度','営巣木の樹種','営巣木の樹高(m)','巣の状態'];
+  const detRows=[];
+  // 巣の代表を先に決める（地図・書き出しと同じ見分け方）。代表以外は巣の列を空にする。
+  // 代表の行には、同じ巣の他の記録から補った内容（位置だけ・状態だけの分）を重ねて出す
+  const nestRepMap=new Map(nestGroups(surveys.reduce((a,s)=>a.concat(DB.obsOf(s.uuid)),[])).map(o=>[o.uuid,o]));
+  const nestRep=new Set(nestRepMap.keys());
+  surveys.forEach(s=>{ DB.obsOf(s.uuid).forEach(o=>{
+    const hasPerch=[o.perch_type,o.perch_size,o.perch_class,o.perch_species,o.perch_height,o.perch_artificial,o.perch_note].some(Boolean);
+    const tp=coordPair(o.target_latitude,o.target_longitude);
+    const np=coordPair(o.nest_latitude,o.nest_longitude);
+    const hasTarget=!!tp[0];
+    const hasNest=!!np[0]||o.nest_state||o.nest_tree_species||o.nest_tree_height;
+    if(!hasPerch && !hasTarget && !hasNest) return;
+    // 同じ巣が複数の記録に写されている分は、巣の列だけ空にして二重に数えないようにする
+    const dup = hasNest && !nestRep.has(o.uuid);
+    detRows.push([svLabel(s), o.uuid, o.individual_key||'', o.species_name_snapshot||'（未同定）', isoLocal(o.observed_at),
+      tp[0], tp[1],
+      o.perch_type||'', o.perch_size||'', o.perch_class||'', o.perch_species||'', o.perch_height||'',
+      o.perch_artificial||'', o.perch_note||'',
+      dup?'':coordPair((nestRepMap.get(o.uuid)||o).nest_latitude,(nestRepMap.get(o.uuid)||o).nest_longitude)[0],
+      dup?'':coordPair((nestRepMap.get(o.uuid)||o).nest_latitude,(nestRepMap.get(o.uuid)||o).nest_longitude)[1],
+      dup?'':((nestRepMap.get(o.uuid)||o).nest_tree_species||''),
+      dup?'':((nestRepMap.get(o.uuid)||o).nest_tree_height||''),
+      dup?'':((nestRepMap.get(o.uuid)||o).nest_state||'')]);
+  }); });
+  if(detRows.length){
+    const detCsv='\ufeff'+[detCols.map(csvCell).join(',')].concat(detRows.map(r=>r.map(csvCell).join(','))).join('\r\n');
+    download(`${base}_perch_nest.csv`, detCsv, 'text/csv;charset=utf-8');
+  }
+  toast('報告書用（種一覧・地点×種'+(detRows.length?'・止まり/巣':'')+'）を書き出しました');
 }
 function exportGeoJSON(surveys, base){
-  const rows=buildRows(surveys).filter(r=>r.latitude&&r.longitude&&!isNaN(parseFloat(r.latitude)));
-  const fc={ type:'FeatureCollection', features: rows.map(r=>({
+  // 観察者の位置・鳥がいた場所・巣の位置は別々の点として出す。
+  // 観察者の位置だけで絞ると、測位が取れなかった記録の鳥や巣が丸ごと落ちてしまう
+  const rows=buildRows(surveys);
+  // 有効かどうかの判定は地図・案内と同じ validLatLon を使う。
+  // 別々に判定すると「緯度91」のような値が書き出しにだけ出て、件数も食い違う
+  const has=(r,la,lo)=>validLatLon(String(r[la]||''), String(r[lo]||''));
+  const fcOf=(list,la,lo)=>({ type:'FeatureCollection', features:list.map(r=>({
     type:'Feature',
-    geometry:{ type:'Point', coordinates:[parseFloat(r.longitude), parseFloat(r.latitude)] },
+    geometry:{ type:'Point', coordinates:[parseFloat(r[lo]), parseFloat(r[la])] },
     properties: CSV_COLS.reduce((p,c)=>{ p[c]=r[c]; return p; }, {})
-  }))};
-  if(!fc.features.length){ toast('位置付きの記録がありません'); return; }
-  download(`${base}_observations.geojson`, JSON.stringify(fc,null,1), 'application/geo+json');
-  toast('GeoJSONを書き出しました');
+  }))});
+  let n=0;
+  const put=(list,la,lo,name)=>{ if(!list.length) return;
+    download(`${base}_${name}.geojson`, JSON.stringify(fcOf(list,la,lo),null,1), 'application/geo+json'); n++; };
+  put(rows.filter(r=>has(r,'latitude','longitude')), 'latitude','longitude', 'observations');
+  put(rows.filter(r=>has(r,'target_latitude','target_longitude')), 'target_latitude','target_longitude', 'bird_positions');
+  // 同じ巣が複数の記録に写されているので、1件にまとめる
+  // 巣は生の記録から代表を決める（buildRows の行には updated_at が無く、「最新を基準」が働かないため）。
+  // 代表の補完済みの内容を、その記録の書き出し行に重ねて出す
+  const nestReps=uniqNests(surveys.reduce((a,sv)=>a.concat(DB.obsOf(sv.uuid)),[]));
+  const rowByObs=new Map(rows.map(r=>[r.observation_id, r]));
+  const nestRows=nestReps.map(o=>{
+    const r=Object.assign({}, rowByObs.get(o.uuid)||{});
+    ['nest_id','nest_tree_species','nest_tree_height','nest_state'].forEach(k=>{ r[k]=o[k]||''; });
+    // 座標は数値の0を落とさない書き方で写す
+    r.nest_latitude=coordStr(o.nest_latitude); r.nest_longitude=coordStr(o.nest_longitude);
+    return r;
+  }).filter(r=>r.observation_id);
+  put(nestRows, 'nest_latitude','nest_longitude', 'nests');
+  if(!n){ toast('位置付きの記録がありません'); return; }
+  toast('GeoJSONを書き出しました（'+n+'ファイル）');
 }
 // 飛翔経路を線データ（LineString）でGeoJSON出力（QGISで使える）
 // 生データ版（タップ点そのまま）と曲線版（滑らかにした線）の2ファイルを書き出す
@@ -6536,6 +7611,7 @@ async function gdriveSignIn(){
 function gdriveSignOut(){ gdriveTokenClear(); GUSER=''; localStorage.removeItem('bs_gdrive_user'); toast('サインアウトしました'); render(); }
 // 手動の一括同期：ドライブの新しいデータを取り込んでから、この端末の記録・写真・録音を保存する
 async function gdriveSyncFull(){
+  if(!writeAllowed()){ toast('起動時の確認が終わるまで同期できません'); return; }
   if(!gdriveCfg().clientId){ toast('先にクライアントIDを設定してください'); return; }
   try{
     toast('同期中…');
@@ -6810,6 +7886,9 @@ async function gdrivePullMedia(token, opts){
 // ローカルに無い＆削除済み(deleted_at付き)は取り込まない（完全削除したものが戻ってくるのを防ぐ）。
 // 全コレクションを計算し終えてから一括保存し、途中失敗時は元に戻す（半分だけ取り込んだ状態をDriveへ再送信しないため）
 function mergeRemoteRecords(d){
+  // 使用権の確認が済むまで、同期の書き込みは始めない。
+  // null を返すと呼び出し側が「取り込めた」と誤解して既読にしてしまうので、例外で止める
+  if(!writeAllowed()) throw new Error('起動時の確認が終わるまで同期できません');
   const colKeys=[['surveys',DB.key.sv],['observations',DB.key.ob],['notes',DB.key.nt],
     ['hypotheses',DB.key.hy],['hyp_results',DB.key.hr],['flights',DB.key.fl]];
   // 形式検証: 6コレクションすべて配列であること（片方だけ取り込んで壊れた状態を作らない）
@@ -6863,6 +7942,7 @@ function mergeRemoteRecords(d){
 // 順序は必ず「記録が先→メディアが後」（逆にすると、起動時の掃除(mediaGcAll)が
 // 「どの記録も参照していないblob」と誤判定して消す恐れがある）
 async function gdrivePullAll(files, token){
+  if(!writeAllowed()) throw new Error('起動時の確認が終わるまで同期できません');
   return gdriveSerial(async ()=>{
     const targets=files || unseenSyncFiles(await gdriveListSyncFiles(token));
     if(!targets.length) return null;
@@ -7058,11 +8138,14 @@ function mergeLibraryManifestAdd(d){
   const cur=refdocList(); const have=new Set(cur.map(r=>r.id));
   const merged=cur.slice();
   d.refdocs.forEach(r=>{ if(!have.has(r.id)) merged.push({ id:r.id, name:String(r.name), size:r.size, created_at:r.created_at }); });
-  refdocSave(merged);
+  if(!refdocSave(merged)) throw new Error('保存できませんでした（空き容量を確認してください）');
   const guide=myguideList(); const gHave=new Set(guide.map(g=>g&&g.id));
   let changed=false;
   d.guides.forEach(g=>{ if(!gHave.has(g.id)){ guide.push(g); changed=true; } });
-  if(changed && !myguideSave(guide)) throw new Error('保存できませんでした（空き容量を確認してください）');
+  if(changed && !myguideSave(guide)){
+    refdocSave(cur);   // 片方だけ進んだ状態を残さない（戻せなかった場合は次の起動点検で拾われる）
+    throw new Error('保存できませんでした（空き容量を確認してください）');
+  }
 }
 // 同一種のsource:'guide'を「実体が端末にある最新の1件」に整理する。
 // 実体の取得に失敗した種は古い画像とメタをそのまま残す（新メタだけ残して旧を消すと、掃除で旧画像まで消えて全滅するため）
@@ -7137,6 +8220,7 @@ async function gdriveUploadLibrary(){
 }
 // 手動ダウンロード: 目録を取り込んでから、実体が無い分だけ受け取る
 async function gdrivePullLibrary(){
+  if(!writeAllowed()) return;
   if(!gdriveCfg().clientId){ toast('先にクライアントIDを設定してください'); return; }
   if(!confirm('図鑑・資料PDFは容量が大きいことがあるため、Wi-Fi接続でのダウンロードをおすすめします。続けますか？')) return;
   try{
@@ -7314,7 +8398,7 @@ SCREENS.exportHub = ()=>{
         <div class="btn-grid">
           <button class="btn primary" onclick="exportReport(DB.surveys(),'BirdSurvey_all')">📋 報告書用（種一覧・地点×種）</button>
           <button class="btn" onclick="exportCSV(DB.surveys(),'BirdSurvey_all')">観察CSV</button>
-          <button class="btn" onclick="exportGeoJSON(DB.surveys(),'BirdSurvey_all')">観察GeoJSON</button>
+          <button class="btn" onclick="exportGeoJSON(DB.surveys(),'BirdSurvey_all')">位置GeoJSON（観察者・鳥・巣）</button>
           <button class="btn" onclick="exportFlightsGeoJSON(DB.surveys(),'BirdSurvey_all')">🛩 飛翔経路GeoJSON</button>
           <button class="btn" onclick="exportHypCSV(DB.surveys(),'BirdSurvey_all')">仮説CSV</button>
           <button class="btn" onclick="exportMediaZip(DB.surveys(),'BirdSurvey_all')">🎤📷 録音・写真ZIP</button>
@@ -7327,7 +8411,7 @@ SCREENS.exportHub = ()=>{
         <div class="row"><div class="grow"><b>${esc(s.name)}</b><div class="small muted">${fmtDate(s.survey_date)} ・ 観察${DB.obsOf(s.uuid).length}件</div></div><span class="muted">›</span></div>
       </div>`).join('') : '<div class="empty small">調査がありません。</div>'}
       <div class="sp"></div>
-      <div class="note">CSVはExcel/QGISで開ける文字コード(UTF-8 BOM)、GeoJSONは座標系EPSG:4326・QGISでそのまま読み込めます。iPhoneでは共有シートから「ファイルに保存」を選べます。</div>
+      <div class="note">CSVはExcel/QGISで開ける文字コード(UTF-8 BOM)、GeoJSONは座標系EPSG:4326・QGISでそのまま読み込めます。位置GeoJSONは「観察者の位置」「鳥がいた場所」「巣の位置」の最大3ファイル（記録が無い種類は作られません）。iPhoneでは共有シートから「ファイルに保存」を選べます。</div>
     `};
 };
 SCREENS.exportSurvey = (u)=>{
@@ -7337,13 +8421,13 @@ SCREENS.exportSurvey = (u)=>{
       <div class="btn-grid">
         <button class="btn primary" onclick="exportReport([DB.survey('${u}')],'${base}')">📋 報告書用（種一覧・地点×種）</button>
         <button class="btn primary" onclick="exportCSV([DB.survey('${u}')],'${base}')">観察CSV</button>
-        <button class="btn primary" onclick="exportGeoJSON([DB.survey('${u}')],'${base}')">観察GeoJSON</button>
+        <button class="btn primary" onclick="exportGeoJSON([DB.survey('${u}')],'${base}')">位置GeoJSON（観察者・鳥・巣）</button>
         <button class="btn" onclick="exportFlightsGeoJSON([DB.survey('${u}')],'${base}')">🛩 飛翔経路GeoJSON</button>
         <button class="btn" onclick="exportHypCSV([DB.survey('${u}')],'${base}')">仮説CSV</button>
         <button class="btn" onclick="exportMediaZip([DB.survey('${u}')],'${base}')">🎤📷 録音・写真ZIP</button>
       </div>
       <div class="sp"></div>
-      <div class="note">観察 ${DB.obsOf(u).length}件（位置付き ${DB.obsOf(u).filter(o=>o.latitude).length}件・録音 ${DB.obsOf(u).reduce((n,o)=>n+((o.audio||[]).length),0)}件・写真動画 ${DB.obsOf(u).reduce((n,o)=>n+((o.media||[]).length),0)}件）・飛翔経路 ${DB.flightsOf(u).length}件（録音 ${DB.flightsOf(u).reduce((n,f)=>n+((f.audio||[]).length),0)}件・写真動画 ${DB.flightsOf(u).reduce((n,f)=>n+((f.media||[]).length),0)}件）・仮説 ${DB.hypOf(u).length}件を書き出します。飛翔GeoJSONは生データ版と曲線版の2ファイルを出します。</div>
+      <div class="note">観察 ${DB.obsOf(u).length}件（観察者の位置 ${DB.obsOf(u).filter(o=>validLatLon(o.latitude,o.longitude)).length}件・鳥がいた場所 ${DB.obsOf(u).filter(o=>validLatLon(o.target_latitude,o.target_longitude)).length}件・巣 ${nestRecords(DB.obsOf(u)).length}件（位置付き ${uniqNests(DB.obsOf(u)).length}件）・録音 ${DB.obsOf(u).reduce((n,o)=>n+((o.audio||[]).length),0)}件・写真動画 ${DB.obsOf(u).reduce((n,o)=>n+((o.media||[]).length),0)}件）・飛翔経路 ${DB.flightsOf(u).length}件（録音 ${DB.flightsOf(u).reduce((n,f)=>n+((f.audio||[]).length),0)}件・写真動画 ${DB.flightsOf(u).reduce((n,f)=>n+((f.media||[]).length),0)}件）・仮説 ${DB.hypOf(u).length}件を書き出します。飛翔GeoJSONは生データ版と曲線版の2ファイルを出します。</div>
     `};
 };
 
@@ -7399,6 +8483,7 @@ function importIdsOk(d){
   return true;
 }
 function doImport(){
+  if(!writeAllowed()) return;   // 起動時の確認が済むまで、取込は始めない（途中まで進むと参照が壊れる）
   const f=$('#impFile').files[0]; if(!f){ toast('ファイルを選んでください'); return; }
   // 読み込む前にファイルの大きさを確認（巨大ファイルの読み込み・解析で画面が固まるのを防ぐ）
   if(f.size>IMPORT_FILE_MAX){ toast('ファイルが大きすぎるため取り込めません（上限1GB）'); return; }
@@ -7471,7 +8556,7 @@ const SCAN_AUX = [
   ['recent',     DB.key.recent,   '最近使った種'],
 ];
 // 点検結果の表示用。recordIssuesが返す項目名を平易な言葉にする
-const FIELD_LABELS = { record:'記録全体', size:'記録の大きさ（上限超え）', repair_note:'修復メモ', uuid:'記録ID', id:'旧ID', survey_uuid:'調査への参照', individual_key:'同一個体の目印',
+const FIELD_LABELS = { record:'記録全体', size:'記録の大きさ（上限超え）', repair_note:'修復メモ', uuid:'記録ID', id:'旧ID', survey_uuid:'調査への参照', individual_key:'同一個体の目印', nest_id:'巣の目印',
   hypothesis_uuid:'仮説への参照', ref_id:'図鑑参照', created_at:'作成日時', updated_at:'更新日時',
   deleted_at:'削除日時', audio:'録音の参照', media:'写真・動画の参照',
   survey_date:'調査日', start_datetime:'開始日時', end_datetime:'終了日時', observed_at:'観察日時',
@@ -7556,8 +8641,7 @@ async function buildRepairPlan(){
   // 元の値を記録内に控える（同期・取込・書き出しは repair_note を見ないため安全に持ち回れる）
   const showVal=v=>{ let s; try{ s=JSON.stringify(v); }catch(e){ s=String(v); }
     s=String(s==null?'':s); return s.length>120 ? s.slice(0,120)+'…' : s; };
-  const note=(x,msg)=>{ const t=(typeof x.repair_note==='string'&&x.repair_note ? x.repair_note+' / ' : '')+msg;
-    x.repair_note = t.length>REPAIR_NOTE_MAX ? t.slice(0,REPAIR_NOTE_MAX-1)+'…' : t; };
+  const note=(x,msg)=>{ x.repair_note=repairNoteAdd(x.repair_note, msg); };   // 上限でも新しい理由を必ず残す
 
   // 1周目: 読める区分を集め、壊れた記録IDを振り直して旧値→新値の対応表を作る
   const data={};                        // name -> {key,label,arr,changed}
@@ -7699,6 +8783,18 @@ async function buildRepairPlan(){
         delete x.deleted_at;
         act(wasTrash ? `${d.label}: 削除日時が壊れていたため、ごみ箱の記録を復元しました（不要なら削除し直してください）`
                      : `${d.label}: 空の削除日時を外しました（記録は残ります）`);
+      }
+      // 座標の対（観察者・鳥がいた場所・巣）: 片方だけ・範囲外は書き出しで黙って落ちるため、
+      // ここで対ごと空にそろえ、元の値は記録内に控える
+      for(const [la,lo] of [['latitude','longitude'],['target_latitude','target_longitude'],['nest_latitude','nest_longitude']]){
+        if(x[la]==null && x[lo]==null) continue;
+        const a=coordStr(x[la]), b=coordStr(x[lo]);
+        if(a==='' && b==='') continue;
+        if(validLatLon(a,b)) continue;
+        d.changed=true;
+        note(x, '位置（'+la+'）が不正（元の値: '+showVal([x[la],x[lo]])+'）');
+        x[la]=''; x[lo]='';
+        act(`${d.label}: 位置が正しくなかったため空にしました（元の値は記録内に控えました）`);
       }
       // 業務日時（観察日時など）: 正しい値は推測できないため空にし、元の値は記録内に控える
       for(const f of (STAMP_FIELDS[name]||[])){
@@ -7872,6 +8968,7 @@ function downloadRepairRescue(){
 // 2) localStorage一括保存（1つでも失敗したら全部巻き戻し）
 // 3) 旧実体の削除と、アップ済み控えの旧ID掃除（失敗しても孤児として掃除される・実害なし）
 async function applyRepairPlan(plan){
+  if(!writeAllowed()) throw new Error('起動時の確認が終わるまで修復できません');
   // 点検時点から保存内容が変わっていないか確認（変わっていたら古い修復案で新しいデータを潰さない）。
   // メディアコピー後の中止では、新IDへの複製だけが残る（記録は無傷・複製は起動時の掃除が回収）ため、文言を実態に合わせる
   const assertUnchanged=(afterMedia)=>{ for(const k of REPAIR_KEYS){
@@ -8008,12 +9105,126 @@ function applyTheme(){
 }
 function toggleTheme(){ try{ localStorage.setItem('bs_theme', themeMode()==='light'?'dark':'light'); }catch(e){} applyTheme(); render(); }
 applyTheme();
+
+/* ---------- 起動（複数タブの同時使用を禁止してから、データに触れる） ----------
+   保存はどれも「読んで・直して・書き戻す」方式のため、2つのタブが同時に書くと片方の保存が消える。
+   書き込みごとに守るのではなく、最初に開いたタブだけが使える形にして、この競合を根こそぎ無くす。
+   使用権が決まるまではデータに触れる処理（点検・メディア掃除・同期チェック）を一切始めない */
+function multiTabBlockShow(){
+  try{ bootNoticeSet(''); }catch(e){}
+  const d=document.createElement('div');
+  d.id='multiTabBlock';
+  d.style.cssText='position:fixed;inset:0;z-index:99999;background:#101614;color:#e7efe9;'
+    +'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;';
+  d.innerHTML='<div style="font-size:40px">⚠️</div>'
+    +'<b>このアプリは別のタブで開かれています</b>'
+    +'<div style="font-size:13px;opacity:.8;line-height:1.7">同時に使うと記録が壊れる恐れがあるため、このタブでは操作できません。<br>'
+    +'先に開いたタブを閉じてから、下のボタンを押してください。</div>'
+    +'<button style="padding:10px 18px;border-radius:10px;border:1px solid #3a4a42;background:#2f6f4f;color:#fff;font-size:15px" '
+    +'onclick="location.reload()">もう一度開く</button>';
+  // 下の画面をキーボード・支援機能からも操作できないようにする
+  [...document.body.children].forEach(el=>{ try{ el.inert=true; }catch(e){} });
+  document.body.appendChild(d);
+}
+// 画面の表示と「読むだけ」の処理は今すぐ行う（表示が遅れると使いものにならない）。
+// 使用権が決まる前でも、読むだけならデータは壊れない——壊すのは書き込みだけ
 rescanLocalData();   // 保存済みデータの点検（問題があればホームに警告カードを出す）
 reset('home');
-// 掃除が終わってから同期チェック（並行させると、取り込んだ直後の録音・写真を「参照なし」と誤判定して消す恐れがある）
-mediaGcAll().catch(()=>{}).then(()=>gdriveStartupCheck()); // ドライブに別端末の新しい保存があれば取り込みを提案
 fsLoadSaved().then(()=>{ if(STACK.length===1 && STACK[0].name==='home') render(); }); // 保存フォルダ設定を復元
-if('serviceWorker' in navigator){ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{})); }
+function startApp(){
+  window.WRITE_OK=true;   // ここで初めて書き込みを許可する
+  bootNoticeSet('');
+  // 書き込みを伴う起動処理は、使用権が決まってからだけ行う。
+  // 掃除が終わってから同期チェック（並行させると、取り込んだ直後の録音・写真を「参照なし」と誤判定して消す恐れがある）
+  mediaGcAll().catch(()=>{}).then(()=>gdriveStartupCheck()); // ドライブに別端末の新しい保存があれば取り込みを提案
+}
+// 書き込みの許可。使用権（Web Locks）と旧版タブの確認が済むまで false のまま。
+// DB.save の入口で検査され、false の間はどの画面からも保存できない
+window.WRITE_OK=false;
+function bootNoticeSet(msg){
+  let el=document.getElementById('bootNotice');
+  if(!msg){ if(el) el.remove(); return; }
+  if(!el){
+    el=document.createElement('div');
+    el.id='bootNotice';
+    el.style.cssText='position:fixed;left:0;right:0;top:0;z-index:9998;background:#7a5c14;color:#fff;'
+      +'padding:6px 12px;font-size:12px;text-align:center;';
+    document.body.appendChild(el);
+  }
+  el.textContent=msg;
+}
+// この版の画面であることを、SWからの問い合わせ（verCheck）に答えて名乗る。
+// 前の版の画面は答えられないので、残っているタブを見分けられる
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.addEventListener('message', e=>{
+    if(e.data && e.data.type==='verCheck' && e.ports && e.ports[0]){
+      // 単一タブ判定の世代番号。判定の仕組みを変えたら数を上げる（SW側と一致していること）
+      try{ e.ports[0].postMessage({v:2}); }catch(err){}
+    }
+  });
+}
+(async function bootGuard(){
+  bootNoticeSet('起動時の確認をしています…（この間は保存できません）');
+  // 1) 使用権（Web Locks）を先に取る。同時に開いても勝者は必ず1つに決まり、
+  //    負けたタブはここで止まる（両方止まってしまうことはない）
+  if('locks' in navigator){
+    let got=false;
+    try{
+      await new Promise(resolve=>{
+        navigator.locks.request('bird-survey-single-tab:'+new URL('./',location.href).pathname, {ifAvailable:true}, lock=>{
+          if(!lock){ resolve(); return; }
+          got=true; resolve();
+          return new Promise(()=>{});   // 使用権を持ち続ける（タブを閉じれば自動で解放）
+        }).catch(()=>resolve());
+      });
+    }catch(e){}
+    if(!got){ multiTabBlockShow(); return; }
+  } else {
+    // 使用権の仕組みが無いブラウザでは、同時に開いた同じ版のタブを見分けられない。
+    // 閲覧専用にする（WRITE_OK は false のまま＝どの画面からも保存できない）。
+    // オフライン用のキャッシュ（SW）だけは、閲覧専用でも導入しておく
+    if('serviceWorker' in navigator && location.protocol!=='file:'){
+      try{ navigator.serviceWorker.register('./sw.js').catch(()=>{}); }catch(e){}
+    }
+    bootNoticeSet('このブラウザでは閲覧のみできます（保存はできません）。最新のブラウザでお使いください');
+    return;
+  }
+  // 2) 前の版のタブが残っていないか、SWに確かめてもらう。
+  //    前の版はロックを知らないため、ロックだけでは同時書き込みを防げない。
+  //    登録に失敗した・答えが得られない場合は、安全側に倒して止める
+  if(!('serviceWorker' in navigator) || location.protocol==='file:'){
+    // 前の版のタブが残っていないかを確かめられない開き方では、保存を許可しない
+    bootNoticeSet('この開き方では閲覧のみできます（保存はできません）。ホーム画面のアプリから開いてください');
+    return;
+  }
+  {
+    let reg=null;
+    try{ reg=await navigator.serviceWorker.register('./sw.js'); }
+    catch(e){ multiTabBlockShow(); return; }
+    let ans=null;
+    for(let i2=0;i2<10 && !ans;i2++){
+      // 更新直後は前の版のSWが受け持っていて答えられない。
+      // 試すたびに「いま有効なSW」を取り直す（新しいSWは skipWaiting/claim ですぐ切り替わる）
+      const sw=navigator.serviceWorker.controller || (reg && reg.active) || null;
+      if(sw){
+        ans=await new Promise(res=>{
+          const ch=new MessageChannel();
+          const tm=setTimeout(()=>res(null), 1500);
+          ch.port1.onmessage=ev=>{ clearTimeout(tm);
+            const d=ev.data;
+            // 世代番号（guardV）が一致する答えだけを受理する。
+            // 更新直後の前の版のSWは guardV を知らないため、その答えでは進まない
+            res((d && d.ok===true && d.guardV===2 && typeof d.legacy==='number') ? d : null); };
+          try{ sw.postMessage({type:'countLegacy'},[ch.port2]); }
+          catch(e){ clearTimeout(tm); res(null); }
+        });
+      }
+      if(!ans) await new Promise(r=>setTimeout(r,500));   // 新しいSWへの切り替わりを待つ
+    }
+    if(!ans || ans.legacy>0){ multiTabBlockShow(); return; }
+  }
+  startApp();
+})();
 </script>
 </body>
 </html>

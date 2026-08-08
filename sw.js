@@ -1,4 +1,4 @@
-const CACHE = 'bird-survey-v97';
+const CACHE = 'bird-survey-v144';
 // 必須資産（これが揃わないとアプリが成立しない）。install時に全部揃わなければ失敗させ、不完全キャッシュで有効化しない
 const CORE = [
   './bird_survey.html',
@@ -116,7 +116,37 @@ function packEnqueue(fn){ const p = packChain.then(fn, fn); packChain = p.catch(
 self.addEventListener('message', e => {
   const m = e.data || {};
   const reply = r => { try{ e.ports[0] && e.ports[0].postMessage(r); }catch(err){} };
-  if (m.type === 'ping'){
+  if (m.type === 'countLegacy'){
+    // 開いている画面のうち「この版であることを名乗れない画面（＝前の版のタブ）」を数える。
+    // 数えられなかったときは ok:false を返し、アプリ側は安全側に倒して止まる
+    e.waitUntil((async () => {
+      try{
+        const all = await self.clients.matchAll({ type:'window', includeUncontrolled:true });
+        // 数えるのはこのアプリの画面だけ。同じ場所の別のHTMLを巻き込まない
+        const scopePath = new URL(self.registration.scope).pathname;   // 例: /bird-survey-web/
+        // この場所のアプリ画面だけを数える（完全一致）。同じ場所の別のHTMLや別の場所のアプリを巻き込まない
+        const okPaths = new Set([scopePath, scopePath + 'bird_survey.html', scopePath + 'index.html']);
+        const cs = all.filter(c => {
+          try{ return okPaths.has(new URL(c.url).pathname); }
+          catch(err){ return false; }
+        });
+        let legacy = 0;
+        await Promise.all(cs.map(c => new Promise(res => {
+          const ch = new MessageChannel();
+          const tm = setTimeout(() => { legacy++; res(); }, 700);
+          // 「この版の画面です」という形の答えだけを認める（形式の違う答えは前の版とみなす）
+          ch.port1.onmessage = ev => { clearTimeout(tm);
+            // 単一タブ判定の世代番号が完全に一致する画面だけを「今の版」と認める。
+            // v:1 の頃の画面は使用権の名前が違い、両方が書けてしまうため legacy 扱いにする
+            if(!(ev.data && ev.data.v === 2)) legacy++;
+            res(); };
+          try{ c.postMessage({ type:'verCheck' }, [ch.port2]); }
+          catch(err){ clearTimeout(tm); legacy++; res(); }
+        })));
+        reply({ ok:true, guardV:2, legacy, total: cs.length });   // guardV=単一タブ判定の世代番号
+      }catch(err){ reply({ ok:false }); }
+    })());
+  } else if (m.type === 'ping'){
     // 疎通確認（アプリ更新直後、旧SWが残っていて依頼に応答できない状態を保存前に検知するため）。
     // feat はパック処理の機能改訂番号（2=15秒打ち切り・statsのerror応答あり）。v78内の改訂を区別する
     reply({ v: 78, feat: 2 });
