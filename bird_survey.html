@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v146（2026-08-07 監査48巡目：軸の経路への書き戻し・削除だけの保存等6件）';
+const APP_VERSION = 'v147（2026-08-07 監査49巡目：添付の持ち主を経路に・1点経路の後始末等5件）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1230,7 +1230,9 @@ function leaveGuardOk(){
 }
 // 閲覧専用のとき入れない画面（入力できるのに保存できない画面を作らない）
 const RO_BLOCKED_SCREENS=['obsEdit','flightEdit','surveyEdit','noteEdit','routeEdit','hypEdit',
-  'importHub','cloud','voiceObs','obsBatch','hypVerify','surveyEnd'];
+  'importHub','cloud','voiceObs','obsBatch','hypVerify','surveyEnd','offlineMap','repair'];
+// 閲覧の価値がある画面（資料・図鑑・ごみ箱）は開けるが、変更のボタンは出さない
+function roBtn(html){ return window.READ_ONLY ? '' : html; }
 function nav(name, arg){
   if(window.READ_ONLY && RO_BLOCKED_SCREENS.indexOf(name)>=0){
     toast('このブラウザ／開き方では閲覧のみできます（入力・保存はできません）', 5000); return; } if(!leaveGuardOk()) return; SCREENS._sel=null; STACK.push({name,arg}); render(); }
@@ -2269,6 +2271,7 @@ SCREENS.obsEdit = (argStr)=>{
         <div class="chips" id="segChips" style="margin-top:6px;"></div>
         <div class="row" id="segEditBar" style="display:none; margin-top:6px; gap:8px; align-items:center;">
           <span class="tiny grow" id="segEditMsg"></span>
+          <button type="button" class="btn ghost" id="segFlMore" style="display:none; width:auto; padding:6px 10px;" onclick="segFlOpen()">🎤📷 この経路の添付・メモ</button>
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="segEditDone()">やめる</button>
           <button type="button" class="btn danger" style="width:auto; padding:6px 10px;" onclick="segEditDelete()">✕ 消す</button>
         </div>
@@ -2416,7 +2419,12 @@ SCREENS.obsEdit = (argStr)=>{
       <div class="note">地図の <b>P</b> で鳥がいた場所、<b>F</b> で飛んだ経路を記録します。落とした内容に応じて記録が作られ、時刻と距離帯は自動で入ります。</div>
       <div class="savebar"><button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing},false)">保存する</button></div>
     `,
-    onMount:()=>{ SCREENS._obs=o; SCREENS._mediaCtx={kind:'obs', uuid:o.uuid, sv:o.survey_uuid};
+    onMount:()=>{ SCREENS._obs=o;
+      // 経路を軸に開いたときは、録音・写真の持ち主も最初から経路にする
+      //（観察名義で撮ってから付け替える方式は、途中で失敗すると持ち主が食い違う）
+      SCREENS._mediaCtx = flAnchor
+        ? {kind:'flight', uuid:flAnchor.uuid, sv:o.survey_uuid}
+        : {kind:'obs', uuid:o.uuid, sv:o.survey_uuid};
       SCREENS._audio=(o.audio||[]).slice(); SCREENS._media=(o.media||[]).slice();
       // 記録モードは毎回「止まっている」から始める（前の画面の経路を持ち越さない）
       // 地図の状態は毎回まっさらから始める（前の画面の内容を持ち越さない）
@@ -2457,8 +2465,8 @@ SCREENS.obsEdit = (argStr)=>{
           .filter(f=>flKey ? f.individual_key===flKey : f.uuid===flAnchor.uuid)
           .sort((a,b)=>String(a.start_time||'').localeCompare(String(b.start_time||'')))
           .forEach(f=>{
+            // 2点未満（壊れた・作りかけの経路）も読み込む。読み込まないと直すことも消すこともできない
             const path=(f.path||[]).filter(validPathPt);
-            if(path.length<2) return;
             SCREENS._loadedFl.push(f.uuid);
             PF_SEGS.push({t:'F', id:pfId(), fromExisting:true, srcUuid:f.uuid,
               pts:path.map(pt=>pt.slice()), times:path.map(()=>''),
@@ -2484,7 +2492,6 @@ SCREENS.obsEdit = (argStr)=>{
           .sort((a,b)=>String(a.start_time||'').localeCompare(String(b.start_time||'')))
           .forEach(f=>{
             const path=(f.path||[]).filter(validPathPt);
-            if(path.length<2) return;
             SCREENS._loadedFl.push(f.uuid);
             PF_SEGS.push({t:'F', id:pfId(), fromExisting:true, srcUuid:f.uuid,
               pts:path.map(pt=>pt.slice()), times:path.map(()=>''),
@@ -3233,11 +3240,21 @@ function nestLabelSync(){
   const lab=$('#nestPosLabel'); if(lab) lab.textContent = PF_NEST ? '巣の位置：指定済み' : '巣の位置：未指定';
   const sm=$('#sumNest'); if(sm) sm.textContent = PF_NEST ? '位置：指定済み' : '地図のNで位置を指定';
 }
+// 選んだ経路の添付・メモは専用画面で扱う（統合画面は共有項目と地図を受け持つ）
+function segFlOpen(){
+  const sg=PF_SEGS[PF_SEL];
+  if(!sg || sg.t!=='F' || !sg.srcUuid) return;
+  const sv=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
+  nav('flightEdit', JSON.stringify({sv, id:sg.srcUuid}));
+}
 function segEditBar(){
   const bar=$('#segEditBar'), msg=$('#segEditMsg');
   if(!bar) return;
   if(PF_SEL===-1){ bar.style.display='none'; return; }
   bar.style.display='';
+  const more=$('#segFlMore');
+  if(more){ const sg=PF_SEGS[PF_SEL];
+    more.style.display=(sg && sg.t==='F' && sg.srcUuid && !SCREENS._flAnchorUuid)?'':'none'; }
   if(msg){
     if(PF_SEL===-2) msg.textContent='巣の位置を直しています。地図をタップすると移動します';
     else if(PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='P') msg.textContent=segLabel(PF_SEL)+' を直しています。地図をタップすると移動します';
@@ -3824,7 +3841,7 @@ function saveObs(u, svUuid, editing, cont){
   const paths = pfPaths();
   const anchorFlId=SCREENS._flAnchorUuid||'';   // 経路のカードから開いたときの、軸の経路の番号
   // 点が1つだけの経路は保存できない。黙って捨てず、直せるように知らせる
-  if(PF_SEGS.some(sg=>sg.t==='F' && sg.pts.length<2)){
+  if(PF_SEGS.some(sg=>sg.t==='F' && sg.pts.length<2 && (!sg.srcUuid || sg.edited))){
     toast('点が1つだけの経路があります。2点目を足すか、下の一覧から選んで消してください', 6000); return; }
   // 経路が無いのに飛翔専用の入力（高度・飛翔の行動）が残っているときは、黙って捨てない
   if(!paths.length && (segVal('fl_height') || segVals('fl_behavior'))){
@@ -3981,8 +3998,10 @@ function saveObs(u, svUuid, editing, cont){
   // 飛翔だけの保存で写真・録音があれば、書き込む前に、その1本の経路の記録へ付ける。
   // 実体（IndexedDB）の持ち主の控えも飛翔に付け替える（バックアップの中身と実態を食い違わせない）
   let flOwnerJobs=null;
-  if(!obRecs.length && (flRecs.length===1 || (anchorFlId && flRecs.some(f=>f.uuid===anchorFlId)))){
-    const flId=anchorFlId || flRecs[0].uuid;
+  // 軸のある保存は書き戻し（上）で完結する。ここは「軸なしで新しく経路だけ保存した」場合の付け先。
+  // 軸を消した保存では、添付は消した経路の記録に残す（他の経路へ写すと二重参照になる）
+  if(!obRecs.length && flRecs.length===1 && !anchorFlId){
+    const flId=flRecs[0].uuid;
     const flTgt=flRecs.find(f=>f.uuid===flId)||flRecs[0];
     if((SCREENS._audio||[]).length) flTgt.audio=(SCREENS._audio||[]).slice();
     if((SCREENS._media||[]).length) flTgt.media=(SCREENS._media||[]).slice();
@@ -4118,7 +4137,7 @@ function saveObs(u, svUuid, editing, cont){
       cp.distance_band='';   // 距離帯は位置に付く情報。位置を外したら必ず外す
       if(!writeOne(DB.key.ob, cp, r=>DB.upsertObs(r))){ rollback(); return; }
     }
-    const keptFl=new Set(paths.map(sg=>sg.srcUuid).filter(Boolean));
+    const keptFl=new Set(PF_SEGS.filter(sg=>sg.t==='F' && sg.srcUuid).map(sg=>sg.srcUuid));
     for(const id of (SCREENS._loadedFl||[])){
       if(keptFl.has(id)) continue;
       if(!writeOne(DB.key.fl, {uuid:id}, ()=>DB.softDelete(DB.key.fl, id))){ rollback(); return; }
@@ -6305,11 +6324,11 @@ SCREENS.trash = ()=>{
           <div style="font-weight:700;">${esc(g.name(x))}</div>
           <div class="small muted">${esc(g.sub(x))}</div>
           <div class="row" style="margin-top:10px; gap:8px;">
-            <button class="btn" style="flex:1;" onclick="restoreItem('${g.k}','${x.uuid}')">↩ 復元</button>
-            <button class="btn danger" style="flex:1;" onclick="purgeItem('${g.k}','${x.uuid}')">完全に削除</button>
+            ${roBtn(`<button class="btn" style="flex:1;" onclick="restoreItem('${g.k}','${x.uuid}')">↩ 復元</button>
+            <button class="btn danger" style="flex:1;" onclick="purgeItem('${g.k}','${x.uuid}')">完全に削除</button>`)}
           </div></div>`).join('')}`).join('')}
       <div class="divider"></div>
-      <button class="btn danger" onclick="purgeAll()">ごみ箱を空にする（完全削除）</button>
+      ${roBtn(`<button class="btn danger" onclick="purgeAll()">ごみ箱を空にする（完全削除）</button>`)}
       <div class="sp"></div>
       <div class="note">「復元」で元に戻せます。「完全に削除」すると取り消せません。調査を復元・完全削除すると、ひも付く観察記録・メモ・仮説もまとめて処理します。</div>
     ` : '<div class="empty">ごみ箱は空です。</div>'
