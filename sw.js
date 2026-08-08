@@ -1,4 +1,4 @@
-const CACHE = 'bird-survey-v156';
+const CACHE = 'bird-survey-v157';
 // 必須資産（これが揃わないとアプリが成立しない）。install時に全部揃わなければ失敗させ、不完全キャッシュで有効化しない
 const CORE = [
   './bird_survey.html',
@@ -141,12 +141,12 @@ self.addEventListener('message', e => {
           ch.port1.onmessage = ev => { clearTimeout(tm);
             // 単一タブ判定の世代番号が完全に一致する画面だけを「今の版」と認める。
             // v:1 の頃の画面は使用権の名前が違い、両方が書けてしまうため legacy 扱いにする
-            if(!(ev.data && ev.data.v === 2)) legacy++;
+            if(!(ev.data && ev.data.v === 3)) legacy++;   // 3=使用権をオリジン共通にした世代。v2以前は旧版扱い
             res(); };
           try{ c.postMessage({ type:'verCheck' }, [ch.port2]); }
           catch(err){ clearTimeout(tm); legacy++; res(); }
         })));
-        reply({ ok:true, guardV:2, legacy, total: cs.length });   // guardV=単一タブ判定の世代番号
+        reply({ ok:true, guardV:3, legacy, total: cs.length });   // guardV=単一タブ判定の世代番号
       }catch(err){ reply({ ok:false }); }
     })());
   } else if (m.type === 'ping'){

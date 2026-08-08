@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v156（2026-08-08 監査58巡目：旧版タブの常時見張り・止まり情報の完全保持）';
+const APP_VERSION = 'v157（2026-08-08 監査59巡目：世代番号3・即時検知・後片付け保護・逐語コピー統一）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2557,7 +2557,11 @@ SCREENS.obsEdit = (argStr)=>{
           && (o.perch_size||o.perch_class||o.perch_species||o.perch_height))?'木':''),
           size:o.perch_size||'', cls:o.perch_class||'', species:o.perch_species||'',
           height:o.perch_height||'', art:o.perch_artificial||'', note:o.perch_note||'' };
-        if(Object.keys(pk).some(k=>pk[k])) SCREENS._pendingPerch=pk;
+        // 画面に出せない値（数値の0やfalseなど）も含めて出どころを覚えておく。
+        // P を落としても止まり情報を触らなければ、保存時に元記録から逐語で写す
+        const hasAnyPerch=['perch_type','perch_size','perch_class','perch_species','perch_height','perch_artificial','perch_note']
+          .some(k=>o[k]!==undefined && o[k]!==null && o[k]!=='');
+        if(hasAnyPerch){ pk.from=o.uuid; SCREENS._pendingPerch=pk; }
       }
       SCREENS._chosenId=o.species_id||''; SCREENS._obsEditing=editing;
       // 精度の扱い: null=保存時に既存値を維持 / ''=不明（手入力座標） / 数値=確定値。初期値は画面に表示している精度と一致させる
@@ -3520,9 +3524,11 @@ function pfDrop(lat,lon){
   }
   if(PF_MODE==='P'){
     // 位置が無かった古い記録から引き継ぐ止まり木情報があれば、最初の P に移す
-    let _pk=perchNew();
-    if(SCREENS._pendingPerch){ _pk=SCREENS._pendingPerch; SCREENS._pendingPerch=null; }
-    PF_SEGS.push({t:'P', id:pfId(), pt:[lat,lon], time:now, perch:_pk});
+    let _pk=perchNew(), _pkFrom='';
+    if(SCREENS._pendingPerch){ _pk=SCREENS._pendingPerch; _pkFrom=_pk.from||''; delete _pk.from; SCREENS._pendingPerch=null; }
+    const _newP={t:'P', id:pfId(), pt:[lat,lon], time:now, perch:_pk};
+    if(_pkFrom) _newP.perchFrom=_pkFrom;   // 止まり情報の出どころ（触らなければ保存時に元記録から逐語で写す）
+    PF_SEGS.push(_newP);
     PERCH_IDX=pfPoints().length-1;   // 落としたばかりの P を編集対象にする
     perchTabs(); perchLoad();
   } else {
@@ -3962,8 +3968,8 @@ function saveObs(u, svUuid, editing, cont){
     } else if(!editing){
       PK.forEach(k=>{ rec[k]=''; });   // 巣だけの記録。止まっていた場所は無い
     } else if(base){
-      // もともと位置が無い記録 → 画面で扱えていないので、もとの値をそのまま残す
-      PK.forEach(k=>{ rec[k]=base[k]||''; });
+      // もともと位置が無い記録 → 画面で扱えていないので、もとの値をそのまま残す（0・false・null も変えない）
+      PK.forEach(k=>{ rec[k]=base[k]; });
     }
     obRecs.push(rec);
   }
@@ -3998,7 +4004,10 @@ function saveObs(u, svUuid, editing, cont){
     // 触っていない既存の P は、元の記録の止まり情報を全項目そのまま保つ。
     //（種類別の絞り込みを無条件に通すと、種類と別種類の詳細が併存する取込データが
     //  開いて保存しただけで削られる）
-    const srcPerchRec=(editing && sg.srcUuid && !sg.perchEdited) ? (sg.srcUuid===u ? base : sibSrc) : null;
+    const srcPerchRec=(editing && !sg.perchEdited)
+      ? (sg.srcUuid ? (sg.srcUuid===u ? base : sibSrc)
+                    : ((sg.perchFrom && sg.perchFrom===u) ? base : null))
+      : null;
     if(srcPerchRec){
       ['perch_type','perch_size','perch_class','perch_species','perch_height','perch_artificial','perch_note']
         .forEach(k=>{ r2[k]=srcPerchRec[k]; });   // 値をそのまま写す（0・false・null も変えない。無い項目は無いまま）
@@ -4050,7 +4059,7 @@ function saveObs(u, svUuid, editing, cont){
     const PK=['perch_type','perch_size','perch_class','perch_species','perch_height','perch_artificial','perch_note'];
     const openedHadP = !!(base && validLatLon(coordStr(base.target_latitude), coordStr(base.target_longitude)));
     if(openedHadP){ PK.forEach(k=>{ rec[k]=''; }); rec.distance_band=''; }
-    else if(base){ PK.forEach(k=>{ rec[k]=base[k]||''; }); }
+    else if(base){ PK.forEach(k=>{ rec[k]=base[k]; }); }   // 逐語コピー（0・false・null も変えない）
     obRecs.unshift(rec);
   } }
 
@@ -9396,7 +9405,7 @@ if('serviceWorker' in navigator){
   navigator.serviceWorker.addEventListener('message', e=>{
     if(e.data && e.data.type==='verCheck' && e.ports && e.ports[0]){
       // 単一タブ判定の世代番号。判定の仕組みを変えたら数を上げる（SW側と一致していること）
-      try{ e.ports[0].postMessage({v:2}); }catch(err){}
+      try{ e.ports[0].postMessage({v:3}); }catch(err){}   // 3=使用権をオリジン共通にした世代。v2以前は旧版扱い
     }
   });
 }
@@ -9411,7 +9420,7 @@ async function countLegacyAsk(){
       const tm=setTimeout(()=>res(null), 1500);
       ch.port1.onmessage=ev=>{ clearTimeout(tm);
         const d=ev.data;
-        res((d && d.ok===true && d.guardV===2 && typeof d.legacy==='number') ? d : null); };
+        res((d && d.ok===true && d.guardV===3 && typeof d.legacy==='number') ? d : null); };
       try{ sw.postMessage({type:'countLegacy'},[ch.port2]); }
       catch(e){ clearTimeout(tm); res(null); }
     });
@@ -9431,12 +9440,23 @@ function guardFreezeShow(){
     +'<br><br><button class="btn primary" onclick="guardRecheck()">閉じたので再開する</button></div>';
   document.body.appendChild(el);
 }
+async function guardFreeze(){
+  if(GUARD_FROZEN) return;
+  GUARD_FROZEN=true;
+  guardFreezeShow();   // 新しい操作は覆いで止める
+  // 進行中の保存の後片付け（添付の持ち主の付け替え・失敗時の巻き戻し）が終わるのを
+  // 待ってから書き込み許可を下ろす。途中で下ろすと、巻き戻しの書き込みまで拒否されて
+  // 「記録は保存済みなのに添付の持ち主が中途半端」という壊れ方をする
+  for(let i2=0;i2<600 && (typeof SAVE_BUSY!=='undefined' && SAVE_BUSY);i2++){
+    await new Promise(r=>setTimeout(r,100));
+  }
+  window.WRITE_OK=false;
+}
 async function guardWatchTick(){
   if(GUARD_FROZEN || !window.WRITE_OK) return;
   const ans=await countLegacyAsk();
   if(ans && ans.legacy>0){
-    GUARD_FROZEN=true; window.WRITE_OK=false;   // 確実に分かったときだけ止める（通信の失敗では止めない）
-    guardFreezeShow();
+    await guardFreeze();   // 確実に分かったときだけ止める（通信の失敗では止めない）
   }
 }
 async function guardRecheck(){
@@ -9499,8 +9519,18 @@ async function guardRecheck(){
   }
   startApp();
   // 起動後も、古い版のタブが開かれていないかを定期的に・画面へ戻ったときに確かめる
-  setInterval(guardWatchTick, 12000);
+  setInterval(guardWatchTick, 3000);
   document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) guardWatchTick(); });
+  // このタブは使用権を持つ唯一の書き手のはずなので、他のタブがこのアプリの
+  // 保存領域（bs_〜）を書き換えたら、それ自体が「旧版などの別の書き手がいる」証拠。
+  // 見張りの間隔を待たず、その場で保存を止める
+  window.addEventListener('storage', ev=>{
+    try{
+      if(!ev || typeof ev.key!=='string' || ev.key.indexOf('bs_')!==0) return;
+      if(GUARD_FROZEN || !window.WRITE_OK) return;
+      guardFreeze();
+    }catch(e){}
+  });
 })();
 </script>
 </body>
