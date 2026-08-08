@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v145（2026-08-07 経路のカードも統合画面へ・1羽=1枚に。監査47巡目対応）';
+const APP_VERSION = 'v146（2026-08-07 監査48巡目：軸の経路への書き戻し・削除だけの保存等6件）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1229,7 +1229,8 @@ function leaveGuardOk(){
   return true;
 }
 // 閲覧専用のとき入れない画面（入力できるのに保存できない画面を作らない）
-const RO_BLOCKED_SCREENS=['obsEdit','flightEdit','surveyEdit','noteEdit','routeEdit','hypEdit','import','gdrive'];
+const RO_BLOCKED_SCREENS=['obsEdit','flightEdit','surveyEdit','noteEdit','routeEdit','hypEdit',
+  'importHub','cloud','voiceObs','obsBatch','hypVerify','surveyEnd'];
 function nav(name, arg){
   if(window.READ_ONLY && RO_BLOCKED_SCREENS.indexOf(name)>=0){
     toast('このブラウザ／開き方では閲覧のみできます（入力・保存はできません）', 5000); return; } if(!leaveGuardOk()) return; SCREENS._sel=null; STACK.push({name,arg}); render(); }
@@ -2196,13 +2197,16 @@ SCREENS.obsEdit = (argStr)=>{
       }
     }
     else { const fx=freshFix(); if(fx){ o.latitude=fx.lat.toFixed(6); o.longitude=fx.lon.toFixed(6); o.gps_accuracy=Math.round(fx.acc); } }
-    // 経路のカードから開いたとき: 種名・個体数・齢・結び付けの目印を経路から引き継ぐ
+    // 経路のカードから開いたとき: 種名・個体数・齢・結び付けの目印に加え、
+    // 添付・メモ・要確認も経路から読み込む（読み込まないと、保存で空に置き換わって消える）
     if(flAnchor){
       if(flAnchor.species_name_snapshot){ o.species_name_snapshot=flAnchor.species_name_snapshot;
         o.species_id=flAnchor.species_id||(speciesByName(flAnchor.species_name_snapshot)||{}).species_id||''; }
       if(flAnchor.count!=null && flAnchor.count!=='') o.count=flAnchor.count;
       if(flAnchor.age_class) o.age_class=flAnchor.age_class;
       if(flAnchor.individual_key) o.individual_key=flAnchor.individual_key;
+      o.audio=(flAnchor.audio||[]).slice(); o.media=(flAnchor.media||[]).slice();
+      o.note=flAnchor.memo||''; o.needs_review=!!flAnchor.needs_review;
     }
     // 音声入力（voiceObs）からの下書き。解析できた項目だけ初期値を上書き（保存は利用者の確認後）
     if(arg.voice){ const v=arg.voice;
@@ -2445,6 +2449,7 @@ SCREENS.obsEdit = (argStr)=>{
       // 同じ鳥（individual_key）の他の記録もまとめて読み込む。
       // 1羽を「止まり2か所＋経路1本」と分けて保存した記録を、開き直したときも1画面で扱えるように
       SCREENS._loadedObs=[]; SCREENS._loadedFl=[];
+      SCREENS._flAnchorUuid = flAnchor ? flAnchor.uuid : '';
       // 経路のカードから開いたときは、その経路（と同じ鳥の経路）を読み込む
       if(flAnchor){
         const flKey=flAnchor.individual_key||'';
@@ -3640,12 +3645,18 @@ let SAVE_BUSY=false;   // 添付の付け替えなど、保存の後処理が終
 // 後処理と重なると、保存済みの記録が存在しない実体を参照するなどの食い違いが生まれる）
 function saveBusyShow(on){
   let el=document.getElementById('saveBusyOverlay');
-  if(!on){ if(el) el.remove(); return; }
+  if(!on){
+    if(el) el.remove();
+    [...document.body.children].forEach(c=>{ try{ c.inert=false; }catch(e){} });
+    return;
+  }
   if(el) return;
+  try{ if(document.activeElement && document.activeElement.blur) document.activeElement.blur(); }catch(e){}
+  [...document.body.children].forEach(c=>{ try{ c.inert=true; }catch(e){} });   // キーボード操作も止める
   el=document.createElement('div');
   el.id='saveBusyOverlay';
   el.style.cssText='position:fixed;inset:0;z-index:99997;background:rgba(0,0,0,.45);'
-    +'display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;';
+    +'display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;padding:24px;text-align:center;';
   el.textContent='保存しています…';
   document.body.appendChild(el);
 }
@@ -3811,6 +3822,7 @@ function saveObs(u, svUuid, editing, cont){
      検査は全部先に済ませ、書き込みは飛翔→観察の順。途中で失敗したら書いた分を全部戻す */
   const pts = pfPoints();
   const paths = pfPaths();
+  const anchorFlId=SCREENS._flAnchorUuid||'';   // 経路のカードから開いたときの、軸の経路の番号
   // 点が1つだけの経路は保存できない。黙って捨てず、直せるように知らせる
   if(PF_SEGS.some(sg=>sg.t==='F' && sg.pts.length<2)){
     toast('点が1つだけの経路があります。2点目を足すか、下の一覧から選んで消してください', 6000); return; }
@@ -3824,11 +3836,12 @@ function saveObs(u, svUuid, editing, cont){
   // 巣だけを記録した場合も観察を1件作る（画面で入れられるのに保存先が無い、を作らない）
   const nObs = editing ? Math.max(1, pts.length) : (pts.length || (nestFilled()?1:0));
   const nRec = nObs + paths.length;
-  if(nRec===0){
+  const deletingOnly = nRec===0 && ((SCREENS._loadedFl||[]).length>0 || (SCREENS._loadedObs||[]).length>0);
+  if(nRec===0 && !deletingOnly){
     toast('地図で P（止まっていた場所）か F（飛翔経路）、N（巣の位置）を落としてください', 5000); return; }
   if(nObs===0){
     // 飛翔だけを保存する場合。観察にしか置き場所が無い入力は残らないので、消える前に知らせる
-    if(((SCREENS._audio||[]).length + (SCREENS._media||[]).length)>0 && paths.length!==1){
+    if(((SCREENS._audio||[]).length + (SCREENS._media||[]).length)>0 && paths.length!==1 && !anchorFlId){
       // 経路が1本なら下でその経路に付ける。複数だと付け先が決まらないので止める
       toast('写真・録音の付け先が決まりません。地図で P を落とすか、経路を1本にしてください', 7000); return; }
     // 観察にしか置き場所が無い項目に入力があるまま経路だけ保存すると、その入力は消える。
@@ -3897,6 +3910,7 @@ function saveObs(u, svUuid, editing, cont){
     else if(!editing && i===0){ r2=rec; }
     else { r2=Object.assign({}, rec, { uuid:uuid(), audio:[], media:[] }); }
     r2.individual_key = indKey;
+    if(anchorFlId && r2===rec){ r2.audio=[]; r2.media=[]; r2.note=''; }   // 添付・メモは軸の経路が持つ（二重参照を作らない）
     if(editing && !sg.srcUuid){
       // 新しく作る記録に、開いた記録の古い観察者位置を写さない
       if(fxNow){ r2.latitude=fxNow.lat.toFixed(6); r2.longitude=fxNow.lon.toFixed(6); r2.gps_accuracy=Math.round(fxNow.acc); }
@@ -3953,13 +3967,25 @@ function saveObs(u, svUuid, editing, cont){
     obRecs.unshift(rec);
   } }
 
+  // 経路を軸に開いた保存では、画面の添付・メモ・要確認を軸の経路へ書き戻す
+  //（画面はその経路の写しとして開いている。書き戻さないと、直したのに保存されない）
+  if(anchorFlId){
+    const fr=flRecs.find(f=>f.uuid===anchorFlId);
+    if(fr){
+      fr.audio=(SCREENS._audio||[]).slice();
+      fr.media=(SCREENS._media||[]).slice();
+      fr.memo=String(g('note')||'').trim();
+      fr.needs_review=!!($('#needsReview') && $('#needsReview').checked);
+    }
+  }
   // 飛翔だけの保存で写真・録音があれば、書き込む前に、その1本の経路の記録へ付ける。
   // 実体（IndexedDB）の持ち主の控えも飛翔に付け替える（バックアップの中身と実態を食い違わせない）
   let flOwnerJobs=null;
-  if(!obRecs.length && flRecs.length===1){
-    if((SCREENS._audio||[]).length) flRecs[0].audio=(SCREENS._audio||[]).slice();
-    if((SCREENS._media||[]).length) flRecs[0].media=(SCREENS._media||[]).slice();
-    const flId=flRecs[0].uuid;
+  if(!obRecs.length && (flRecs.length===1 || (anchorFlId && flRecs.some(f=>f.uuid===anchorFlId)))){
+    const flId=anchorFlId || flRecs[0].uuid;
+    const flTgt=flRecs.find(f=>f.uuid===flId)||flRecs[0];
+    if((SCREENS._audio||[]).length) flTgt.audio=(SCREENS._audio||[]).slice();
+    if((SCREENS._media||[]).length) flTgt.media=(SCREENS._media||[]).slice();
     // 実体の持ち主の控えの付け替え。実行は記録の書き込みが済んでから（下の完了処理で待つ）
     flOwnerJobs={ flId, items:[] };
     (SCREENS._audio||[]).forEach(a=>flOwnerJobs.items.push({db:AudioDB, id:a.id}));
@@ -4115,7 +4141,7 @@ function saveObs(u, svUuid, editing, cont){
       SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
       SCREENS._dirty=false; SCREENS._ghost=null;
       PF_SEGS=[]; PF_NEWLINE=true;
-      toast('飛翔経路を'+flRecs.length+'本保存しました');
+      toast(flRecs.length ? ('飛翔経路を'+flRecs.length+'本保存しました') : '経路を削除しました');
       if(cont===true){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid})); } else goBack();
       return true;
     };
@@ -4175,7 +4201,15 @@ function saveObs(u, svUuid, editing, cont){
             }
           }
         }
-        } finally { saveBusyShow(false); }
+        } finally {
+          if(!SAVE_BUSY) saveBusyShow(false);
+          else {
+            // 復旧できない状態。覆いは外さず、再読み込みの案内に切り替える
+            const el=document.getElementById('saveBusyOverlay');
+            if(el) el.innerHTML='保存の後片付けに失敗しました。<br>ページを再読み込みしてください（データ点検・修復画面で確認できます）'
+              +'<br><br><button style="padding:10px 18px;border-radius:10px;border:0;background:#2f6f4f;color:#fff" onclick="location.reload()">再読み込み</button>';
+          }
+        }
       })();
     } else { if(finish()===false){ rollback(); } }
     return;
@@ -6286,16 +6320,17 @@ function restoreItem(k,u){
   if(!DB.restore(k,u)){ toast('復元できませんでした（空き容量を確認してください）'); return; }
   // 付随する記録の復元も、全部の成否を集めてから結果を言う（一部だけ残ったのに成功と言わない）
   let fails=0;
-  const tryRestore=(kk,uu)=>{ if(!DB.restore(kk,uu)) fails++; };
-  // 仮説と一緒に消えた検証結果(deleted_with_hyp)を戻す
-  const restoreHypResults=(hyUuid)=>{ const arr=DB.load(DB.key.hr); let ch=false;
-    arr.forEach(r=>{ if(r.hypothesis_uuid===hyUuid && r.deleted_at && r.deleted_with_hyp){ delete r.deleted_at; delete r.deleted_with_hyp; ch=true; } });
-    if(ch && !DB.save(DB.key.hr,arr)) fails++; };
+  const tryRestore=(kk,uu)=>{ const ok=DB.restore(kk,uu); if(!ok) fails++; return ok; };
+  // 仮説と一緒に消えた検証結果(deleted_with_hyp)を戻す。失敗したら対象の件数ぶん数える
+  const restoreHypResults=(hyUuid)=>{ const arr=DB.load(DB.key.hr); let n=0;
+    arr.forEach(r=>{ if(r.hypothesis_uuid===hyUuid && r.deleted_at && r.deleted_with_hyp){ delete r.deleted_at; delete r.deleted_with_hyp; n++; } });
+    if(n && !DB.save(DB.key.hr,arr)) fails+=n; };
   if(k===DB.key.hy){ restoreHypResults(u); }
   if(k===DB.key.sv){
     DB.deleted(DB.key.ob).filter(o=>o.survey_uuid===u).forEach(o=>tryRestore(DB.key.ob,o.uuid));
     DB.deleted(DB.key.nt).filter(n=>n.survey_uuid===u).forEach(n=>tryRestore(DB.key.nt,n.uuid));
-    DB.deleted(DB.key.hy).filter(h=>h.survey_uuid===u).forEach(h=>{ tryRestore(DB.key.hy,h.uuid); restoreHypResults(h.uuid); });
+    // 親（仮説）が戻せたときだけ、子（検証結果）を戻す（子だけ戻る不整合を作らない）
+    DB.deleted(DB.key.hy).filter(h=>h.survey_uuid===u).forEach(h=>{ if(tryRestore(DB.key.hy,h.uuid)) restoreHypResults(h.uuid); });
     DB.deleted(DB.key.fl).filter(f=>f.survey_uuid===u).forEach(f=>tryRestore(DB.key.fl,f.uuid));
   }
   if(fails) toast('一部（'+fails+'件）を復元できませんでした。ごみ箱を確認してください（空き容量も確認）', 6000);
