@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v147（2026-08-07 監査49巡目：添付の持ち主を経路に・1点経路の後始末等5件）';
+const APP_VERSION = 'v148（2026-08-07 監査50巡目：短い経路への書き戻し・専用モードの導線等7件）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2146,10 +2146,13 @@ function voiceApplyToForm(){
   if(pick.name) chooseSpecies((speciesByName(pick.name)||{}).species_id||'', pick.name);
   if(p.count){ const el=$('#obForm [name="count"]');
     if(el){ el.value=p.count; el.dispatchEvent(new Event('input',{bubbles:true})); } }   // 手入力と同じ扱いにする
-  if(p.detection_method) segSet('detection_method', p.detection_method);
-  if(p.distance_band) segSet('distance_band', p.distance_band);   // 話して入れた指定は守る（changeで指定済みになる）
-  if(p.direction) segSet('direction', p.direction);
-  if(p.behavior){ p.behavior.split('・').forEach(v=>{
+  // 飛翔だけの画面では、観察にしか残せない項目（確認方法・距離帯・方向・通常の行動）は反映しない
+  //（反映しても保存先が無く、保存時に止められて手戻りになる）
+  const floNow = (typeof isFlightOnly==='function') && isFlightOnly();
+  if(!floNow && p.detection_method) segSet('detection_method', p.detection_method);
+  if(!floNow && p.distance_band) segSet('distance_band', p.distance_band);   // 話して入れた指定は守る（changeで指定済みになる）
+  if(!floNow && p.direction) segSet('direction', p.direction);
+  if(!floNow && p.behavior){ p.behavior.split('・').forEach(v=>{
     const b=[...document.querySelectorAll('[data-seg="behavior"] button')].find(x=>x.textContent===v);
     if(b && !b.classList.contains('on')) b.click(); }); }   // click経由＝繁殖ヒント・見出し更新も従来どおり動く
   if(p.note){ const el=$('#obForm [name="note"]'); if(el) el.value=(el.value?el.value+'\n':'')+p.note; }
@@ -2320,7 +2323,7 @@ SCREENS.obsEdit = (argStr)=>{
             <input type="checkbox" id="needsReview" style="width:auto;" ${o.needs_review?'checked':''}>
             <span class="lab" style="margin:0;">要確認フラグ（あとで見直す）</span></label>
           <!-- 時刻と距離帯は地図の操作から自動で入る。新規では隠し、保存後の編集でだけ直せるようにする -->
-          <div id="autoWrap" style="display:${editing?'':'none'};">
+          <div id="autoWrap" style="display:${(editing||flAnchor)?'':'none'};">
             <div class="two">
               <label class="field"><span class="lab">観察日時</span>
                 <input type="datetime-local" name="observed_at" value="${esc(o.observed_at)}"></label>
@@ -3134,7 +3137,8 @@ function nestFilled(){
 }
 // 観察の記録を作るかどうか。編集中は必ず作る（Pを消しても記録そのものは残すため）
 function willSaveObs(){ return !!SCREENS._obsEditing || pfPoints().length>0 || nestFilled(); }
-function isFlightOnly(){ return pfPaths().length>0 && !willSaveObs(); }
+function pfSaveableFls(){ return PF_SEGS.filter(sg=>sg.t==='F' && (sg.pts.length>=2 || (sg.srcUuid && !sg.edited))); }
+function isFlightOnly(){ return pfSaveableFls().length>0 && !willSaveObs(); }
 function syncDisabledStates(){
   const ps=pfPoints();
   const flightOnly = isFlightOnly();
@@ -3245,7 +3249,10 @@ function segFlOpen(){
   const sg=PF_SEGS[PF_SEL];
   if(!sg || sg.t!=='F' || !sg.srcUuid) return;
   const sv=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
-  nav('flightEdit', JSON.stringify({sv, id:sg.srcUuid}));
+  // 経路固有の項目（添付・メモ・要確認）だけを扱う専用モードで開く。
+  // 共有項目（種名・個体数・齢）まで編集できると、統合画面へ戻って保存したとき
+  // 観察側の古い値で上書きされてしまう
+  nav('flightEdit', JSON.stringify({sv, id:sg.srcUuid, localOnly:1}));
 }
 function segEditBar(){
   const bar=$('#segEditBar'), msg=$('#segEditMsg');
@@ -3254,7 +3261,8 @@ function segEditBar(){
   bar.style.display='';
   const more=$('#segFlMore');
   if(more){ const sg=PF_SEGS[PF_SEL];
-    more.style.display=(sg && sg.t==='F' && sg.srcUuid && !SCREENS._flAnchorUuid)?'':'none'; }
+    // 軸として開いている経路自身は統合画面が受け持つ。それ以外の保存済み経路に出す
+    more.style.display=(sg && sg.t==='F' && sg.srcUuid && sg.srcUuid!==SCREENS._flAnchorUuid)?'':'none'; }
   if(msg){
     if(PF_SEL===-2) msg.textContent='巣の位置を直しています。地図をタップすると移動します';
     else if(PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='P') msg.textContent=segLabel(PF_SEL)+' を直しています。地図をタップすると移動します';
@@ -3402,7 +3410,8 @@ function pfSyncFlightFields(){
   // 画面に置いたままにすると、経路を消したり足したりしたとき別の経路に値が化ける
   // 編集対象は「一覧で選んでいる経路」。選んでいなければ、経路が1本のときだけその経路
   const selSeg=(PF_SEL>=0)?PF_SEGS[PF_SEL]:null;
-  const one=(selSeg && selSeg.t==='F') ? selSeg : ((pfPaths().length===1)?pfPaths()[0]:null);
+  const fls=pfSaveableFls();
+  const one=(selSeg && selSeg.t==='F') ? selSeg : ((fls.length===1)?fls[0]:null);
   const prev=SCREENS._flSeg||null;
   if(prev && prev!==one && PF_SEGS.includes(prev)) flStoreInto(prev);   // 隠す前に、いままでの経路へ控える
   if(one!==prev && one) flLoadFrom(one);
@@ -3614,7 +3623,8 @@ function setObsPos(lat,lon){
 }
 // 経路1本から飛翔レコードを作る。検査に落ちたら null を返す（保存は始めない）
 function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsReview, override, useForm){
-  if(!seg || seg.pts.length<2) return null;
+  // 2点未満は原則保存しないが、既存で触っていない経路は元のままの姿で書き戻す（共有項目だけそろえる）
+  if(!seg || (seg.pts.length<2 && !(seg.srcUuid && !seg.edited))) return null;
   const ov=override||{};
   // 手で空にしたのも「空という指定」として扱う（||で判定すると自動の時刻に戻ってしまう）
   const st=('start' in ov) ? ov.start : (seg.times[0] || localDatetimeValue());
@@ -3838,7 +3848,9 @@ function saveObs(u, svUuid, editing, cont){
      P の数だけ観察、経路の数だけ飛翔。2件以上になるときは同じ個体として結び付ける。
      検査は全部先に済ませ、書き込みは飛翔→観察の順。途中で失敗したら書いた分を全部戻す */
   const pts = pfPoints();
-  const paths = pfPaths();
+  // 保存対象の経路: 描ける経路（2点以上）に加え、既存で触っていない短い経路（0・1点）も含める。
+  // 含めないと、短い経路を軸に開いて共有項目を直しても、どこにも書き戻されない
+  const paths = PF_SEGS.filter(sg=>sg.t==='F' && (sg.pts.length>=2 || (sg.srcUuid && !sg.edited)));
   const anchorFlId=SCREENS._flAnchorUuid||'';   // 経路のカードから開いたときの、軸の経路の番号
   // 点が1つだけの経路は保存できない。黙って捨てず、直せるように知らせる
   if(PF_SEGS.some(sg=>sg.t==='F' && sg.pts.length<2 && (!sg.srcUuid || sg.edited))){
@@ -5068,6 +5080,9 @@ function newSurveyFromRoute(u){ const s=DB.survey(u); if(!s) return;
 let flightPath=[], flightLayer=null;
 SCREENS.flightEdit = (argStr)=>{
   const arg=JSON.parse(argStr||'{}'); const svUuid=arg.sv||currentSurveyUuid; const editing=!!arg.id;
+  // 統合画面から「この経路の添付・メモ」で来たとき。共有項目（種名・個体数・齢）は
+  // 統合画面が受け持つので、この画面では隠す（両方で編集できると上書き合戦になる）
+  const localOnly=!!arg.localOnly;
   const keep=arg.keep||{};   // 「続けて描く」で前の経路から引き継ぐ属性
   let f = editing ? Object.assign({}, DB.flight(arg.id)) : null;
   if(!f){
@@ -5120,15 +5135,15 @@ SCREENS.flightEdit = (argStr)=>{
       </div>
       <div class="tiny muted" id="fInfo" style="margin:6px 0;">—</div>
       <form id="flForm">
-        <label class="field"><span class="lab">種名</span>
+        ${localOnly?`<div class="note">共有の項目（種名・個体数・齢）は、まとめ編集の画面で直してください。ここではこの経路だけの項目（添付・メモ・時刻・高度・行動）を扱います。<input id="spInput" type="hidden" value="${esc(f.species_name_snapshot)}"></div>`:`<label class="field"><span class="lab">種名</span>
           <input id="spInput" autocomplete="off" value="${esc(f.species_name_snapshot)}" placeholder="種名を入力（かな可）" oninput="spSearch(this.value)">
           <div id="spSuggest"></div>
           <div class="chips" id="spRefLinks"></div>
-        </label>
+        </label>`}
         <label class="field"><span class="lab">メモ</span>
           <textarea name="memo" placeholder="飛翔の様子・方向など">${esc(f.memo||'')}</textarea></label>
         <div class="two">
-          <label class="field"><span class="lab">齢</span>${segH('age_class',OPT.flightAge)}</label>
+          ${localOnly?'':`<label class="field"><span class="lab">齢</span>${segH('age_class',OPT.flightAge)}</label>`}
           <label class="field"><span class="lab">個体ラベル</span>
             <input name="individual_label" autocomplete="off" value="${esc(f.individual_label||'')}" placeholder="例：個体A／左翼損傷"></label>
         </div>
@@ -5140,8 +5155,8 @@ SCREENS.flightEdit = (argStr)=>{
         </div>
         <label class="field"><span class="lab">飛翔高度</span>${segH('height_class',OPT.flightHeight)}</label>
         <label class="field"><span class="lab">行動（複数可）</span>${segB}</label>
-        <label class="field"><span class="lab">個体数</span>
-          <input type="number" name="count" min="0" value="${esc(f.count==null||f.count===''?1:f.count)}"></label>
+        ${localOnly?`<input type="hidden" name="count" value="${esc(f.count==null||f.count===''?1:f.count)}">`:`<label class="field"><span class="lab">個体数</span>
+          <input type="number" name="count" min="0" value="${esc(f.count==null||f.count===''?1:f.count)}"></label>`}
         <label class="field row" style="gap:12px; align-items:center;">
           <input type="checkbox" id="flReview" style="width:auto;" ${f.needs_review?'checked':''}>
           <span class="lab" style="margin:0;">要確認フラグ</span></label>
@@ -6400,11 +6415,11 @@ SCREENS.guide = ()=>({
     <details class="fold" style="margin-bottom:12px;">
       <summary>📦 図鑑画像の取り込み（ZIP・個別）— ${myguideList().filter(g=>g.source==='guide').length}種済み</summary>
       <div class="card" style="background:var(--panel2); margin-bottom:0;">
-        <input type="file" id="guideZipInput" accept=".zip,application/zip" style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideZip(this)">
+        ${window.READ_ONLY?'':`<input type="file" id="guideZipInput" accept=".zip,application/zip" style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideZip(this)">`}
         <label class="btn primary" for="guideZipInput">📦 図鑑ZIPを一括取り込み（ファイル1個でOK）</label>
         <div class="tiny muted" style="margin-top:6px;">配布された <b>種図鑑.zip</b> を選ぶだけで、たくさんの種の図版をまとめて取り込めます。iPhoneでは「ファイル」から Googleドライブ／OneDrive／iCloud のどこに置いた1ファイルでも選べます。</div>
         <div class="sp"></div>
-        <input type="file" id="guideImgInput" accept="image/*" multiple style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideImages(this)">
+        ${window.READ_ONLY?'':`<input type="file" id="guideImgInput" accept="image/*" multiple style="position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;" onchange="importGuideImages(this)">`}
         <label class="btn ghost" for="guideImgInput">画像を個別に取り込む（1枚ずつ）</label>
         <div class="tiny muted" style="margin-top:6px;">ファイル名が和名（例：ハシブトガラス.png）だと、その種の図鑑に表示されます。取り込んだ画像が<b>公開されることはありません</b>（市販図鑑の私的利用）。別の端末でも見たいときは「☁ クラウド保存」の「📚 図鑑・資料をアップロード／ダウンロード」で受け渡せます。</div>
       </div>
@@ -6428,7 +6443,7 @@ function myguideItemHtml(g){
   return `<div class="myitem" data-kind="${esc(g.kind)}" data-ref="${esc(g.ref_id)}" style="margin-top:6px;">
     ${inner}
     <div class="row"><span class="tiny muted grow">${lab}</span>
-      <button type="button" class="btn ghost danger" style="width:auto; padding:4px 10px; font-size:12px;" onclick="removeFromGuide('${esc(g.id)}')">図鑑から外す</button></div>
+      ${window.READ_ONLY?'':`<button type="button" class="btn ghost danger" style="width:auto; padding:4px 10px; font-size:12px;" onclick="removeFromGuide('${esc(g.id)}')">図鑑から外す</button>`}</div>
   </div>`;
 }
 /* 鳴き声の折りたたみ判定。全種保存済みなら畳む（未保存のうちは開いて目立たせる）。
@@ -6590,14 +6605,14 @@ SCREENS.refdocs = ()=>{
   const HID='position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;';
   return { title:'資料・図鑑',
     html:`
-      <input type="file" id="refdocInput" accept="application/pdf,.pdf" style="${HID}" onchange="importRefdoc(this)">
+      ${window.READ_ONLY?'':`<input type="file" id="refdocInput" accept="application/pdf,.pdf" style="${HID}" onchange="importRefdoc(this)">`}
       <label class="btn primary big" for="refdocInput">＋ 図鑑PDFを取り込む</label>
       <div class="sp"></div>
       ${list.length? list.map(r=>`<div class="card">
         <div class="row">
           <div class="grow tap" onclick="nav('pdfView','${r.id}')"><b>📕 ${esc(r.name)}</b>
             <div class="small muted">${Math.round(r.size/1024/1024*10)/10} MB ・ ${fmtDate(r.created_at)} ・ タップで開く</div></div>
-          <button class="btn danger" style="width:auto; padding:6px 12px;" onclick="delRefdoc('${r.id}')">削除</button>
+          ${window.READ_ONLY?'':`<button class="btn danger" style="width:auto; padding:6px 12px;" onclick="delRefdoc('${r.id}')">削除</button>`}
         </div></div>`).join('') : '<div class="empty small">まだ取り込んだ図鑑がありません。<br>手持ちのPDFを取り込むと、圏外でもアプリ内で開けます。</div>'}
       <div class="note">取り込んだPDFが<b>公開されることはありません</b>（市販図鑑のスキャン等の私的利用）。別の端末でも見たいときは、「☁ クラウド保存」画面の「📚 図鑑・資料をアップロード／ダウンロード」で<b>自分のGoogleドライブ経由</b>で受け渡せます。</div>
     `};
