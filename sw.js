@@ -1,4 +1,4 @@
-const CACHE = 'bird-survey-v157';
+const CACHE = 'bird-survey-v158';
 // 必須資産（これが揃わないとアプリが成立しない）。install時に全部揃わなければ失敗させ、不完全キャッシュで有効化しない
 const CORE = [
   './bird_survey.html',
@@ -136,7 +136,7 @@ self.addEventListener('message', e => {
         let legacy = 0;
         await Promise.all(cs.map(c => new Promise(res => {
           const ch = new MessageChannel();
-          const tm = setTimeout(() => { legacy++; res(); }, 700);
+          const tm = setTimeout(() => { legacy++; res(); }, 1200);   // 遅いだけの現行タブを旧版と誤認しにくくする
           // 「この版の画面です」という形の答えだけを認める（形式の違う答えは前の版とみなす）
           ch.port1.onmessage = ev => { clearTimeout(tm);
             // 単一タブ判定の世代番号が完全に一致する画面だけを「今の版」と認める。
