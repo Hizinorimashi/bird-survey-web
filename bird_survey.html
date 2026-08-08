@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v153（2026-08-07 監査55巡目：専用画面の旧値の復元・下書きの成否確認）';
+const APP_VERSION = 'v154（2026-08-07 監査56巡目：埋め込みXSSの排除・時刻の完全保持）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -5164,13 +5164,18 @@ SCREENS.flightEdit = (argStr)=>{
     // 保存済みの値が今の選択肢に無いとき（取込データ・古い表記）は、選択肢として足して見せる。
     // 出さないと、開いて保存しただけで値が消える
     const list=(f[field] && !opts.includes(f[field])) ? [f[field]].concat(opts) : opts;
+    // 保存値を onclick の文字列へ埋め込まない（属性の復号でスクリプトとして動き得るため）。
+    // pickObs はボタンの表示テキストから値を読むので、引数は要素と項目名だけでよい
     return `<div class="seg" data-seg="${field}">${list.map(o=>
-    `<button type="button" class="${f[field]===o?'on':''}" onclick="pickObs(this,'${field}','${esc(o)}')">${esc(o)}</button>`).join('')}</div>`; };
+    `<button type="button" class="${f[field]===o?'on':''}" onclick="pickObs(this,'${field}')">${esc(o)}</button>`).join('')}</div>`; };
   // 保存済みの時刻がタイムゾーン付き（取込データ等）だと、そのままでは欄に出ず空になる。
-  // ブラウザが受け付ける形（YYYY-MM-DDTHH:mm）に直して出す
+  // ブラウザが受け付ける形（YYYY-MM-DDTHH:mm）に直して出す。
+  // 元の文字列と表示した値は控えておき、触っていない保存では元の文字列を完全に保つ
   const dtLocalVal=v=>{ if(!v) return '';
     if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return v;   // 欄がそのまま受け付ける形
     const d=new Date(v); return isNaN(d.getTime()) ? '' : localDatetimeValue(d); };
+  SCREENS._flTime0={ start:f.start_time||'', end:f.end_time||'',
+    dispStart:dtLocalVal(f.start_time), dispEnd:dtLocalVal(f.end_time) };
   const bo=otherParse(f.behavior); f.behavior=bo.v;
   const bset=new Set(String(f.behavior||'').split('・').filter(Boolean));
   const bUnknown=[...bset].filter(v=>!OPT.flightBehavior.includes(v));
@@ -5507,10 +5512,16 @@ function saveFlight(u,svUuid,editing,cont){
   const behavior=otherMerge(behSet.join('・'),'behavior');
   const prev=editing?DB.flight(u):{uuid:u};
   let age=segVal('age_class'), individual=(g('individual_label')||'').trim(), height=segVal('height_class');
+  // 時刻は、欄の値が「開いたとき表示した値のまま」なら元の文字列を保つ
+  //（表示は分単位に丸めているため、無操作の保存で秒や時差の情報を失わないように）
+  const t0=SCREENS._flTime0||{start:'',end:'',dispStart:'',dispEnd:''};
+  const stIn=g('start_time')||'', enIn=g('end_time')||'';
+  const stOut=(editing && stIn===t0.dispStart) ? t0.start : stIn;
+  const enOut=(editing && enIn===t0.dispEnd) ? t0.end : enIn;
   const rec=Object.assign({},prev,{ uuid:u, survey_uuid:svUuid,
     species_id: name ? (SCREENS._chosenId||'') : '', species_name_snapshot:name,   // 種名が空なら種IDも空（観察側と同じ保証）
     path:flightPath.slice(),
-    start_time:g('start_time')||'', end_time:g('end_time')||'',
+    start_time:stOut, end_time:enOut,
     height_class:height,
     age_class:age, individual_label:individual,
     behavior:behavior,
@@ -5526,9 +5537,7 @@ function saveFlight(u,svUuid,editing,cont){
     // 添付・メモ専用の画面。共有項目（種名・種ID・個体数・齢）は欄が無いので、元の値をそのまま保つ
     rec.species_id=prev.species_id||''; rec.species_name_snapshot=prev.species_name_snapshot||'';
     rec.count=prev.count; rec.age_class=prev.age_class;
-    // 欄に出せなかった時刻（形式が読めない等）を、空で上書きしない
-    if(!rec.start_time && prev.start_time) rec.start_time=prev.start_time;
-    if(!rec.end_time && prev.end_time) rec.end_time=prev.end_time;
+
   }
   if(!DB.upsertFlight(rec)) return;   // 保存失敗なら成功表示も遷移もしない
   if(name) DB.pushRecent(name);
