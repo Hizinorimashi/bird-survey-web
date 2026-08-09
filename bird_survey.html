@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v175（2026-08-09 複数個体の監査対応：仮記録の保全・同期復元・監視の掛け直し・一括破棄）';
+const APP_VERSION = 'v176（2026-08-09 複数個体の監査対応2：全個体一括破棄・初期状態の掛け直し・薄描きの即時反映）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1250,23 +1250,25 @@ function leaveGuardOk(){
   else msg='入力内容がまだ保存されていません。保存せずに戻りますか？';
   if(!confirm(msg)) return false;
   if(dirty){
-    if(ghost){
+    // 複数個体の観察画面では、表示中の個体もまとめて下の一括処理で片付ける
+    //（表示中だけ先に消すと、後続の失敗で戻すとき表示中の分が戻せない）
+    const obsMulti=(cur.name==='obsEdit' && typeof BIRDS!=='undefined' && BIRDS.length>1);
+    if(!obsMulti && ghost){
       // 仮保存済みの幽霊記録を片付ける（墓標が付くので同期でも復活しない）。消せなければ離脱させない
       if(!DB.hardDelete(ghost.key, ghost.uuid)){
         toast('空き容量不足のため破棄できませんでした。空きを確保してからもう一度お試しください', 4000); return false; }
       mediaGcAll().catch(()=>{});
     }
     // 未保存の新規記録は破棄済み名簿へ（保存待ちの写真・録音が完了しても、もう記録を作らせない）
-    const newUuid = (cur.name==='obsEdit' && !SCREENS._obsEditing) ? (SCREENS._obs&&SCREENS._obs.uuid)
+    const newUuid = (!obsMulti && cur.name==='obsEdit' && !SCREENS._obsEditing) ? (SCREENS._obs&&SCREENS._obs.uuid)
                   : (cur.name==='flightEdit' && !SCREENS._flightEditing) ? SCREENS._flightSelf : null;
     // 複数トレースの途中保存で保存済みになったトラックが表示中のこともある＝保存済みは名簿に入れない
     if(newUuid && !(SCREENS._ftSaved && SCREENS._ftSaved.has(newUuid))) DISCARDED.add(newUuid);
     // 複数個体: 開いていない個体の仮記録・書きかけも片付ける。
     // 逐次に消すと途中失敗で半端が残るため、消せた分を戻せる形で一括処理する
-    if(cur.name==='obsEdit' && typeof BIRDS!=='undefined' && BIRDS.length>1){
+    if(obsMulti){
       const jobsG=[];
       for(let bi=0; bi<BIRDS.length; bi++){
-        if(bi===BIRD_IDX) continue;
         const b=BIRDS[bi];
         const gh2=b.media && b.media.ghost;
         if(gh2) jobsG.push({b, gh:gh2});
@@ -1301,7 +1303,6 @@ function leaveGuardOk(){
       jobsG.forEach(j2=>{ j2.b.media.ghost=undefined; });
       // 全部消せてから、未保存の個体を破棄済み名簿へ入れる（半端な名簿を作らない）
       for(let bi=0; bi<BIRDS.length; bi++){
-        if(bi===BIRD_IDX) continue;
         const b=BIRDS[bi];
         if(b.st && b.st.obs && !b.st.obsEditing) DISCARDED.add(b.st.obs.uuid);
       }
@@ -2562,7 +2563,7 @@ SCREENS.obsEdit = (argStr)=>{
         <input type="hidden" id="otLat" value="${esc(o.target_latitude||'')}">
         <input type="hidden" id="otLon" value="${esc(o.target_longitude||'')}">
       </form>
-      ${!editing?`<div class="sp"></div><button class="btn" onclick="saveObs('${o.uuid}','${svUuid}',${editing},true)">＋ 保存して続けて次の記録へ</button>`:''}
+      ${(!editing && BIRDS.length<=1)?`<div class="sp"></div><button class="btn" onclick="saveObs('${o.uuid}','${svUuid}',${editing},true)">＋ 保存して続けて次の記録へ</button>`:''}
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteObs('${o.uuid}')">この記録を削除</button>`:''}
       <div class="sp"></div>
       <div class="note">地図の <b>P</b> で鳥がいた場所、<b>F</b> で飛んだ経路を記録します。落とした内容に応じて記録が作られ、時刻と距離帯は自動で入ります。</div>
@@ -2588,7 +2589,9 @@ SCREENS.obsEdit = (argStr)=>{
           });
         }catch(e){}
         obsBindFormWatch();   // 組み直したフォームに変更監視を掛け直す
+        obsOnlyInitReapply();  // 「最初の状態に戻す」の基準も新しいDOMへ掛け直す
         try{ renderRecPanel(); renderMediaPanel(); }catch(e){}
+        SCREENS._flSeg=null;   // 組み直したDOMへ必ず flLoadFrom させる（取込データの未知の行動の選択肢を再生成）
         try{ perchTabs(); perchLoad(); segChips(); nestSync(); pfInfo(); pfSyncFlightFields(); legacyPosNoteSync(); }catch(e){}
         try{ if(typeof updateIdHint==='function') updateIdHint(); }catch(e){}
         try{ if(typeof updateBreedHint==='function') updateBreedHint(); }catch(e){}
@@ -3314,6 +3317,7 @@ function obsBindFormWatch(){
   const fEl=$('#obForm'); if(fEl){ ['input','change'].forEach(ev=>fEl.addEventListener(ev, e=>{
     if(SCREENS._flLoading) return;
     SCREENS._dirty=true;
+    try{ if(typeof birdListSync==='function' && BIRDS.length>1) birdListSync(); }catch(_e){}
     // 飛翔の高度は、変えた瞬間に対象の経路へ控える（↶や切り替えで入力を失わないように）
     const t=e.target;
     if(t && t.closest && (t.closest('[data-seg="fl_height"]') || t.getAttribute && t.getAttribute('data-other')==='fl_behavior')
@@ -3346,7 +3350,7 @@ function birdListSync(){
     if(!sp && b.reinitFl){ const f=DB.flight(b.reinitFl); sp=(f&&f.species_name_snapshot)||''; }
     const segs=b.map.segs||[];
     const nP=segs.filter(x=>x.t==='P').length, nF=segs.filter(x=>x.t==='F').length;
-    const saved=(b.st.obsEditing || b.reinitId || b.reinitFl)
+    const saved=(b.st.obsEditing || b.reinitId || b.reinitFl || (b.st && b.st.flAnchorUuid))
       ? ' <span class="small" style="opacity:.85">✓保存済み</span>' : '';
     return '<div onclick="birdSwitch('+i+')" style="padding:9px 12px; border-radius:10px; margin-bottom:4px; cursor:pointer;'
       +(cu?'background:#2f6f4f; color:#fff; font-weight:700;':'background:rgba(127,127,127,.16);')+'">'
@@ -3409,6 +3413,33 @@ function birdAfterSave(u2, add, flU){
   const b=CUR();
   b.dirty=false; b.form=null; b.st=nb.st; b.map=nb.map; b.media=nb.media;
   if(u2) b.reinitId=u2; else if(flU) b.reinitFl=flU;
+  // 保存した内容の位置を薄描き用に入れ物へ再構築する（次にこの個体を開くと
+  // reinit の全読み込みで置き換わる。ここは他の個体の地図に見せるためだけの写し）
+  try{
+    if(u2){
+      const rec2=DB.observations().find(x=>x&&x.uuid===u2);
+      if(rec2){
+        const segs=[];
+        if(validLatLon(coordStr(rec2.target_latitude), coordStr(rec2.target_longitude)))
+          segs.push({t:'P', id:0, pt:[parseFloat(rec2.target_latitude), parseFloat(rec2.target_longitude)], time:'', perch:perchNew()});
+        if(rec2.individual_key){
+          DB.flightsOf(rec2.survey_uuid).filter(f=>f.individual_key===rec2.individual_key).forEach(f=>{
+            const pth=(f.path||[]).filter(validPathPt);
+            if(pth.length>1) segs.push({t:'F', id:0, pts:pth, times:[], fl:{height:'',behavior:''}});
+          });
+        }
+        if(validLatLon(coordStr(rec2.nest_latitude), coordStr(rec2.nest_longitude)))
+          b.map.nest=[parseFloat(rec2.nest_latitude), parseFloat(rec2.nest_longitude)];
+        b.map.segs=segs;
+      }
+    } else if(flU){
+      const f2=DB.flight(flU);
+      if(f2){
+        const pth=(f2.path||[]).filter(validPathPt);
+        if(pth.length>1) b.map.segs=[{t:'F', id:0, pts:pth, times:[], fl:{height:'',behavior:''}}];
+      }
+    }
+  }catch(e){}
   if(add){ BIRDS.push(newBird()); BIRD_IDX=BIRDS.length-1; }
   SCREENS._birdKeep=true;
   render();
@@ -3501,16 +3532,41 @@ function syncDisabledStates(){
 }
 // 最初の状態を覚えておく（「触られたか」を見比べるため／戻すため）
 function obsOnlyCapture(){
+  // 「最初の状態」は DOM の印（_initVal/_initOn）に加えて、個体の入れ物にも控える。
+  // 個体切替で画面を組み直すと DOM の印は失われるため、入れ物から掛け直す
+  const snap={ f:{}, s:{} };
+  let gi=0;
   document.querySelectorAll('.obs-only').forEach(box=>{
     box.querySelectorAll('input,select,textarea').forEach(el=>{
-      el._initVal=(el.type==='checkbox')?el.checked:el.value; });
+      el._initVal=(el.type==='checkbox')?el.checked:el.value;
+      const key=(el.name||el.id||(el.getAttribute&&el.getAttribute('data-seg'))||('#'+gi)); gi++;
+      snap.f[key]=el._initVal;
+    });
     box.querySelectorAll('[data-seg]').forEach(seg=>{
-      seg._initOn=[...seg.querySelectorAll('button.on')].map(b=>b.textContent).join('・'); });
+      seg._initOn=[...seg.querySelectorAll('button.on')].map(b=>b.textContent).join('・');
+      snap.s[seg.getAttribute('data-seg')]=seg._initOn;
+    });
   });
+  CUR().st.obsOnlyInitSnap=snap;
   SCREENS._obsOnlyInit=obsOnlyVals();
   // 画面の入力欄だけでなく、地図に置いた巣と「距離帯を指定したか」も一緒に控える
   SCREENS._obsOnlyInitNest = PF_NEST ? PF_NEST.slice() : null;
   SCREENS._obsOnlyInitBand = !!SCREENS._bandTouched;
+}
+// 個体切替で組み直した DOM へ、「最初の状態」の印を入れ物から掛け直す
+function obsOnlyInitReapply(){
+  const snap=CUR().st.obsOnlyInitSnap; if(!snap) return;
+  let gi=0;
+  document.querySelectorAll('.obs-only').forEach(box=>{
+    box.querySelectorAll('input,select,textarea').forEach(el=>{
+      const key=(el.name||el.id||(el.getAttribute&&el.getAttribute('data-seg'))||('#'+gi)); gi++;
+      if(Object.prototype.hasOwnProperty.call(snap.f, key)) el._initVal=snap.f[key];
+    });
+    box.querySelectorAll('[data-seg]').forEach(seg=>{
+      const k2=seg.getAttribute('data-seg');
+      if(Object.prototype.hasOwnProperty.call(snap.s, k2)) seg._initOn=snap.s[k2];
+    });
+  });
 }
 // 触れない状態でも戻せるように、最初の状態へ戻す手段を用意する
 function obsOnlyReset(){
@@ -3871,6 +3927,7 @@ function obsMapClear(){
 let pfLayer=null;
 function pfRedraw(){
   if(!mapObj) return;
+  try{ if(typeof birdListSync==='function' && BIRDS.length>1) birdListSync(); }catch(e){}   // 一覧の止まり/経路数を追随させる
   if(pfLayer){ try{ mapObj.removeLayer(pfLayer); }catch(e){} }
   pfLayer=L.layerGroup().addTo(mapObj);
   // 他の個体の内容は薄く重ねる（位置関係が見えないと、同じ場所を重複して記録してしまう）
