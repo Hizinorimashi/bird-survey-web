@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v188（2026-08-10 監査3巡目：最新版で書き戻す・名前外しの伝播・経路からの命名も統一）';
+const APP_VERSION = 'v189（2026-08-10 監査4巡目：確認の一元化・名前外しの分離・一括保存の同名まとめ）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1729,19 +1729,26 @@ function indLabelsOf(svUuid, spName){
 // ここでは目印を合わせるだけにし、食い違いが残る場合はその場で知らせる
 function flIndKeyFor(svUuid, spName, label, curKey, selfUuid){
   const lb=String(label||'').trim();
-  if(!lb) return { key:curKey||'', fixN:0 };
+  // 名前を外すときも、同じまとまりの記録に名前が残っていれば揃え直しが要る
+  if(!lb){
+    if(!curKey) return { key:'', fixN:0 };
+    const r0=indUnnameResolve(svUuid, curKey, selfUuid||'');
+    return { key:curKey, fixN:r0.fixObs.length+r0.fixFl.length };
+  }
   const r=indResolve(svUuid, spName, lb, curKey||'', selfUuid||'');
   return { key:r.key||curKey||'', fixN:r.fixObs.length+r.fixFl.length };
 }
+// 経路の画面は観察をまたぐ書き直しを安全に行えない（保存の取引が飛翔だけのため）。
+// 揃え直しが要る場合は、そのことを利用者に伝えたうえで「要確認」を付けて残す
 function flIndWarn(total){
   if(!total) return true;
-  return confirm('同じ個体名の記録に、目印の食い違いが'+total+'件あります。\n'
-    +'ここでは経路だけを保存します（食い違いは、その個体の観察を開いて保存すると揃います）。\n\n'
-    +'このまま保存しますか？');
+  return confirm('同じ個体名の記録に、そろっていない目印が'+total+'件あります。\n'
+    +'ここでは経路だけを保存し、「要確認」を付けます。\n'
+    +'（その個体の観察を開いて保存すると揃います）\n\nこのまま保存しますか？');
 }
 // 名前を外すときの解決。目印は変えず、同じまとまりの記録から名前だけを消す
 function indUnnameResolve(svUuid, curKey, selfUuid){
-  const out={ key:curKey, keys:[], fixObs:[], fixFl:[], merge:false };
+  const out={ key:curKey, keys:[], fixObs:[], fixFl:[], merge:false, mode:'unname' };
   if(!curKey) return out;
   (DB.load(DB.key.ob)||[]).forEach(o=>{
     if(o && o.survey_uuid===svUuid && o.uuid!==selfUuid && o.individual_key===curKey && indLabelOf(o)) out.fixObs.push(o); });
@@ -1753,7 +1760,7 @@ function indUnnameResolve(svUuid, curKey, selfUuid){
 // 目印を返すだけだと、同名なのに目印が空の記録や、名前を変えたときの元の仲間が
 // 取り残されて「同じ名前なのに集計では複数羽」に割れてしまう（2026-08-10 監査）
 function indResolve(svUuid, spName, label, curKey, selfUuid){
-  const out={ key:'', keys:[], fixObs:[], fixFl:[], merge:false };
+  const out={ key:'', keys:[], fixObs:[], fixFl:[], merge:false, mode:'merge' };
   const l=String(label||'').trim();
   if(!l) return out;
   const sp=String(spName||'').trim();
@@ -1762,7 +1769,7 @@ function indResolve(svUuid, spName, label, curKey, selfUuid){
   // 同じ名前で使われている目印を集める（自分は除く）
   const keys=new Set();
   obs.forEach(o=>{ if(o.uuid!==selfUuid && same(o) && o.individual_key) keys.add(o.individual_key); });
-  fls.forEach(f=>{ if(same(f) && f.individual_key) keys.add(f.individual_key); });
+  fls.forEach(f=>{ if(f.uuid!==selfUuid && same(f) && f.individual_key) keys.add(f.individual_key); });
   out.keys=Array.from(keys);
   // 正規の目印: 既にあるものの中でいちばん記録の多いもの。無ければ今の目印、それも無ければ新規
   if(out.keys.length){
@@ -1778,7 +1785,7 @@ function indResolve(svUuid, spName, label, curKey, selfUuid){
   const allObs=(DB.load(DB.key.ob)||[]).filter(o=>o && o.survey_uuid===svUuid);
   const allFls=(DB.load(DB.key.fl)||[]).filter(f=>f && f.survey_uuid===svUuid);
   allObs.forEach(o=>{ if(o.uuid!==selfUuid && need(o)) out.fixObs.push(o); });
-  allFls.forEach(f=>{ if(need(f)) out.fixFl.push(f); });
+  allFls.forEach(f=>{ if(f.uuid!==selfUuid && need(f)) out.fixFl.push(f); });
   // 別々のまとまりが1つになる場合だけ「まとめますか」と確かめる
   const all=new Set(out.keys); if(curKey) all.add(curKey);
   out.merge = all.size>1;
@@ -5551,7 +5558,10 @@ function saveObs(u, svUuid, editing, cont){
   const sibs=[];
   // 個体名でまとめる保存で、これから同じ目印へ移す記録。
   // 巣・共有項目をそろえる対象に含める（目印だけ移して中身が食い違うのを防ぐ）
-  const indMergeIds=new Set((indR?indR.fixObs:[]).map(o=>o.uuid));
+  // 「まとめる」ときだけ、相手の記録に共有項目や巣も配る。
+  // 「名前を外す」ときは名前だけを消す（相手の中身に手を出さない）
+  const indMergeIds=new Set((indR && indR.mode==='merge') ? indR.fixObs.map(o=>o.uuid) : []);
+  const indUnnameIds=new Set((indR && indR.mode==='unname') ? indR.fixObs.map(o=>o.uuid) : []);
   // 巣が空になる保存でも、開いたとき巣が見えていなかった画面からは配らない（見えないものは消せない）
   const nestWiping = !rec.nest_id;
   if(indKey && obRecs.length && nestTouched() && !(nestWiping && !SCREENS._hadNestAtOpen)){
@@ -5622,6 +5632,36 @@ function saveObs(u, svUuid, editing, cont){
       if(diff) sibs.push(cp);
     });
   }
+  // まとめる／名前を外す相手は、ここで一度だけ最新の姿を確かめる。
+  // 見つけたときの写しのまま書き戻すと、その間に別のタブがした削除・復元・修正を消してしまう。
+  // 以降の組み立ては、ここで確かめた最新版だけを基底にする
+  if(indR){
+    const nowObs=loadStrict(DB.key.ob), nowFl=loadStrict(DB.key.fl);
+    if(!nowObs || !nowFl){
+      toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000); return;
+    }
+    const moved=(was, now)=> !now
+      || String(was.updated_at||'')!==String(now.updated_at||'')
+      || String(was.deleted_at||'')!==String(now.deleted_at||'');
+    let stale=false;
+    const freshObs=[], freshFl=[];
+    indR.fixObs.forEach(o=>{ const cur=nowObs.find(x=>x&&x.uuid===o.uuid);
+      if(moved(o, cur)) stale=true; else freshObs.push(cur); });
+    indR.fixFl.forEach(f=>{ const cur=nowFl.find(x=>x&&x.uuid===f.uuid);
+      if(moved(f, cur)) stale=true; else freshFl.push(cur); });
+    if(stale){
+      toast('まとめる相手の記録が別の端末・タブで変わりました。画面を開き直してから保存してください', 8000); return;
+    }
+    indR.fixObs=freshObs; indR.fixFl=freshFl;
+  }
+  // 名前を外すときは、同じまとまりの記録から名前だけを消す（中身には手を出さない）
+  if(indUnnameIds.size){
+    const mineU=new Set(obRecs.map(r=>r.uuid).concat(sibs.map(r=>r.uuid)));
+    indR.fixObs.forEach(o=>{
+      if(mineU.has(o.uuid)) return;
+      sibs.push(Object.assign({}, o, { individual_label:'' }));
+    });
+  }
   // 個体名でまとめる相手には、新しい記録からの保存でも共有項目をそろえる
   //（目印と名前だけ移して、種名・個体数・齢などが食い違うのを防ぐ）
   if(indMergeIds.size){
@@ -5677,33 +5717,21 @@ function saveObs(u, svUuid, editing, cont){
   // 同じ保存の取引の中で書くので、途中で失敗すればまとめて元へ戻る。
   // 書き戻すのは「いま読み直した最新の姿」に必要な項目だけを載せたもの。
   // 見つけたときの写しをそのまま書くと、その間に別のタブがした削除・復元・修正を消してしまう
+  // 上で最新版を確かめてあるので、ここでは組み立てるだけ（二重に書かないものは飛ばす）
   const indFixFl=[];
-  if(indR){
-    const nowObs=loadStrict(DB.key.ob), nowFl=loadStrict(DB.key.fl);
-    if(!nowObs || !nowFl){
-      toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000);
-      SAVE_BUSY=false; saveBusyShow(false); return;
-    }
-    const changed=(was, now)=> !now
-      || String(was.updated_at||'')!==String(now.updated_at||'')
-      || String(was.deleted_at||'')!==String(now.deleted_at||'');
-    let stale=false;
+  if(indR && indR.mode==='merge'){
     indR.fixObs.forEach(o=>{
-      if(obRecs.some(r=>r.uuid===o.uuid) || sibs.some(r=>r.uuid===o.uuid)) return;   // 二重に書かない
-      const cur=nowObs.find(x=>x&&x.uuid===o.uuid);
-      if(changed(o, cur)){ stale=true; return; }
-      sibs.push(Object.assign({}, cur, { individual_key:indKey, individual_label:indLabel }));
+      if(obRecs.some(r=>r.uuid===o.uuid) || sibs.some(r=>r.uuid===o.uuid)) return;
+      sibs.push(Object.assign({}, o, { individual_key:indKey, individual_label:indLabel }));
     });
+  }
+  if(indR){
     indR.fixFl.forEach(f=>{
       if(flRecs.some(r=>r.uuid===f.uuid)) return;
-      const cur=nowFl.find(x=>x&&x.uuid===f.uuid);
-      if(changed(f, cur)){ stale=true; return; }
-      indFixFl.push(Object.assign({}, cur, { individual_key:indKey, individual_label:indLabel }));
+      indFixFl.push(indR.mode==='unname'
+        ? Object.assign({}, f, { individual_label:'' })
+        : Object.assign({}, f, { individual_key:indKey, individual_label:indLabel }));
     });
-    if(stale){
-      toast('まとめる相手の記録が別の端末・タブで変わりました。画面を開き直してから保存してください', 8000);
-      SAVE_BUSY=false; saveBusyShow(false); return;
-    }
   }
   // 取引の第1段: これから書く全記録（削除対象も含む）の「書く前の姿」を先に控える。
   // 各記録を書くたびに「書いた直後の控え」も書き足す（writeOne 内）。
@@ -7071,21 +7099,34 @@ function saveFlightMulti(svUuid){
           if(!used.has(lb)) break;
           lb='';
         }
-        if(!lb) lb='個体'+uuid().slice(0,6);   // 使い切ったら必ず一意になる名前にする
+        while(!lb || used.has(lb)) lb='個体'+uuid();   // 使い切ったら、未使用になるまで一意の名前を作る
         used.add(lb); a.autoLabel=lb;
       });
     }});
   // 個体名の解決は書き込みの前に全トラックぶんまとめて行う（途中で条件が変わらないように）
+  // 同じ「種名＋個体名」のトラックは1つの個体。組ごとに1回だけ解決し、同じ目印を配る
+  //（トラックごとに解決すると、同じ一括保存の中で同名なのに別々の目印になってしまう）
   const indPre=new Map();
   let indFixTotal=0;
-  act.forEach(a=>{
-    const fl=a.tr.fields;
-    const nm=(fl.species_name_snapshot||'').trim();
-    const lb=(fl.individual_label||'').trim()||a.autoLabel||'';
-    const r=flIndKeyFor(svUuid, nm, lb, a.tr.indKey||'', a.tr.uuid);
-    indPre.set(a.tr.uuid, r.key);
-    indFixTotal+=r.fixN;
-  });
+  {
+    const byInd=new Map();
+    act.forEach(a=>{
+      const fl=a.tr.fields;
+      const nm=(fl.species_name_snapshot||'').trim();
+      const lb=(fl.individual_label||'').trim()||a.autoLabel||'';
+      const gk=JSON.stringify([lb, nm]);
+      if(!byInd.has(gk)) byInd.set(gk, {nm, lb, list:[]});
+      byInd.get(gk).list.push(a);
+    });
+    byInd.forEach(g=>{
+      if(!g.lb){ g.list.forEach(a=>indPre.set(a.tr.uuid, a.tr.indKey||'')); return; }
+      const seed=(g.list.find(a=>a.tr.indKey)||{tr:{}}).tr.indKey||'';
+      const r=flIndKeyFor(svUuid, g.nm, g.lb, seed, g.list[0].tr.uuid);
+      indFixTotal+=r.fixN;
+      const key=r.key||seed||uuid();
+      g.list.forEach(a=>indPre.set(a.tr.uuid, key));
+    });
+  }
   if(!flIndWarn(indFixTotal)) return;
   // 取引化: 控え→覆い→全件書き込み→一拍→全文検証→完了/補償（統合画面の保存と同じ順序）
   const mUndo=[];   // {uuid, prev, wroteRec}
@@ -7141,7 +7182,7 @@ function saveFlightMulti(svUuid){
       start_time:fl.start_time||'', end_time:fl.end_time||'',
       height_class:fl.height_class||'不明', age_class:fl.age_class||'不明',
       individual_label:(fl.individual_label||'').trim()||a.autoLabel||'', behavior:fl.behavior||'',
-      count:fl.count||'', memo:(fl.memo||'').trim(), needs_review:!!fl.needs_review,
+      count:fl.count||'', memo:(fl.memo||'').trim(), needs_review:(!!fl.needs_review || !!indFixTotal),
       // 観察から引き継いだ結び付きはそのトラックだけが持つ。
       // 個体名を付けたトラックは、同じ調査・同じ種の同名がすでにあればその目印に合わせる（＝同じ1羽）
       individual_key: indPre.get(a.tr.uuid) || a.tr.indKey || '',
@@ -7414,6 +7455,14 @@ function saveFlight(u,svUuid,editing,cont){
     ? { key:(prev.individual_key||''), fixN:0 }   // 添付・メモ専用では個体名を触らせない
     : flIndKeyFor(svUuid, name, individual, (prev.individual_key||''), u);
   if(!flIndWarn(_flInd.fixN)) return;
+  if(_flInd.fixN){
+    // 確認のあいだに状況が変わっていないか、書き込みの直前にもう一度確かめる
+    const _re=(SCREENS._flLocalOnly && editing)
+      ? { key:(prev.individual_key||''), fixN:0 }
+      : flIndKeyFor(svUuid, name, individual, (prev.individual_key||''), u);
+    if(_re.key!==_flInd.key || _re.fixN!==_flInd.fixN){
+      toast('同じ個体名の記録の状況が変わりました。画面を開き直してから保存してください', 8000); return; }
+  }
   const rec=Object.assign({},prev,{ uuid:u, survey_uuid:svUuid,
     species_id: name ? (SCREENS._chosenId||'') : '', species_name_snapshot:name,   // 種名が空なら種IDも空（観察側と同じ保証）
     path:flightPath.slice(),
@@ -7423,7 +7472,8 @@ function saveFlight(u,svUuid,editing,cont){
     behavior:behavior,
     count:g('count')||'',
     memo:(g('memo')||'').trim(),
-    needs_review:$('#flReview').checked,
+    // 揃え直しが残る保存は「要確認」を付けて、あとで気づけるようにする
+    needs_review: $('#flReview').checked || !!_flInd.fixN,
     // 同一個体の目印。観察と行き来したときに引き継ぐ（画面で触れないので既存値を持ち越す）
     // 'obs'（止まった）と 'same'（見失って再発見＝同じ鳥）は、目印が無ければここで発行して結び付ける
     individual_key: _flInd.key || (((SCREENS._ftracks||[])[SCREENS._ftIdx]||{}).indKey||'') || (SCREENS._flIndKey||'')
@@ -7579,9 +7629,9 @@ function saveFlight(u,svUuid,editing,cont){
       individual_label:individual, height_class:height, behavior:behavior,
       count:rec.count, individual_key:rec.individual_key };
     goBack(); nav('flightEdit', JSON.stringify({sv:svUuid, keep})); }
-  else if(cont){ // 別の個体・種。属性だけ引き継ぐ（目印は渡さない＝別個体として数える）
+  else if(cont){ // 別の個体・種。属性だけ引き継ぐ（目印も個体名も渡さない＝別個体として数える）
     const keep={ species_id:SCREENS._chosenId||'', species_name:name, age_class:age,
-      individual_label:individual, height_class:height, behavior:behavior };
+      height_class:height, behavior:behavior };
     goBack(); nav('flightEdit', JSON.stringify({sv:svUuid, keep})); }
   else goBack();
   })();
