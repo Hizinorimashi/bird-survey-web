@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v162（2026-08-09 監査64巡目：2段ジャーナル・補償順序の是正・停止時の完全封鎖）';
+const APP_VERSION = 'v163（2026-08-09 監査65巡目：書いた値の照合・保守的中止・厳格読み込み・バックアップ封鎖）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -391,7 +391,9 @@ const DB = {
     catch(e){ try{ toast('⚠ 空き容量不足で保存できませんでした。写真・動画を整理するかバックアップ後に空けてください'); }catch(_){}
       try{ console.error('localStorage save failed', e); }catch(_){}
       return false; }
-    if(typeof scheduleCloud==='function' && !window.RECOVERY_OK) scheduleCloud(); return true; },
+    if(typeof scheduleCloud==='function' && !window.RECOVERY_OK
+       && !(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY)
+       && !localStorage.getItem('bs_save_journal')) scheduleCloud(); return true; },
   surveys(){ return this.load(this.key.sv).filter(s=>!s.deleted_at); },
   allSurveys(){ return this.load(this.key.sv); },
   observations(){ return this.load(this.key.ob).filter(o=>!o.deleted_at); },
@@ -3731,6 +3733,8 @@ let SAVE_FATAL=false;  // 取り消し不能の停止。再読み込みでしか
 function saveFatalHalt(msg){
   SAVE_FATAL=true; SAVE_BUSY=true; saveBusyShow(true);
   window.WRITE_OK=false;   // 進行中の非同期処理からの追加の書き込みも門で止める
+  try{ if(typeof _cloudTimer!=='undefined') clearTimeout(_cloudTimer); }catch(e){}
+  try{ if(typeof _fullTimer!=='undefined') clearTimeout(_fullTimer); }catch(e){}
   const el=document.getElementById('saveBusyOverlay');
   if(el) el.innerHTML=(msg||'別のタブによる書き換えと重なり、保存の取り消しを完全には行えませんでした。')
     +'<br>ページを再読み込みし、データ点検・修復画面で確認してください'
@@ -3740,6 +3744,21 @@ function saveFatalHalt(msg){
    完了処理（仮記録の削除・添付の持ち主変更）は非同期に進むため、途中でアプリが
    終了すると中間状態が残る。書き込み後に控えを残し、起動時に検証して
    完了をやり直すか、持ち主を戻す */
+// 鍵の並び順に依存しない全文比較（保存された値と「書こうとした値」の照合用）
+function stableJson(v){
+  // JSON.stringify と同じ規則に合わせる: オブジェクトの undefined 項目は無いものとして扱い、
+  // 配列の undefined は null にする（保存前の値と保存後の読み直しを比べるため）
+  if(v===undefined) return 'null';
+  if(Array.isArray(v)) return '['+v.map(x=>(x===undefined)?'null':stableJson(x)).join(',')+']';
+  if(v && typeof v==='object') return '{'+Object.keys(v).sort().filter(k=>v[k]!==undefined)
+    .map(k=>JSON.stringify(k)+':'+stableJson(v[k])).join(',')+'}';
+  return JSON.stringify(v);
+}
+// 巻き戻し・復旧用の厳格読み込み。壊れたJSONを空配列として扱うと、
+// 巻き戻しの保存でコレクション全体を空で上書きしてしまう
+function loadStrict(key){
+  try{ const v=DB.loadRaw(key); return Array.isArray(v)?v:null; }catch(e){ return null; }
+}
 function saveJournalSet(j){
   try{
     const txt=JSON.stringify(j);
@@ -3747,31 +3766,57 @@ function saveJournalSet(j){
     return localStorage.getItem('bs_save_journal')===txt;   // 読み直しまで確かめる
   }catch(e){ return false; }
 }
-function saveJournalClear(){ try{ localStorage.removeItem('bs_save_journal'); }catch(e){} }
+function saveJournalClear(){
+  try{
+    const had=!!localStorage.getItem('bs_save_journal');
+    localStorage.removeItem('bs_save_journal');
+    // 取引が確定した（控えを消せた）ときに一度だけ自動バックアップを予約する
+    if(had && !localStorage.getItem('bs_save_journal') && typeof scheduleCloud==='function'
+       && !window.RECOVERY_OK && !(typeof SAVE_FATAL!=='undefined' && SAVE_FATAL)) scheduleCloud();
+  }catch(e){}
+}
 async function saveJournalRecover(){
   let j=null;
   try{ j=JSON.parse(localStorage.getItem('bs_save_journal')||'null'); }catch(e){}
   if(!j || !Array.isArray(j.undo)){ saveJournalClear(); return true; }
   window.RECOVERY_OK=true;   // 復旧専用の内部書き込み権限（WRITE_OK はまだ開放しない）
   try{
+    // 先に対象の記録がすべて読めることを確かめる（読めない状態で書くと全記録を失う）
+    {
+      const keysNeeded=new Set(j.undo.map(e=>e.key));
+      keysNeeded.add(DB.key.fl);
+      if(j.ghost) keysNeeded.add(j.ghost.key);
+      for(const kk of keysNeeded){
+        if(!loadStrict(kk)){
+          try{ clearTimeout(_cloudTimer); }catch(e){}
+          toast('記録の読み込みに失敗したため、復旧を行えません。データ点検・修復画面で確認してください', 10000);
+          return false;
+        }
+      }
+    }
     if(j.phase==='writing'){
-      // 書き込みの途中で終了した＝取引は確定していない。全記録を書く前の姿へ戻す（取引の中止）
+      // 書き込みの途中で終了した＝取引は確定していない。
+      // 「自分が書いたと確かめられる記録」だけを書く前の姿へ戻す。
+      // 姿が違う記録は別の書き手の正当な更新かもしれないので触らず、控えを残して停止する
       let okW=true;
       const normW=new Map();
       j.undo.forEach(e=>{ const k=e.key+'|'+e.uuid; if(!normW.has(k)) normW.set(k, e); });
       for(const e of normW.values()){
-        const arr=DB.load(e.key)||[];
+        const arr=loadStrict(e.key);
+        if(!arr){ okW=false; continue; }   // 読めない状態で書くと全記録を失う
         const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
-        if(e.prev){
-          const prevJson=JSON.stringify(e.prev);
-          if(idx>=0){ if(JSON.stringify(arr[idx])!==prevJson){ arr[idx]=e.prev; if(!DB.save(e.key,arr)) okW=false; } }
-          else { arr.push(e.prev); if(!DB.save(e.key,arr)) okW=false; }
-          const cur2=(DB.load(e.key)||[]).find(x=>x&&x.uuid===e.uuid);
-          if(JSON.stringify(cur2)!==prevJson) okW=false;
-        } else if(idx>=0){
-          arr.splice(idx,1);
-          if(!DB.save(e.key,arr)) okW=false;
-          else if((DB.load(e.key)||[]).some(x=>x&&x.uuid===e.uuid)) okW=false;
+        const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
+        const prevJson= e.prev ? JSON.stringify(e.prev) : '';
+        if((idx<0 && !e.prev) || (idx>=0 && e.prev && curJson===prevJson)) continue;   // 書く前のまま
+        if(e.wroteRec && idx>=0 && curJson===e.wroteRec){
+          // 自分が書いた値のまま → 書く前の姿へ戻す
+          if(e.prev) arr[idx]=e.prev; else arr.splice(idx,1);
+          if(!DB.save(e.key,arr)){ okW=false; continue; }
+          const a2=loadStrict(e.key);
+          const cur2=a2?a2.find(x=>x&&x.uuid===e.uuid):null;
+          if(e.prev ? JSON.stringify(cur2)!==prevJson : !!cur2) okW=false;
+        } else {
+          okW=false;   // 自分の控えと違う姿＝別の書き手かもしれない。触らない
         }
       }
       if(okW){ saveJournalClear(); toast('前回の保存が途中で止まっていたため、書く前の状態に戻しました。内容を確認してください', 8000); }
@@ -4239,7 +4284,8 @@ function saveObs(u, svUuid, editing, cont){
   // 巻き戻しは「今回書いた記録」だけを対象にする。
   // 配列全体を控えて丸ごと戻すと、その間に別のタブで保存された記録まで消してしまう
   const undoLog=[];   // {key, uuid, prev（書く前の記録。無ければnull）, wrote（書いた直後のupdated_at）}
-  const writeOne=(key, rec, upsert)=>{
+  let txJournal=null;   // 第1段ジャーナル（書き込みの進み具合を逐次控える）
+  const writeOne=(key, rec, upsert, expect)=>{
     const arr0=DB.load(key)||[];
     const cur=arr0.find(x=>x&&x.uuid===rec.uuid);
     const prev=cur?JSON.parse(JSON.stringify(cur)):null;
@@ -4247,8 +4293,17 @@ function saveObs(u, svUuid, editing, cont){
     const arr1=DB.load(key)||[];
     const now=arr1.find(x=>x&&x.uuid===rec.uuid);
     if(!now) return false;   // 書いたはずの記録が見つからない＝成功とは言えない
+    // 書けたのが「自分の書こうとした値」であることを照合する。直後に別のタブが
+    // 同じ番号を上書きした場合、その値を自分の控えとして採用してはならない
+    const expOk = expect ? expect(now, prev) : (stableJson(now)===stableJson(rec));
+    if(!expOk) return false;   // 競合版は undoLog に登録せず中止（巻き戻しで触らない）
     undoLog.push({key, uuid:rec.uuid, prev,
       wroteRec: JSON.stringify(now)});   // 書いた直後の記録全体（時刻だけの比較では同時刻更新を見分けられない）
+    if(txJournal){
+      const pe=txJournal.map.get(key+'|'+rec.uuid);
+      if(pe){ pe.wroteRec=JSON.stringify(now);
+        if(!saveJournalSet(txJournal.j)) return false; }   // 進み具合を控えられなければ成功扱いにしない
+    }
     return true;
   };
   const rollback = ()=>{
@@ -4263,8 +4318,9 @@ function saveObs(u, svUuid, editing, cont){
     const byKey=new Map();
     const restored=[];
     for(const e of Array.from(norm.values()).reverse()){
-      if(!byKey.has(e.key)) byKey.set(e.key, DB.load(e.key)||[]);
+      if(!byKey.has(e.key)) byKey.set(e.key, loadStrict(e.key));
       const arr=byKey.get(e.key);
+      if(!arr){ okAll=false; continue; }   // 読めない状態で書くと全記録を失う
       const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
       const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
       if(idx>=0 && curJson===e.wroteRec){
@@ -4276,10 +4332,12 @@ function saveObs(u, svUuid, editing, cont){
         okAll=false;   // 別の書き手の更新が残っている＝「取り消した」とは言えない
       }
     }
-    byKey.forEach((arr,key)=>{ if(!DB.save(key,arr)) okAll=false; });
+    byKey.forEach((arr,key)=>{ if(arr && !DB.save(key,arr)) okAll=false; });
     // 戻したはずの記録を読み直して、本当に戻ったことを確かめる
     for(const e of restored){
-      const cur=(DB.load(e.key)||[]).find(x=>x&&x.uuid===e.uuid);
+      const a2=loadStrict(e.key);
+      if(!a2){ okAll=false; continue; }
+      const cur=a2.find(x=>x&&x.uuid===e.uuid);
       if(e.prev ? JSON.stringify(cur)!==JSON.stringify(e.prev) : !!cur) okAll=false;
     }
     if(!okAll) toast('保存に失敗し、書きかけを取り消せませんでした。データ点検・修復画面で確認してください', 8000);
@@ -4294,7 +4352,9 @@ function saveObs(u, svUuid, editing, cont){
       const last=new Map();
       undoLog.forEach(e2=>last.set(e2.key+'|'+e2.uuid, e2));
       return Array.from(last.values()).every(e2=>{
-        const cur=(DB.load(e2.key)||[]).find(x=>x&&x.uuid===e2.uuid);
+        const a2=loadStrict(e2.key);
+        if(!a2) return false;
+        const cur=a2.find(x=>x&&x.uuid===e2.uuid);
         return !!cur && JSON.stringify(cur)===e2.wroteRec;   // 記録全体の一致で見る
       });
     }catch(_){ return false; }
@@ -4383,12 +4443,18 @@ function saveObs(u, svUuid, editing, cont){
   if(typeof GUARD_CONFLICT!=='undefined') GUARD_CONFLICT=false;   // この保存の間の競合だけを見る
   const saveAbort=()=>{ SAVE_BUSY=false; saveBusyShow(false); };
   // 取引の第1段: これから書く全記録（削除対象も含む）の「書く前の姿」を先に控える。
-  // 書き込みの途中で終了しても、起動時に取引を丸ごと中止（全記録を元へ）できる
+  // 各記録を書くたびに「書いた直後の控え」も書き足す（writeOne 内）。
+  // 途中で終了しても、起動時に「自分が書いた分だけ」を安全に元へ戻せる
   {
-    const planned=[];
+    const plannedMap=new Map();
+    let planBad=false;
     const addPlan=(key,uuid)=>{ if(!uuid) return;
-      const cur=(DB.load(key)||[]).find(x=>x&&x.uuid===uuid);
-      planned.push({key, uuid, prev: cur?JSON.parse(JSON.stringify(cur)):null, wroteRec:''}); };
+      const k=key+'|'+uuid;
+      if(plannedMap.has(k)) return;
+      const arr=loadStrict(key);
+      if(!arr){ planBad=true; return; }
+      const cur=arr.find(x=>x&&x.uuid===uuid);
+      plannedMap.set(k, {key, uuid, prev: cur?JSON.parse(JSON.stringify(cur)):null, wroteRec:''}); };
     flRecs.forEach(fr=>addPlan(DB.key.fl, fr.uuid));
     obRecs.forEach(r2=>addPlan(DB.key.ob, r2.uuid));
     sibs.forEach(sb=>addPlan(DB.key.ob, sb.uuid));
@@ -4398,15 +4464,30 @@ function saveObs(u, svUuid, editing, cont){
       const keptFlP=new Set(PF_SEGS.filter(sg=>sg.t==='F' && sg.srcUuid).map(sg=>sg.srcUuid));
       (SCREENS._loadedFl||[]).forEach(id=>{ if(!keptFlP.has(id)) addPlan(DB.key.fl, id); });
     }
-    if(!saveJournalSet({ t: nowISO(), phase:'writing', undo: planned, fl:null, ghost:null })){
+    if(planBad){
+      toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000);
+      saveAbort(); return;
+    }
+    const j0={ t: nowISO(), phase:'writing', undo: Array.from(plannedMap.values()), fl:null, ghost:null };
+    if(!saveJournalSet(j0)){
       toast('空き容量が足りず、保存を開始できませんでした。空き容量を確保してからやり直してください', 8000);
       saveAbort(); return;
     }
+    txJournal={ j: j0, map: plannedMap };
   }
   const saveHalt=()=>saveFatalHalt();
-  for(const fr of flRecs){ if(!writeOne(DB.key.fl, fr, r=>DB.upsertFlight(r))){ if(rollback()) saveAbort(); else saveHalt(); return; } }
-  for(const r2 of obRecs){ if(!writeOne(DB.key.ob, r2, r=>DB.upsertObs(r))){ if(rollback()) saveAbort(); else saveHalt(); return; } }
-  for(const sb of sibs){ if(!writeOne(DB.key.ob, sb, r=>DB.upsertObs(r))){ if(rollback()) saveAbort(); else saveHalt(); return; } }
+  // 取り消しの共通処理。控え（ジャーナル）を消し、消えたことまで確かめてから操作を再開する。
+  // 控えが残ったまま再開すると、別経路の正当な更新を次回起動の復旧が古い姿へ戻してしまう
+  const saveCancel=(msg)=>{
+    if(rollback()){
+      saveJournalClear();
+      if(localStorage.getItem('bs_save_journal')){ saveFatalHalt('保存の控えを片付けられませんでした。'); return; }
+      saveAbort(); if(msg) toast(msg, 8000);
+    } else saveHalt();
+  };
+  for(const fr of flRecs){ if(!writeOne(DB.key.fl, fr, r=>DB.upsertFlight(r))){ saveCancel(); return; } }
+  for(const r2 of obRecs){ if(!writeOne(DB.key.ob, r2, r=>DB.upsertObs(r))){ saveCancel(); return; } }
+  for(const sb of sibs){ if(!writeOne(DB.key.ob, sb, r=>DB.upsertObs(r))){ saveCancel(); return; } }
   // まとめ読みした記録のうち、画面の一覧で「✕ 消す」されたものは削除する（明示的に消したものだけ）。
   // 経路のカードから開いた（editingでない）場合も、読み込んだ経路は同じ扱い
   if(editing || (SCREENS._loadedFl||[]).length || (SCREENS._loadedObs||[]).length){
@@ -4422,12 +4503,17 @@ function saveObs(u, svUuid, editing, cont){
         perch_type:'', perch_size:'', perch_class:'', perch_species:'', perch_height:'',
         perch_artificial:'', perch_note:'' });
       cp.distance_band='';   // 距離帯は位置に付く情報。位置を外したら必ず外す
-      if(!writeOne(DB.key.ob, cp, r=>DB.upsertObs(r))){ if(rollback()) saveAbort(); else saveHalt(); return; }
+      if(!writeOne(DB.key.ob, cp, r=>DB.upsertObs(r))){ saveCancel(); return; }
     }
     const keptFl=new Set(PF_SEGS.filter(sg=>sg.t==='F' && sg.srcUuid).map(sg=>sg.srcUuid));
     for(const id of (SCREENS._loadedFl||[])){
       if(keptFl.has(id)) continue;
-      if(!writeOne(DB.key.fl, {uuid:id}, ()=>DB.softDelete(DB.key.fl, id))){ if(rollback()) saveAbort(); else saveHalt(); return; }
+      if(!writeOne(DB.key.fl, {uuid:id}, ()=>DB.softDelete(DB.key.fl, id), (now,prevR)=>{
+        if(!now.deleted_at) return false;
+        const a=Object.assign({},now); delete a.deleted_at; delete a.updated_at;
+        const b=Object.assign({},prevR||{}); delete b.deleted_at; delete b.updated_at;
+        return stableJson(a)===stableJson(b);   // 削除印以外は元のまま＝自分の削除であることの照合
+      })){ saveCancel(); return; }
     }
   }
   PF_NEST_ID = resolvedNestId;   // 保存が成功したので、決めた目印を画面の状態にも反映する
@@ -4439,8 +4525,7 @@ function saveObs(u, svUuid, editing, cont){
     fl: flOwnerJobs ? { flId: flOwnerJobs.flId, items: flOwnerJobs.items.map(it=>({kind:it.kind, id:it.id})) } : null,
     ghost: (!obRecs.length && SCREENS._ghost) ? { key: SCREENS._ghost.key, uuid: SCREENS._ghost.uuid } : null })){
     // 復旧の控えを残せない状態で後処理へ進まない（途中終了すると回収できなくなる）
-    if(rollback()){ saveAbort(); toast('空き容量が足りず、保存を安全に完了できませんでした。空き容量を確保してからやり直してください', 8000); }
-    else saveHalt();
+    saveCancel('空き容量が足りず、保存を安全に完了できませんでした。空き容量を確保してからやり直してください');
     return;
   }
 
@@ -4514,8 +4599,12 @@ function saveObs(u, svUuid, editing, cont){
           }
           swapped=true;
         }catch(e){
-          if(await restoreOwners() && rollback()){ saveJournalClear(); SAVE_BUSY=false;
-            toast('写真・録音の付け替えに失敗しました。もう一度保存してください', 6000); }
+          if(await restoreOwners() && rollback()){
+            saveJournalClear();
+            if(!localStorage.getItem('bs_save_journal')){ SAVE_BUSY=false;
+              toast('写真・録音の付け替えに失敗しました。もう一度保存してください', 6000); }
+            else toast('保存の控えを片付けられませんでした。ページを再読み込みしてください', 10000);
+          }
           else {
             // 戻せなかった。この画面での保存・離脱を止めたまま、再読み込みで仕切り直してもらう
             //（このまま再保存すると、同じ添付を別の記録が参照する二重状態になる）
@@ -4535,8 +4624,12 @@ function saveObs(u, svUuid, editing, cont){
               (flCur.audio||[]).filter(a=>a&&a.id).map(a=>'audio:'+a.id)
               .concat((flCur.media||[]).filter(m=>m&&m.id).map(m=>'media:'+m.id)));
           }catch(_){}
-          if(await restoreOwners(keepKeys) && undone){ saveJournalClear(); SAVE_BUSY=false;
-            toast('別のタブによる書き換えを検知したため、この保存を取り消しました。内容を確認してから保存し直してください', 9000); }
+          if(await restoreOwners(keepKeys) && undone){
+            saveJournalClear();
+            if(!localStorage.getItem('bs_save_journal')){ SAVE_BUSY=false;
+              toast('別のタブによる書き換えを検知したため、この保存を取り消しました。内容を確認してから保存し直してください', 9000); }
+            else toast('保存の控えを片付けられませんでした。ページを再読み込みしてください', 10000);   // SAVE_BUSY維持→finallyで停止
+          }
           else {
             // SAVE_BUSY を維持したまま finally で読み直し案内に切り替わる
             toast('取り消しを完全には行えませんでした。ページを再読み込みし、データ点検・修復画面で確認してください', 10000);
@@ -4547,8 +4640,12 @@ function saveObs(u, svUuid, editing, cont){
           if(finish()===false){
             // 仮記録を片付けられなかった。補償が終わるまで保存・離脱を再び止める
             SAVE_BUSY=true;
-            if(await restoreOwners() && rollback()){ saveJournalClear(); SAVE_BUSY=false;
-              toast('保存をやり直してください（空き容量を確認してください）', 6000); }
+            if(await restoreOwners() && rollback()){
+              saveJournalClear();
+              if(!localStorage.getItem('bs_save_journal')){ SAVE_BUSY=false;
+                toast('保存をやり直してください（空き容量を確認してください）', 6000); }
+              else toast('保存の控えを片付けられませんでした。ページを再読み込みしてください', 10000);
+            }
             else {
               toast('片付けに失敗しました。ページを再読み込みし、データ点検・修復画面で確認してください', 10000);
             }
@@ -4586,9 +4683,7 @@ function saveObs(u, svUuid, editing, cont){
     await new Promise(r=>setTimeout(r,0));   // storage イベントが届くのを一拍待つ
     // 検証はフラグに頼らず毎回行う（イベントの届く順序は書き込みの反映順と一致するとは限らない）
     if(!undoStillOk()){
-      if(rollback()){ saveJournalClear(); saveAbort();
-        toast('別のタブによる書き換えを検知したため、この保存を取り消しました。内容を確認してから保存し直してください', 9000); }
-      else saveHalt();
+      saveCancel('別のタブによる書き換えを検知したため、この保存を取り消しました。内容を確認してから保存し直してください');
       return;
     }
     SAVE_BUSY=false; saveBusyShow(false);
@@ -5613,7 +5708,8 @@ function saveFlightMulti(svUuid){
   const mUndo=[];   // {uuid, prev, wroteRec}
   const mRollback=()=>{
     let okAll=true;
-    const arr=DB.load(DB.key.fl)||[];
+    const arr=loadStrict(DB.key.fl);
+    if(!arr) return false;   // 読めない状態で書くと全記録を失う
     for(let i=mUndo.length-1;i>=0;i--){ const e=mUndo[i];
       const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
       const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
@@ -5623,7 +5719,9 @@ function saveFlightMulti(svUuid){
     }
     if(!DB.save(DB.key.fl, arr)) okAll=false;
     for(const e of mUndo){
-      const cur=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===e.uuid);
+      const a2=loadStrict(DB.key.fl);
+      if(!a2){ okAll=false; continue; }
+      const cur=a2.find(x=>x&&x.uuid===e.uuid);
       if(e.prev ? JSON.stringify(cur)!==JSON.stringify(e.prev) : !!cur) okAll=false;
     }
     return okAll;
@@ -5661,9 +5759,10 @@ function saveFlightMulti(svUuid){
       return;
     }
     const now=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===rec.uuid)||null;
-    if(!now){
+    if(!now || stableJson(now)!==stableJson(rec)){
+      // 書けていない、または書けたのが自分の値でない（横から上書きされた）
       if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
-        toast('保存に失敗しました。空き容量を確保してからもう一度保存してください', 4500); }
+        toast('保存に失敗しました。もう一度保存してください（空き容量も確認）', 4500); }
       else saveFatalHalt();
       return;
     }
@@ -5907,6 +6006,16 @@ function saveFlight(u,svUuid,editing,cont){
   SAVE_BUSY=true; saveBusyShow(true);
   if(!DB.upsertFlight(rec)){ SAVE_BUSY=false; saveBusyShow(false); return; }   // 保存失敗なら成功表示も遷移もしない
   const wroteObj=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===u)||null;
+  if(wroteObj && stableJson(wroteObj)!==stableJson(rec)){
+    // 書けたのが自分の値でない（直後に別のタブが上書きした）。
+    // すでに書く前の姿なら完了扱いにせず解除、それ以外は停止
+    if(prevFl0 && JSON.stringify(wroteObj)===prevFlJson){
+      SAVE_BUSY=false; saveBusyShow(false);
+      toast('別のタブによる書き換えを検知したため、この保存は完了していません。内容を確認してから保存し直してください', 9000);
+      return;
+    }
+    saveFatalHalt(); return;
+  }
   if(!wroteObj){
     // 書いたはずの記録が見つからない。現在値が「書く前の姿」なら解除できるが、
     // それ以外（競合で消された・別の姿）は画面を再利用させない
@@ -8054,7 +8163,10 @@ async function fsBackupFull(){ if(!_fsDir){ toast('先に保存フォルダを�
 // 録音・写真が増減したら、少し待ってからフォルダへ自動でフル保存（フォルダ設定時のみ）
 let _fullTimer=null;
 function scheduleFolderFull(){ if(!_fsDir) return; clearTimeout(_fullTimer);
-  _fullTimer=setTimeout(()=>{ fsBackupFullCore().catch(()=>{}); }, 20000); }
+  _fullTimer=setTimeout(()=>{
+    if((typeof SAVE_FATAL!=='undefined' && SAVE_FATAL) || localStorage.getItem('bs_save_journal')) return;
+    fsBackupFullCore().catch(()=>{});
+  }, 20000); }
 
 /* ---------- クラウド自動バックアップ（あなたのGoogleドライブ / Apps Script受け皿へ送信） ---------- */
 function cloudCfg(){ try{ return JSON.parse(localStorage.getItem('bs_cloud')||'{}'); }catch(e){ return {}; } }
@@ -8083,7 +8195,11 @@ function backupConfigured(){ return !!cloudCfg().url || !!_fsDir || !!gdriveCfg(
 // データ変更のたびに、少し待ってから記録を自動バックアップ（まとめて1回）
 let _cloudTimer=null;
 function scheduleCloud(){ if(!backupConfigured()) return; clearTimeout(_cloudTimer);
-  _cloudTimer=setTimeout(()=>{ autoBackupRecords(); }, 6000); }
+  _cloudTimer=setTimeout(()=>{
+    // 取引の途中・停止中の姿を送らない（不完全な状態が復元で拡散する）
+    if((typeof SAVE_FATAL!=='undefined' && SAVE_FATAL) || localStorage.getItem('bs_save_journal')) return;
+    autoBackupRecords();
+  }, 6000); }
 function cloudSyncNow(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
   cloudBackupRecords().then(()=>{ toast('記録をクラウドに送信しました（受領確認はできません）'); render(); }).catch(()=>toast('クラウド送信に失敗しました')); }
 function saveCloudCfg(){ const url=(($('#cloudUrl')&&$('#cloudUrl').value)||'').trim();
