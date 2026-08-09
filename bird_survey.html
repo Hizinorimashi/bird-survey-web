@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v170（2026-08-09 監査72巡目：キー単位の合成・仮記録の全文照合・隔離モード）';
+const APP_VERSION = 'v171（2026-08-09 監査73巡目：仮記録削除の共通化・GCの中央門・隔離の厳密化）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -519,7 +519,10 @@ function makeBlobStore(store, refField){
     all(){ return idbDo(store,'readonly', st=>st.getAll()).then(r=>r||[]); },
     // どの観察にも参照されていない残骸（保存されなかった・完全削除済み）を掃除
     // ただしマイ図鑑に登録済みのものは保護する
-    gc(){ const valid=new Set();
+    gc(){
+      // 隔離中は一切削除しない（復旧途中で参照を失った実体は、救出が終わるまで残す）
+      if(typeof quarantineActive==='function' && quarantineActive()) return Promise.resolve();
+      const valid=new Set();
       // 参照元(観察・飛翔・マイ図鑑)が1つでも読めない時は、孤児判定が誤るので一切削除しない（原本保護）
       try{
         DB.loadRaw(DB.key.ob).forEach(o=>(o[refField]||[]).forEach(a=>a&&a.id&&valid.add(a.id)));
@@ -534,7 +537,10 @@ function makeBlobStore(store, refField){
 }
 const AudioDB = makeBlobStore('audio','audio');   // 観察の o.audio[] が参照
 const PhotoDB = makeBlobStore('media','media');   // 観察の o.media[] が参照
-function mediaGcAll(){ return Promise.all([AudioDB.gc().catch(()=>{}), PhotoDB.gc().catch(()=>{})]); }
+function mediaGcAll(){
+  if(typeof quarantineActive==='function' && quarantineActive()) return Promise.resolve([]);   // 隔離中は掃除しない
+  return Promise.all([AudioDB.gc().catch(()=>{}), PhotoDB.gc().catch(()=>{})]);
+}
 // 添付の持ち主の「読取→条件判定→更新」を1つの読み書きトランザクションで行う。
 // 別々の取引に分けると、間に別のタブが正当な持ち主へ変えたものを古い値で上書きしてしまう。
 // decide(r) の返り値: {obs_uuid,flight_uuid}=更新 / null=変更不要（成功） / false=条件不一致（失敗）
@@ -3932,28 +3938,53 @@ function rescueDownload(){
     toast('救出ファイルを保存しました');
   }catch(e){ toast('救出ファイルを作れませんでした'); }
 }
-function rescueQuarantine(){
+async function rescueQuarantine(){
   if(!confirm('保存の控え（ジャーナル）を隔離して、次の起動から通常どおり使えるようにします。\n先に「記録の救出ファイルを保存」を済ませましたか？')) return;
   try{
     if(typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT){
       toast('別のタブの書き込みを検知しています。そのタブを閉じてからお試しください', 6000); return;
     }
     const raw=localStorage.getItem('bs_save_journal');
+    let qk=null;
     if(raw!=null){
-      const qk='bs_save_journal_quarantine_'+Date.now();   // 以前の隔離を上書きしない鍵
+      // 以前の隔離を上書きしない鍵（衝突したら枝番を足す）
+      qk='bs_save_journal_quarantine_'+Date.now();
+      let n=0;
+      while(localStorage.getItem(qk)!==null && n<100){ n++; qk='bs_save_journal_quarantine_'+Date.now()+'_'+n; }
+      if(localStorage.getItem(qk)!==null){ toast('隔離先の鍵を確保できませんでした'); return; }
       localStorage.setItem(qk, raw);
       if(localStorage.getItem(qk)!==raw){ toast('隔離の書き込みを確認できませんでした'); return; }
-      if(localStorage.getItem('bs_save_journal')!==raw){
+      // 一拍おいて、別のタブの書き込み通知を受け取ってから最終確認する
+      await new Promise(r=>setTimeout(r,0));
+      if(typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT){
+        toast('別のタブの書き込みを検知しました。そのタブを閉じてからお試しください', 6000); return;   // 元鍵も隔離コピーも消さない
+      }
+      if(localStorage.getItem('bs_save_journal')!==raw || localStorage.getItem(qk)!==raw){
         toast('控えが書き換わっています。もう一度お試しください', 6000); return;   // 差し替え検知
       }
     }
     localStorage.removeItem('bs_save_journal');
     if(localStorage.getItem('bs_save_journal')!==null){ toast('控えを消せませんでした'); return; }
+    if(qk!=null && localStorage.getItem(qk)!==raw){ toast('隔離コピーを確認できませんでした', 6000); return; }
     location.reload();
   }catch(e){ toast('隔離できませんでした（空き容量を確認してください）'); }
 }
 // 復旧用の基準配列: 競合で控えた相手の最新の姿があればそれを正本、無ければ厳格読み込み。
 // 相手の姿が壊れていれば null（触らず停止）
+// 仮記録の削除（全文照合つき）。'deleted'=消した / 'gone'=元から無い /
+// 'changed'=別の書き手が正式な記録に変えている（消さない） / 'fail'=削除・確認に失敗
+function ghostDeleteVerified(key, uuidV, recJson){
+  const arr=loadStrict(key);
+  if(!arr) return 'fail';
+  const cur=arr.find(x=>x&&x.uuid===uuidV);
+  if(!cur) return 'gone';
+  if(recJson!==undefined && recJson!==null && JSON.stringify(cur)!==recJson) return 'changed';
+  DISCARDED.add(uuidV);
+  if(!DB.hardDelete(key, uuidV)){ DISCARDED.delete(uuidV); return 'fail'; }
+  const a2=loadStrict(key);
+  if(a2 && a2.some(x=>x&&x.uuid===uuidV)) return 'fail';
+  return 'deleted';
+}
 // 復旧の書き戻しをキー単位でまとめて適用する。
 // 1件ごとに基準を取り直すと、同じキーの後の保存が先の補償を上書きしてしまう。
 // strict=true: 自分の書き込みと確かめられない姿があれば全体を失敗にする（writing段）
@@ -4108,17 +4139,10 @@ async function saveJournalRecover(){
         const isReal=normArr.some(e=>e.key===j.ghost.key && e.uuid===j.ghost.uuid);
         const gArr=recoverBase(j.ghost.key);
         if(!gArr){ ok=false; }
-        else {
-          const gCur=gArr.find(x=>x&&x.uuid===j.ghost.uuid);
-          if(!isReal && gCur){
-            // 相手が同じ番号を正式な記録として更新していたら消さない（墓標も付けない）
-            if(j.ghost.rec!==undefined && JSON.stringify(gCur)!==j.ghost.rec){ ok=false; }
-            else {
-              DISCARDED.add(j.ghost.uuid);
-              if(!DB.hardDelete(j.ghost.key, j.ghost.uuid)){ DISCARDED.delete(j.ghost.uuid); ok=false; }
-              else ghostDeleted=true;
-            }
-          }
+        else if(!isReal){
+          const st=ghostDeleteVerified(j.ghost.key, j.ghost.uuid, j.ghost.rec);
+          if(st==='deleted') ghostDeleted=true;
+          else if(st==='changed' || st==='fail') ok=false;   // 相手の正式な記録は消さない
         }
       }
       await new Promise(r=>setTimeout(r,0));   // 別の書き手の書き込み通知（storage）を受け取る一拍
@@ -4132,8 +4156,12 @@ async function saveJournalRecover(){
           else {
             const gi=gArr2.findIndex(x=>x&&x.uuid===j.ghost.uuid);
             if(gi>=0){
-              // 相手が正式な記録に変えていたら消さない（合成を諦めて停止）
-              if(j.ghost.rec!==undefined && JSON.stringify(gArr2[gi])!==j.ghost.rec){ merged=false; }
+              // 相手が正式な記録に変えていたら消さない（合成を諦めて停止）。
+              // 先に付けた墓標も外す（残すと、残した正式記録が同期で消される）
+              if(j.ghost.rec!==undefined && JSON.stringify(gArr2[gi])!==j.ghost.rec){
+                merged=false;
+                try{ DB._untomb(j.ghost.uuid); }catch(e){}
+              }
               else { gArr2.splice(gi,1);
                 if(!DB.save(j.ghost.key, gArr2)) merged=false;
                 else { const a2=loadStrict(j.ghost.key);
@@ -4214,7 +4242,31 @@ async function saveJournalRecover(){
       if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT){
         // 相手の最新の姿を正本に、自分の分だけをもう一度戻して合成し直す
         ok=false;
-        const merged=recoverApply(normArr, false);
+        let merged=recoverApply(normArr, false);
+        // 合成後の最終的な姿から、添付の持ち主が正しいかを照合し直す
+        //（合成で飛翔の参照一覧が変わっていることがある）
+        if(merged && j.fl){
+          const fl4=loadStrict(DB.key.fl);
+          if(!fl4){ merged=false; }
+          else {
+            const flCur4=fl4.find(x=>x&&x.uuid===j.fl.flId && !x.deleted_at);
+            const keep4=new Set(flCur4?(flCur4.audio||[]).filter(a=>a&&a.id).map(a=>'audio:'+a.id)
+              .concat((flCur4.media||[]).filter(m=>m&&m.id).map(m=>'media:'+m.id)):[]);
+            for(const it of items){
+              try{
+                const chk4=await dbOf(it.kind).get(it.id);
+                if(!chk4){ merged=false; break; }
+                if(keep4.has(it.kind+':'+it.id)){
+                  if(chk4.obs_uuid!=='' || chk4.flight_uuid!==j.fl.flId){ merged=false; break; }
+                } else {
+                  const toObs4=(it.prevObs!==undefined)?(it.prevObs||''):((j.ghost&&j.ghost.uuid)||'');
+                  const toFl4=(it.prevObs!==undefined)?(it.prevFl||''):'';
+                  if(chk4.obs_uuid!==toObs4 || (chk4.flight_uuid||'')!==toFl4){ merged=false; break; }
+                }
+              }catch(e){ merged=false; break; }
+            }
+          }
+        }
         if(merged){
           GUARD_SNAP={}; GUARD_CONFLICT=false;
           await new Promise(r=>setTimeout(r,0));
@@ -4898,8 +4950,8 @@ function saveObs(u, svUuid, editing, cont){
       if((typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) || !undoStillOk()) return false;
       const gh=SCREENS._ghost;
       if(gh){
-        DISCARDED.add(gh.uuid);
-        if(!DB.hardDelete(gh.key, gh.uuid)){ DISCARDED.delete(gh.uuid); return false; }
+        const st=ghostDeleteVerified(gh.key, gh.uuid, (writtenJ&&writtenJ.ghost)?writtenJ.ghost.rec:undefined);
+        if(st==='changed' || st==='fail') return false;   // 相手の正式な記録は消さない／確認できなければ補償へ
         SCREENS._ghost=null; mediaGcAll().catch(function(){});
       }
       // 仮記録を消した後は巻き戻さない（添付の持ち主が消えた記録を指してしまう）。
