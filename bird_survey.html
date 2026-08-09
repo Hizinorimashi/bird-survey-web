@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v184（2026-08-09 調査画面を見やすく：操作の折りたたみ・種ごとにまとめる・並び順の修正）';
+const APP_VERSION = 'v185（2026-08-09 個体名：同じ鳥を1羽として数える・チップで選ぶ・個体ごとにまとめる）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1698,6 +1698,58 @@ function obsListData(u){
   const sorted=listSrc.slice().sort((a,b)=>String(b.k).localeCompare(String(a.k)));
   return { obs, flights, flKeys, selMode, reviewCount, sorted, total:obs.length+flights.length };
 }
+/* ---------- 個体名（同じ鳥を追い続けるときの呼び名） ----------
+   同じ調査で同じ種・同じ個体名を付けた記録は「同じ1羽」として扱う。
+   結び付けの実体は既存の目印（individual_key）で、個体名はその目印を選ぶための人間向けの名札。
+   こうすると集計の実数・地図の色分け・書き出しは今までの仕組みのまま動く */
+function indLabelOf(rec){ return String((rec&&rec.individual_label)||'').trim(); }
+// その調査で使われている個体名の一覧。同じ種のものを先に並べる（選びやすさのため）
+function indLabelsOf(svUuid, spName){
+  const sp=String(spName||'').trim();
+  const map=new Map();   // 名前 → {label, sp, key, n}
+  const add=r=>{
+    const l=indLabelOf(r); if(!l) return;
+    const k=l+'|'+String(r.species_name_snapshot||'').trim();
+    const e=map.get(k);
+    if(e){ e.n++; if(!e.key && r.individual_key) e.key=r.individual_key; }
+    else map.set(k, {label:l, sp:String(r.species_name_snapshot||'').trim(), key:r.individual_key||'', n:1});
+  };
+  DB.obsOf(svUuid).forEach(add);
+  DB.flightsOf(svUuid).forEach(add);
+  return Array.from(map.values()).sort((a,b)=>
+    ((b.sp===sp)-(a.sp===sp)) || (b.n-a.n) || String(a.label).localeCompare(String(b.label)));
+}
+// 同じ調査・同じ種・同じ個体名の記録が既にあれば、その目印を引き継ぐ（＝同じ1羽になる）
+function indKeyForLabel(svUuid, spName, label, fallback){
+  const l=String(label||'').trim();
+  if(!l) return fallback||'';
+  const sp=String(spName||'').trim();
+  const hit=indLabelsOf(svUuid, sp).find(x=>x.label===l && x.sp===sp && x.key);
+  if(hit) return hit.key;
+  return fallback || uuid();
+}
+// 個体名のチップ（タップで入力欄に入る）。その調査で使った名前だけを出す
+function indLabelChips(){
+  const box=document.getElementById('indLabelChips'); if(!box) return;
+  const sv=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
+  const sp=(($('#spInput')&&$('#spInput').value)||'').trim();
+  const cur=(($('#indLabel')&&$('#indLabel').value)||'').trim();
+  const list=indLabelsOf(sv, sp).slice(0,12);
+  box.innerHTML=list.map(x=>{
+    const on=(x.label===cur);
+    const same=(x.sp===sp);
+    return `<span class="c ${on?'on':''}" data-lab="${esc(x.label)}" onclick="indLabelPick(this)"
+      title="${esc(x.sp||'')}">${esc(x.label)}${(!same&&x.sp)?`<span class="small muted"> ${esc(x.sp)}</span>`:''}</span>`;
+  }).join('');
+}
+function indLabelPick(el){
+  const inp=document.getElementById('indLabel'); if(!inp) return;
+  const v=el.getAttribute('data-lab')||'';
+  inp.value=(inp.value.trim()===v)?'':v;   // もう一度押したら外す
+  SCREENS._dirty=true;
+  indLabelChips();
+  try{ if(typeof birdListSync==='function' && BIRDS.length>1) birdListSync(); }catch(e){}
+}
 // 種が少ないうち（猛禽1羽を追う調査など）はまとめても1つの塊になるだけなので、
 // そのまま時系列で出す。一度でも切り替えたら、その調査の間はその選び方に従う
 function obsGroupOn(spN){ return SCREENS._obsGroup==null ? spN>=6 : !!SCREENS._obsGroup; }
@@ -1712,7 +1764,13 @@ function obsSpeciesCount(items){
   const set=new Set(); items.forEach(it=>set.add(obsSpOf(it.rec)));
   return set.size;
 }
-function obsSpOf(rec){ return String((rec&&rec.species_name_snapshot)||'').trim() || '（未同定）'; }
+// 一覧のまとめの単位。個体名があれば種名と分けて持つ（追っている個体の記録が1か所に集まる）
+const OBS_GRP_SEP='\u0001';   // 種名と個体名の区切り（利用者が打てない文字を使う）
+function obsSpOf(rec){
+  const sp=String((rec&&rec.species_name_snapshot)||'').trim() || '（未同定）';
+  const lb=indLabelOf(rec);
+  return lb ? (sp+OBS_GRP_SEP+lb) : sp;
+}
 // 種ごとの群をつくる。並びは「その群のいちばん新しい記録が新しい順」
 //（現場の「さっき記録したものが上」の感覚を壊さない）
 function obsGroupsOf(items){
@@ -1720,7 +1778,12 @@ function obsGroupsOf(items){
   items.forEach(it=>{
     const sp=obsSpOf(it.rec);
     let g=map.get(sp);
-    if(!g){ g={sp, items:[], newest:'', oldest:'', review:0}; map.set(sp,g); }
+    if(!g){
+      const bar=sp.indexOf(OBS_GRP_SEP);
+      g={sp, spName:(bar>=0?sp.slice(0,bar):sp), lbName:(bar>=0?sp.slice(bar+1):''),
+         items:[], newest:'', oldest:'', review:0};
+      map.set(sp,g);
+    }
     g.items.push(it);
     if(it.k){ if(!g.newest || it.k>g.newest) g.newest=it.k;
       if(!g.oldest || it.k<g.oldest) g.oldest=it.k; }
@@ -1769,6 +1832,7 @@ function obsListHtml(u){
     <div class="grow">
       <div style="font-weight:700;">${esc(o.species_name_snapshot||'（未同定）')}
         ${conservBadges(o.species_name_snapshot)}
+        ${indLabelOf(o)?`<span class="pill">${esc(indLabelOf(o))}</span>`:''}
         ${o.needs_review?'<span class="badge warn">要確認</span>':''}
         ${o.identification_status&&o.identification_status!=='確定'?`<span class="badge">${esc(o.identification_status)}</span>`:''}
       </div>
@@ -1806,7 +1870,7 @@ function obsListHtml(u){
     const open=SCREENS._obsOpen.has(g.sp);
     const span=g.newest ? `${fmtTime(g.oldest)}〜${fmtTime(g.newest)}` : '';
     return `<details class="fold grp" data-sp="${esc(g.sp)}" ${open?'open':''} ontoggle="obsFoldToggle(this)">
-      <summary><span class="grow">${esc(g.sp)}${conservBadges(g.sp)}${g.review?`<span class="badge warn">要確認${g.review}</span>`:''}</span>
+      <summary><span class="grow">${esc(g.spName)}${g.lbName?`<span class="pill" style="margin-left:6px;">${esc(g.lbName)}</span>`:''}${conservBadges(g.spName)}${g.review?`<span class="badge warn">要確認${g.review}</span>`:''}</span>
         <span class="small muted">${g.items.length}件${span?' ・ '+span:''}</span></summary>
       <div class="gbody">${open?obsGrpBodyHtml(u,g.sp):''}</div>
     </details>`;
@@ -2456,6 +2520,7 @@ SCREENS.obsEdit = (argStr)=>{
       target_latitude:'', target_longitude:'', perch_size:'', perch_class:'',
       nest_tree_species:'', nest_tree_height:'', nest_state:'',
       perch_type:'', perch_artificial:'', perch_note:'', nest_latitude:'', nest_longitude:'',
+      individual_label:'',
       note:'', identification_status:'確定', confidence:'中',
       needs_review:false, external_photo_reference:'' };
     // 「保存して続けて」からは前の記録の位置をそのまま引き継ぐ（位置を消して保存したなら空のまま＝GPSで上書きしない）。
@@ -2489,6 +2554,7 @@ SCREENS.obsEdit = (argStr)=>{
       if(flAnchor.count!=null && flAnchor.count!=='') o.count=flAnchor.count;
       if(flAnchor.age_class) o.age_class=flAnchor.age_class;
       if(flAnchor.individual_key) o.individual_key=flAnchor.individual_key;
+      if(flAnchor.individual_label) o.individual_label=flAnchor.individual_label;
       o.audio=(flAnchor.audio||[]).slice(); o.media=(flAnchor.media||[]).slice();
       o.note=flAnchor.memo||''; o.needs_review=!!flAnchor.needs_review;
     }
@@ -2579,6 +2645,12 @@ SCREENS.obsEdit = (argStr)=>{
             <div id="spSuggest"></div>
             <div class="chips" id="spQuick"></div>
             <div class="chips" id="spRefLinks"></div>
+          </label>
+          <label class="field"><span class="lab">個体名（任意・同じ鳥を追うとき）</span>
+            <input id="indLabel" autocomplete="off" value="${esc(o.individual_label||'')}"
+              placeholder="例：クマタカA／左翼損傷" oninput="indLabelChips()">
+            <div class="chips" id="indLabelChips"></div>
+            <div class="tiny muted">同じ名前を付けた記録は、集計で1羽として数えます</div>
           </label>
           <div class="two">
             <label class="field"><span class="lab">個体数</span>
@@ -2732,6 +2804,7 @@ SCREENS.obsEdit = (argStr)=>{
         try{ perchTabs(); perchLoad(); segChips(); nestSync(); pfInfo(); pfSyncFlightFields(); legacyPosNoteSync(); }catch(e){}
         try{ if(typeof updateIdHint==='function') updateIdHint(); }catch(e){}
         try{ if(typeof updateBreedHint==='function') updateBreedHint(); }catch(e){}
+        try{ indLabelChips(); }catch(e){}
         try{ if(typeof startGpsIndicator==='function') startGpsIndicator(); }catch(e){}
         SCREENS._dirty=!!revisitBird.dirty;
         birdListSync();
@@ -2845,6 +2918,7 @@ SCREENS.obsEdit = (argStr)=>{
       obsBindFormWatch();
       if(initVoice) SCREENS._dirty=true;   // 音声の下書きが入っている＝未保存の入力として離脱時に確認する
       renderQuickSpecies(); renderRecPanel(); renderMediaPanel(); updateSpRefLinks(o.species_name_snapshot);
+      indLabelChips();   // その調査で使った個体名をすぐ選べるように
       updateBreedHint(); updateIdHint();
       if(typeof startGpsIndicator==='function') startGpsIndicator();   // 観察者の位置は保存時に使う
       // 入力欄への読み込みは今すぐ行う。地図の用意（60ms待ち）を待つと、
@@ -3010,6 +3084,7 @@ function spSearch(q){
 }
 function chooseSpecies(id,name){ $('#spInput').value=name; $('#spSuggest').innerHTML=''; updateSpRefLinks(name);
   try{ if(typeof birdListSync==='function' && BIRDS.length>1) birdListSync(); }catch(_e){}
+  try{ if(typeof indLabelChips==='function') indLabelChips(); }catch(_e){}
   SCREENS._dirty=true;
   if(!name) segSet('identification_status','未同定');
   else if(segVal('identification_status')==='未同定'){
@@ -4288,7 +4363,7 @@ function setObsPos(lat,lon){
   obsPosMarkerUpdate(lat,lon);
 }
 // 経路1本から飛翔レコードを作る。検査に落ちたら null を返す（保存は始めない）
-function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsReview, override, useForm){
+function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsReview, override, useForm, indLabel){
   // 2点未満は原則保存しないが、既存で触っていない経路は元のままの姿で書き戻す（共有項目だけそろえる）
   if(!seg || (seg.pts.length<2 && !(seg.srcUuid && !seg.edited))) return null;
   const ov=override||{};
@@ -4327,7 +4402,7 @@ function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsRev
     species_name_snapshot:name,
     path:seg.pts.slice(), start_time:st, end_time:en,
     height_class:heightRaw||'不明',
-    age_class:ageCls||'不明', individual_label:'',
+    age_class:ageCls||'不明', individual_label:String(indLabel||''),
     behavior:behaviorNew,
     count:count, memo:String(memo||'').trim(), needs_review:!!needsReview,
     individual_key:indKey||'',
@@ -5113,8 +5188,14 @@ function saveObs(u, svUuid, editing, cont){
       +'残るもの：種名・個体数・齢・メモ・飛翔高度・飛翔行動\n\n'
       +'このまま保存しますか？')) return;
   }
-  const indKey = (nRec>1) ? (rec.individual_key || uuid()) : (rec.individual_key||'');
+  // 個体名を付けたら、その名前の目印に合わせる（同じ調査・同じ種の同名は「同じ1羽」）。
+  // 名前が無ければ従来どおり（記録が2件以上なら新しい目印で結ぶ）
+  const indLabel=String((($('#indLabel')&&$('#indLabel').value)||'')).trim();
+  const indKey = indLabel
+    ? indKeyForLabel(svUuid, name, indLabel, rec.individual_key||'')
+    : ((nRec>1) ? (rec.individual_key || uuid()) : (rec.individual_key||''));
   rec.individual_key = indKey;   // 位置なしの記録に経路だけ足したときも同じ目印で結ぶ
+  rec.individual_label = indLabel;
   // 飛翔の「要確認」は、飛翔に残るもの（種名・個体数）と、利用者が自分で付けた印だけで決める。
   // 観察日時や観察者の位置など、飛翔に無い項目を理由にすると身に覚えのない印が付く
   const flReview = (!name) || (!!name && !speciesByName(name)) || (indCount(rec.count)===0)
@@ -5123,7 +5204,7 @@ function saveObs(u, svUuid, editing, cont){
   // 飛翔をまとめて組み立てる（1本でも検査に落ちたら何も保存しない）
   const flRecs=[];
   for(const seg of paths){
-    const fr=buildFlightRec(seg, svUuid, name, rec.count, rec.age_class, indKey, g('note'), flReview, seg.ov||null, paths.length===1);
+    const fr=buildFlightRec(seg, svUuid, name, rec.count, rec.age_class, indKey, g('note'), flReview, seg.ov||null, paths.length===1, indLabel);
     if(!fr) return;
     flRecs.push(fr);
   }
@@ -5131,7 +5212,7 @@ function saveObs(u, svUuid, editing, cont){
   // 同じ鳥の記録で「個体全体として共有する」項目だけを兄弟にそろえる。
   // 確認方法・行動・環境・方向は観察の場面ごとに違い得るので、そろえない（各記録の値を守る）
   const OBS_SHARED_F=['species_id','species_name_snapshot','count','age_class','sex',
-    'identification_status','confidence'];
+    'identification_status','confidence','individual_label'];
   const obRecs=[];
   // 軸の経路から観察を作る場合、添付・メモは軸の経路が持つ（観察に写すと二重参照になる）
   if(anchorFlId){ rec.audio=[]; rec.media=[]; rec.note=''; }
@@ -9059,7 +9140,10 @@ const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','survey_
   'perch_type','perch_artificial','perch_note','perch_species','perch_height',
   // nest_id: 同じ巣を1つとして見分ける目印。同じ鳥の記録すべてに同じ値が入る
   'nest_id',
-  'nest_latitude','nest_longitude'];
+  'nest_latitude','nest_longitude',
+  // individual_label: 同じ鳥を追い続けたときの呼び名。同じ調査・同じ種で同じ名前なら
+  // individual_key も同じ値になり、集計では1羽として数える。**必ず末尾に足す**
+  'individual_label'];
 function csvCell(v){ v=v==null?'':String(v);
   // 数式インジェクション対策は「数値でない」文字列にだけ適用する。
   // 負の緯度経度(-73.98)や個体数を ' 付きの文字列に変えてGIS/R/Pythonの数値処理を壊さないため。
@@ -9074,6 +9158,7 @@ function buildRows(surveys){
       latitude:coordPair(o.latitude,o.longitude)[0], longitude:coordPair(o.latitude,o.longitude)[1],
       // 位置の確からしさ。数値でないもの・負の値は空にする（GIS側で誤って距離として使われないように）
       gps_accuracy_m:accuracyM(o.gps_accuracy), individual_key:o.individual_key||'',
+      individual_label:o.individual_label||'',   // 同じ鳥を追ったときの呼び名（飛翔の書き出しと同じ項目名）
       perch_type:o.perch_type||'', perch_artificial:o.perch_artificial||'', perch_note:o.perch_note||'',
       perch_species:o.perch_species||'', perch_height:o.perch_height||'',
       nest_id:o.nest_id||'',
