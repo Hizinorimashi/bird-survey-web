@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v176（2026-08-09 複数個体の監査対応2：全個体一括破棄・初期状態の掛け直し・薄描きの即時反映）';
+const APP_VERSION = 'v177（2026-08-09 複数個体の監査対応3：破棄の完全補償・薄描き全件再構築・音声入力の保護）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1273,26 +1273,44 @@ function leaveGuardOk(){
         const gh2=b.media && b.media.ghost;
         if(gh2) jobsG.push({b, gh:gh2});
       }
-      const doneG=[]; let failG=false;
+      // 先に全件を厳格読込し、復元用の全文を確保できたときだけ消しに進む
+      //（読めない状態で hardDelete すると、例外や半端で補償が効かない）
+      let preBad=false;
       for(const j2 of jobsG){
         const arrG=loadStrict(j2.gh.key);
-        const curG=arrG?arrG.find(x=>x&&x.uuid===j2.gh.uuid):null;
-        const prevJson=curG?JSON.stringify(curG):null;
-        if(!DB.hardDelete(j2.gh.key, j2.gh.uuid)){ failG=true; break; }
-        doneG.push({key:j2.gh.key, uuid:j2.gh.uuid, prev:prevJson});
+        if(!arrG){ preBad=true; break; }
+        const curG=arrG.find(x=>x&&x.uuid===j2.gh.uuid);
+        j2.prev=curG?JSON.stringify(curG):null;
+      }
+      if(preBad){
+        toast('記録の読み込みに失敗したため破棄できません。データ点検・修復画面で確認してください', 5000);
+        return false;
+      }
+      const attempted=[]; let failG=false;
+      for(const j2 of jobsG){
+        attempted.push(j2);   // 例外でも「試した」ことを残す（補償の対象から漏らさない）
+        let okD=false;
+        try{ okD=DB.hardDelete(j2.gh.key, j2.gh.uuid); }catch(e){ okD=false; }
+        if(!okD){ failG=true; break; }
       }
       if(failG){
-        // 消せた分を戻す（記録を復元し、付いた墓標を外す）。戻せたら離脱を中止して仕切り直し
+        // 試した全件（失敗した個体も含む）を控えと同じ姿へ戻し、墓標を外す
         let restoredAll=true;
-        for(const d2 of doneG.reverse()){
+        for(const d2 of attempted.slice().reverse()){
           try{
-            const arrR=loadStrict(d2.key);
+            const arrR=loadStrict(d2.gh.key);
             if(!arrR){ restoredAll=false; continue; }
-            if(d2.prev && !arrR.some(x=>x&&x.uuid===d2.uuid)){
-              arrR.push(JSON.parse(d2.prev));
-              if(!DB.save(d2.key, arrR)){ restoredAll=false; continue; }
+            if(d2.prev){
+              const idxR=arrR.findIndex(x=>x&&x.uuid===d2.gh.uuid);
+              let changed=false;
+              if(idxR<0){ arrR.push(JSON.parse(d2.prev)); changed=true; }
+              else if(JSON.stringify(arrR[idxR])!==d2.prev){ arrR[idxR]=JSON.parse(d2.prev); changed=true; }
+              if(changed && !DB.save(d2.gh.key, arrR)){ restoredAll=false; continue; }
+              const aV=loadStrict(d2.gh.key);
+              const cV=aV?aV.find(x=>x&&x.uuid===d2.gh.uuid):null;
+              if(!cV || JSON.stringify(cV)!==d2.prev){ restoredAll=false; }
             }
-            if(!untombVerified(d2.uuid)) restoredAll=false;
+            if(!untombVerified(d2.gh.uuid)) restoredAll=false;
           }catch(e){ restoredAll=false; }
         }
         toast(restoredAll
@@ -2863,6 +2881,7 @@ function spSearch(q){
     : `<div class="suggest"><div class="item" style="color:var(--muted)" onclick="chooseSpecies('','')">候補なし → 未同定で保存</div></div>`;
 }
 function chooseSpecies(id,name){ $('#spInput').value=name; $('#spSuggest').innerHTML=''; updateSpRefLinks(name);
+  try{ if(typeof birdListSync==='function' && BIRDS.length>1) birdListSync(); }catch(_e){}
   SCREENS._dirty=true;
   if(!name) segSet('identification_status','未同定');
   else if(segVal('identification_status')==='未同定'){
@@ -3368,6 +3387,11 @@ function birdBusy(){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY){ toast('保存の処理中です。少し待ってください'); return true; }
   if(typeof recBusy==='function' && recBusy()){ toast('録音を停止してから操作してください'); return true; }
   if(typeof mediaBusy==='function' && mediaBusy()){ toast('写真・動画の取り込みが終わってから操作してください'); return true; }
+  // 音声入力の認識中・未反映の発話は、切替（画面の組み直し）で失われる
+  if(typeof VREC!=='undefined' && VREC){ toast('音声入力の聞き取り中です。停止してから操作してください'); return true; }
+  const vt=document.getElementById('voiceText');
+  if(vt && String(vt.value||'').trim()){
+    toast('音声入力の内容がまだ反映されていません。反映するか消してから切り替えてください', 5000); return true; }
   return false;
 }
 function birdSwitch(i){
@@ -3412,33 +3436,35 @@ function birdAfterSave(u2, add, flU){
   const nb=newBird();
   const b=CUR();
   b.dirty=false; b.form=null; b.st=nb.st; b.map=nb.map; b.media=nb.media;
-  if(u2) b.reinitId=u2; else if(flU) b.reinitFl=flU;
+  // 読み直し先は「生存している記録」だけ（削除だけの保存では未保存の空欄として残す）
+  const flLive = flU ? DB.flights().find(f=>f.uuid===flU) : null;
+  if(u2) b.reinitId=u2; else if(flLive) b.reinitFl=flU;
   // 保存した内容の位置を薄描き用に入れ物へ再構築する（次にこの個体を開くと
-  // reinit の全読み込みで置き換わる。ここは他の個体の地図に見せるためだけの写し）
+  // reinit の全読み込みで置き換わる。ここは他の個体の地図に見せるためだけの写し）。
+  // 生存レコード全件（同じ鳥の複数P・複数F・巣）から作る
   try{
+    const segs=[];
+    const pushP=o2=>{ if(validLatLon(coordStr(o2.target_latitude), coordStr(o2.target_longitude)))
+      segs.push({t:'P', id:0, pt:[parseFloat(o2.target_latitude), parseFloat(o2.target_longitude)], time:'', perch:perchNew()}); };
+    const pushF=f2=>{ const pth=(f2.path||[]).filter(validPathPt);
+      if(pth.length>1) segs.push({t:'F', id:0, pts:pth, times:[], fl:{height:'',behavior:''}}); };
     if(u2){
       const rec2=DB.observations().find(x=>x&&x.uuid===u2);
       if(rec2){
-        const segs=[];
-        if(validLatLon(coordStr(rec2.target_latitude), coordStr(rec2.target_longitude)))
-          segs.push({t:'P', id:0, pt:[parseFloat(rec2.target_latitude), parseFloat(rec2.target_longitude)], time:'', perch:perchNew()});
-        if(rec2.individual_key){
-          DB.flightsOf(rec2.survey_uuid).filter(f=>f.individual_key===rec2.individual_key).forEach(f=>{
-            const pth=(f.path||[]).filter(validPathPt);
-            if(pth.length>1) segs.push({t:'F', id:0, pts:pth, times:[], fl:{height:'',behavior:''}});
-          });
-        }
+        (rec2.individual_key
+          ? DB.obsOf(rec2.survey_uuid).filter(o2=>o2.individual_key===rec2.individual_key)
+          : [rec2]).forEach(pushP);
+        if(rec2.individual_key)
+          DB.flightsOf(rec2.survey_uuid).filter(f=>f.individual_key===rec2.individual_key).forEach(pushF);
         if(validLatLon(coordStr(rec2.nest_latitude), coordStr(rec2.nest_longitude)))
           b.map.nest=[parseFloat(rec2.nest_latitude), parseFloat(rec2.nest_longitude)];
-        b.map.segs=segs;
       }
-    } else if(flU){
-      const f2=DB.flight(flU);
-      if(f2){
-        const pth=(f2.path||[]).filter(validPathPt);
-        if(pth.length>1) b.map.segs=[{t:'F', id:0, pts:pth, times:[], fl:{height:'',behavior:''}}];
-      }
+    } else if(flLive){
+      (flLive.individual_key
+        ? DB.flightsOf(flLive.survey_uuid).filter(f=>f.individual_key===flLive.individual_key)
+        : [flLive]).forEach(pushF);
     }
+    if(segs.length) b.map.segs=segs;
   }catch(e){}
   if(add){ BIRDS.push(newBird()); BIRD_IDX=BIRDS.length-1; }
   SCREENS._birdKeep=true;
@@ -5338,7 +5364,7 @@ function saveObs(u, svUuid, editing, cont){
       toast(flRecs.length ? ('飛翔経路を'+flRecs.length+'本保存しました') : '経路を削除しました');
       // 複数個体: 飛翔だけの保存でも画面に留まる
       if(typeof birdAfterSave==='function' && (cont==='addBird' || (BIRDS.length>1 && cont!==true))){
-        const flU0=(anchorFlId || (flRecs[0]&&flRecs[0].uuid) || null);
+        const flU0=((flRecs[0]&&flRecs[0].uuid) || anchorFlId || null);   // 今回書けた生存の経路を優先
         if(birdAfterSave(null, cont==='addBird', flU0)) return true;
       }
       if(cont===true){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid})); } else goBack();
