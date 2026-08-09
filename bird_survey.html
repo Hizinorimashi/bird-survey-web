@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v167（2026-08-09 監査69巡目：持ち主CAS・相手基準の正本化・取込の自動経路除外・門の拡張）';
+const APP_VERSION = 'v168（2026-08-09 監査70巡目：CASの完全一致条件・復旧前の監視登録・控え片付けの統一完了）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3910,6 +3910,7 @@ async function saveJournalRecover(){
           okW=false;   // 自分の控えと違う姿＝別の書き手かもしれない。触らない
         }
       }
+      await new Promise(r=>setTimeout(r,0));   // 別の書き手の書き込み通知（storage）を受け取る一拍
       if(okW && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) okW=false;   // 復旧中に別の書き手を検知
       if(okW && localStorage.getItem('bs_save_journal')!==raw) okW=false;   // 復旧中に控えが差し替わった
       if(okW){ if(!saveJournalClear(j.tx||null)) okW=false; }
@@ -3979,6 +3980,7 @@ async function saveJournalRecover(){
           if(!DB.hardDelete(j.ghost.key, j.ghost.uuid)){ DISCARDED.delete(j.ghost.uuid); ok=false; }
         }
       }
+      await new Promise(r=>setTimeout(r,0));   // 別の書き手の書き込み通知（storage）を受け取る一拍
       if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) ok=false;   // 復旧中に別の書き手を検知
       if(ok && localStorage.getItem('bs_save_journal')!==raw) ok=false;   // 復旧中に控えが差し替わった
       if(ok){ ok=saveJournalClear(j.tx||null); }
@@ -4044,6 +4046,7 @@ async function saveJournalRecover(){
           } else if(chk.obs_uuid!==toObs || (chk.flight_uuid||'')!==toFl) ok=false;
         }catch(e){ ok=false; }
       }
+      await new Promise(r=>setTimeout(r,0));   // 別の書き手の書き込み通知（storage）を受け取る一拍
       if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) ok=false;   // 復旧中に別の書き手を検知
       if(ok && localStorage.getItem('bs_save_journal')!==raw) ok=false;   // 復旧中に控えが差し替わった
       if(ok){ ok=saveJournalClear(j.tx||null); }
@@ -4777,6 +4780,12 @@ function saveObs(u, svUuid, editing, cont){
             // 実体が見つからない＝参照だけの添付になる。成功扱いにせず止める
             if(!r) throw new Error('missing media entity: '+j.id);
             const prev={obs_uuid:r.obs_uuid, flight_uuid:r.flight_uuid};
+            // 想定内の持ち主（仮記録・持ち主なし）でなければ付け替えない
+            {
+              const ghostU=(SCREENS._ghost&&SCREENS._ghost.uuid)||'';
+              if((prev.flight_uuid||'')!=='' || !(prev.obs_uuid==='' || prev.obs_uuid===ghostU || prev.obs_uuid===((SCREENS._obs&&SCREENS._obs.uuid)||'')))
+                throw new Error('unexpected owner: '+j.id);
+            }
             // 前の持ち主を控えへ書き足してから付け替える（復旧が同じ判断をできるように）
             const peJ=(writtenJ.fl&&writtenJ.fl.items||[]).find(x=>x.kind===j.kind && x.id===j.id);
             if(peJ){ peJ.prevObs=prev.obs_uuid||''; peJ.prevFl=prev.flight_uuid||'';
@@ -4784,10 +4793,10 @@ function saveObs(u, svUuid, editing, cont){
             // 読取→判定→更新を1つのトランザクションで（間に別の書き手が入れないように）。
             // 想定内の持ち主（仮記録・持ち主なし）からだけ付け替え、
             // すでに付け替え済み（自分の飛翔所有）はこの取引の仕事ではない＝競合として止める
-            const ghostU=(SCREENS._ghost&&SCREENS._ghost.uuid)||'';
             const casR=await ownerCas(j.kind, j.id, rr=>{
-              if((rr.flight_uuid||'')!=='' ) return false;
-              if(!(rr.obs_uuid==='' || rr.obs_uuid===ghostU || rr.obs_uuid===((SCREENS._obs&&SCREENS._obs.uuid)||''))) return false;
+              // 控えに書いた「前の持ち主」と完全に一致する場合だけ付け替える。
+              // 読取（prev取得）とこの取引の間に別の書き手が動かしていたら奪わない
+              if(rr.obs_uuid!==prev.obs_uuid || (rr.flight_uuid||'')!==(prev.flight_uuid||'')) return false;
               return { obs_uuid:'', flight_uuid:flOwnerJobs.flId };
             });
             if(!casR.ok) throw new Error('unexpected owner: '+j.id);
@@ -6297,8 +6306,9 @@ function saveFlight(u,svUuid,editing,cont){
   const wroteObj=aW0.find(x=>x&&x.uuid===u)||null;
   if(wroteObj && stableJson(wroteObj)!==stableJson(rec)){
     // 書けたのが自分の値でない（直後に別のタブが上書きした）。
-    // すでに書く前の姿なら完了扱いにせず解除、それ以外は停止
+    // すでに書く前の姿なら、控えを片付けてから解除。それ以外は停止
     if(prevFl0 && JSON.stringify(wroteObj)===prevFlJson){
+      if(!saveJournalClear(txS)){ saveFatalHalt('保存の控えを片付けられませんでした。'); return; }
       SAVE_BUSY=false; saveBusyShow(false);
       toast('別のタブによる書き換えを検知したため、この保存は完了していません。内容を確認してから保存し直してください', 9000);
       return;
@@ -10394,8 +10404,7 @@ async function guardRecheck(){
     }
     if(!ans || ans.legacy>0){ multiTabBlockShow(); return; }
   }
-  startApp();
-  // 起動後も、古い版のタブが開かれていないかを定期的に・画面へ戻ったときに確かめる
+  // 監視は startApp（復旧を含む）より先に据える。復旧中の別の書き手も検知できるように
   setInterval(guardWatchTick, 3000);
   document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) guardWatchTick(); });
   // このタブは使用権を持つ唯一の書き手のはずなので、他のタブがこのアプリの
@@ -10417,6 +10426,7 @@ async function guardRecheck(){
       guardFreeze();
     }catch(e){}
   });
+  startApp();
 })();
 </script>
 </body>
