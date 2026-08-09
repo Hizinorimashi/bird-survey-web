@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v182（2026-08-09 複数個体の監査完了：仮記録の全文証明・書込前の生存再確認・再描画保全）';
+const APP_VERSION = 'v183（2026-08-09 記録の入口を観察に一本化：経路だけの記録も同じ一覧へ統合）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1690,7 +1690,7 @@ SCREENS.survey = (u)=>{
       ${roBtn(`<button type="button" class="act sm wide" id="quickRecBtn" onclick="quickRec('${u}')"><span class="ic">🎤</span>すぐ録音（種名はあとで）</button>`)}
       <button type="button" class="act sm" onclick="nav('voiceObs','${u}')"><span class="ic">🎙</span>音声で追加</button>
       <button type="button" class="act sm" onclick="nav('obsBatch','${u}')"><span class="ic">🐦🐦</span>まとめて記録</button>
-      <button type="button" class="act sm" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🛩</span>飛翔経路</button>
+      <button type="button" class="act sm" onclick="nav('flightList','${u}')"><span class="ic">🛩</span>経路まとめ</button>
       <button type="button" class="act sm" onclick="nav('routeEdit','${u}')"><span class="ic">🧭</span>調査ルート</button>
       <button type="button" class="act sm" onclick="nav('noteEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">📝</span>メモ</button>
       <button type="button" class="act sm" onclick="nav('hypotheses','${u}')"><span class="ic">💡</span>仮説</button>
@@ -1700,12 +1700,26 @@ SCREENS.survey = (u)=>{
       <button type="button" class="act sm wide" onclick="nav('surveyEnd','${u}')"><span class="ic">⏹</span>調査を終了</button>
     </div>` : '';
 
+  // 観察とつながっている経路は、観察のカード（開けば止まりも経路も1画面）に含まれるので畳む。
+  // つながっていない経路（経路だけの記録）だけ、観察と同じ一覧にカードを出す
+  const obsKeys = new Set(obs.map(o2=>o2.individual_key).filter(Boolean));
+  const flights = DB.flightsOf(u)
+    .filter(f=>!(f.individual_key && obsKeys.has(f.individual_key)))
+    .sort((a,b)=>(b.start_time||b.created_at||'').localeCompare(a.start_time||a.created_at||''));
+
   const selMode = !!(SCREENS._sel && SCREENS._sel.scope==='obs' && SCREENS._sel.sv===u);
   // 一覧の表示件数と「要確認のみ」絞り込み（別の調査に移ったらリセット）
   if(SCREENS._obsListSv!==u){ SCREENS._obsListSv=u; SCREENS._obsLimit=50; SCREENS._obsReviewOnly=false; }
-  const reviewCount=obs.filter(o=>o.needs_review).length;
-  const listSrc=SCREENS._obsReviewOnly ? obs.filter(o=>o.needs_review) : obs;
-  const sorted=listSrc.slice().sort((a,b)=>(b.observed_at||'').localeCompare(a.observed_at||''));
+  // 観察と「経路だけの記録」を1本の一覧にまとめる（どちらもタップで同じ統合画面が開く）。
+  // 選んで削除している間は観察だけを出す（削除の対象を取り違えないため）
+  const reviewCount=obs.filter(o=>o.needs_review).length
+    + (selMode?0:flights.filter(f=>f.needs_review).length);
+  const listSrc=(SCREENS._obsReviewOnly ? obs.filter(o=>o.needs_review) : obs)
+    .map(o=>({kind:'obs', rec:o, at:o.observed_at||''}))
+    .concat(selMode ? [] :
+      (SCREENS._obsReviewOnly ? flights.filter(f=>f.needs_review) : flights)
+        .map(f=>({kind:'fl', rec:f, at:f.start_time||f.created_at||''})));
+  const sorted=listSrc.slice().sort((a,b)=>String(b.at).localeCompare(String(a.at)));
   const recent=sorted.slice(0, SCREENS._obsLimit||50);
   const moreBtn=sorted.length>recent.length
     ? `<div class="sp"></div><button class="btn" onclick="obsMore()">さらに50件表示（残り${sorted.length-recent.length}件）</button>` : '';
@@ -1724,26 +1738,20 @@ SCREENS.survey = (u)=>{
         <div class="row"><span class="selcb">${SCREENS._sel.set.has(o.uuid)?'☑':'☐'}</span>${obsInner(o)}</div></div>`
     : `<div class="card tap" onclick="nav('obsEdit', JSON.stringify({sv:'${u}',id:'${o.uuid}'}))">
         <div class="row">${obsInner(o)}</div></div>`;
-  const obsList = recent.length ? recent.map(obsCard).join('')
-    : `<div class="empty small">${SCREENS._obsReviewOnly?'要確認の記録はありません。':'まだ観察記録がありません。'}</div>`;
+  const obsList = recent.length ? recent.map(it=>it.kind==='fl'?flightCard(u,it.rec):obsCard(it.rec)).join('')
+    : `<div class="empty small">${SCREENS._obsReviewOnly?'要確認の記録はありません。':'まだ記録がありません。'}</div>`;
   const obsHeader = `<div class="row" style="align-items:center; flex-wrap:wrap; gap:6px;">
-      <h3 class="grow" style="margin:0;">観察記録 <span class="muted small">(${obs.length})</span></h3>
+      <h3 class="grow" style="margin:0;">観察記録 <span class="muted small">(${obs.length+flights.length})</span></h3>
       ${(reviewCount||SCREENS._obsReviewOnly)? `<button class="btn ghost" style="width:auto; padding:6px 12px; ${SCREENS._obsReviewOnly?'border-color:var(--warn); color:var(--warn);':''}" onclick="obsReviewToggle()">⚠ 要確認のみ(${reviewCount})</button>`:''}
       ${obs.length? (selMode
         ? `<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="endSelect()">キャンセル</button>`
         : roBtn(`<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="startSelect('obs','${u}')">☑ 選択して削除</button>`)):''}
-    </div>`;
+    </div>${(selMode && flights.length)?`<div class="tiny muted" style="margin:2px 2px 6px;">経路だけの記録（🛩）は選択中は表示していません。消すときは記録を開いてください</div>`:''}`;
   const selBar = selMode
     ? `<div class="sp"></div><button class="btn danger big" id="selDelBtn" ${SCREENS._sel.set.size?'':'disabled'} onclick="deleteSelected()">選択した${SCREENS._sel.set.size}件を削除</button>`
     : '';
 
   const notes = DB.notesOf(u);
-  // 観察とつながっている経路は、観察のカード（開けば止まりも経路も1画面）に含まれるので畳む。
-  // つながっていない経路（経路だけの記録）だけカードを出す
-  const obsKeys = new Set(obs.map(o2=>o2.individual_key).filter(Boolean));
-  const flights = DB.flightsOf(u)
-    .filter(f=>!(f.individual_key && obsKeys.has(f.individual_key)))
-    .sort((a,b)=>(b.start_time||b.created_at||'').localeCompare(a.start_time||a.created_at||''));
 
   return {
     title: s.name||'調査', sub,
@@ -1757,7 +1765,6 @@ SCREENS.survey = (u)=>{
         <button class="btn" onclick="nav('hypotheses','${u}')">💡 仮説・検証</button>
         <button class="btn" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))">🐦 観察を追加</button>
         <button class="btn" onclick="nav('obsBatch','${u}')">🐦🐦 まとめて記録</button>
-        <button class="btn" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))">🛩 飛翔経路を記録</button>
         <button class="btn" onclick="nav('flightList','${u}')">🛩 飛翔経路まとめ</button>
         <button class="btn" onclick="nav('routeEdit','${u}')">🧭 調査ルート</button>
         ${(s.route&&s.route.length)?roBtn(`<button class="btn" onclick="newSurveyFromRoute('${u}')">🧭 このルートで新規調査</button>`):''}
@@ -1769,14 +1776,6 @@ SCREENS.survey = (u)=>{
       ${obsList}
       ${moreBtn}
       ${selBar}
-      <div class="divider"></div>
-      <div class="row" style="align-items:center;">
-        <h3 class="grow" style="margin:0;">飛翔経路 <span class="muted small">(${flights.length})</span></h3>
-        ${flights.length?`<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="nav('flightList','${u}')">🗺 まとめて表示</button>`:''}
-        <button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))">🛩 追加</button>
-      </div>
-      ${flights.length? flights.map(f=>flightCard(u,f)).join('')
-        : '<div class="empty small">まだ飛翔経路がありません。「🛩 追加」で地図に描けます。</div>'}
       ${notes.length?`<div class="divider"></div><h3>調査メモ <span class="muted small">(${notes.length})</span></h3>
         ${notes.map(n=>`<div class="card tap" onclick="nav('noteEdit', JSON.stringify({sv:'${u}',id:'${n.uuid}'}))">
           <div class="small"><span class="badge">${esc(n.category||'')}</span> ${fmtTime(n.recorded_at)}</div>
@@ -2575,6 +2574,8 @@ SCREENS.obsEdit = (argStr)=>{
         <button type="button" class="btn ghost" style="flex:1;" onclick="birdAdd()">＋ 個体を追加</button>
         ${BIRDS.length>1?`<button type="button" class="btn danger" style="flex:1;" onclick="birdDrop()">この個体を消す</button>`:''}
       </div>
+      ${(!editing && BIRDS.length<=1)?`<div class="sp"></div>
+      <button type="button" class="btn ghost" onclick="openMultiTrace('${svUuid}')">🛩 複数羽を同時に追う（タブで色分けして一度に描く）</button>`:''}
     `,
     onMount:()=>{ SCREENS._obs=o;
       if(revisitBird){
@@ -2757,6 +2758,15 @@ SCREENS.obsEdit = (argStr)=>{
     }
   };
 };
+// 複数羽の同時トレース（タブで色分けして何羽ぶんも線を引く専用画面）。
+// 記録の入口は統合画面に一本化したので、ここだけがこの画面への道になる
+function openMultiTrace(svUuid){
+  if(typeof birdBusy==='function' && birdBusy()) return;
+  const name=(($('#spInput')&&$('#spInput').value)||'').trim();
+  const keep={ species_id:SCREENS._chosenId||'', species_name:name,
+    age_class:(typeof segVal==='function'?segVal('age_class'):'')||'' };
+  nav('flightEdit', JSON.stringify({sv:svUuid, keep, multi:1}));
+}
 function pickObs(btn,field,val){
   const before=btn.classList.contains('on');   // 同じ値を押し直しただけなら未保存扱いにしない（無用な離脱確認を出さない）
   btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); syncOther(field);
@@ -7224,10 +7234,9 @@ SCREENS.flightList = (u)=>{
       <div class="sp"></div>
       <div class="row" style="align-items:center;">
         <h3 class="grow" style="margin:0;">経路一覧 <span class="muted small">(${flights.length})</span></h3>
-        <button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="nav('flightEdit', JSON.stringify({sv:'${u}'}))">🛩 追加</button>
       </div>
       ${flights.length? flights.map(f=>flightCard(u,f)).join('')
-        : '<div class="empty small">まだ飛翔経路がありません。「🛩 追加」で地図に描けます。</div>'}
+        : '<div class="empty small">まだ飛翔経路がありません。記録は「🐦 観察を追加」の画面で、地図の <b>F</b> を押して描きます。</div>'}
     `,
     onMount:()=>{ if(drawable.length) _mapTimer=setTimeout(()=>drawMap([],[],drawable),50); }
   };
