@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v169（2026-08-09 監査71巡目：復旧の合成補償・救出画面）';
+const APP_VERSION = 'v170（2026-08-09 監査72巡目：キー単位の合成・仮記録の全文照合・隔離モード）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3771,12 +3771,22 @@ function saveFatalHalt(msg){
 // 遮断中の要求は保留し、確定点（取引の完了）で一度だけ予約し直す
 let _backupPending=false, _folderPending=false;
 let BACKUP_GEN=0;   // 保存取引・復旧が始まるたびに進む世代番号。作成中のバックアップの無効化に使う
+function quarantineActive(){
+  try{
+    for(let i2=0;i2<localStorage.length;i2++){
+      const k=localStorage.key(i2);
+      if(k && k.indexOf('bs_save_journal_quarantine')===0) return true;
+    }
+  }catch(e){}
+  return false;
+}
 function backupBlocked(){
   return (typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) || !!window.RECOVERY_OK
     || (typeof SAVE_FATAL!=='undefined' && SAVE_FATAL)
     || (typeof GUARD_FROZEN!=='undefined' && GUARD_FROZEN)
     || (typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT)
     || !window.WRITE_OK
+    || quarantineActive()   // 隔離中は自動バックアップも送らない
     || localStorage.getItem('bs_save_journal')!==null;   // 空文字も「控えあり」として扱う
 }
 function backupConfirmPoint(){
@@ -3828,7 +3838,8 @@ function saveJournalValid(j){
         && ((it.prevObs===undefined && it.prevFl===undefined)
           || (typeof it.prevObs==='string' && typeof it.prevFl==='string')))))) return false;
     if(!(j.ghost==null || (plainObj(j.ghost) && typeof j.ghost.key==='string' && KEYS.has(j.ghost.key)
-      && typeof j.ghost.uuid==='string' && j.ghost.uuid))) return false;
+      && typeof j.ghost.uuid==='string' && j.ghost.uuid
+      && (j.ghost.rec===undefined || typeof j.ghost.rec==='string')))) return false;
     return true;
   }catch(e){ return false; }
 }
@@ -3869,28 +3880,114 @@ function recoveryRescueShow(){
     +'<br><button style="'+btn+'background:#8a5a2f;" onclick="rescueQuarantine()">2) 保存の控えを隔離して起動し直す</button>'
     +'<br><br><button style="'+btn+'background:#555;" onclick="location.reload()">再読み込み（もう一度復旧を試す）</button></div>';
 }
-function rescueDownload(){
+// 隔離中の案内（画面上部の帯）。完全救出（録音・写真の実体込み）と隔離の解除の導線
+function quarantineBannerShow(){
+  if(document.getElementById('quarBanner')) return;
+  const el=document.createElement('div');
+  el.id='quarBanner';
+  el.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:99990;background:#8a5a2f;color:#fff;'
+    +'padding:10px 12px;font-size:13px;line-height:1.6;text-align:center;';
+  const b='padding:6px 12px;border-radius:8px;border:0;background:#fff;color:#8a5a2f;margin:4px;';
+  el.innerHTML='隔離中: 前回の保存の控えを隔離しています。録音・写真の掃除と自動バックアップは停止中です。'
+    +'<br><button style="'+b+'" onclick="rescueFullDownload()">録音・写真込みの完全救出を保存</button>'
+    +'<button style="'+b+'" onclick="quarantineRelease()">救出済みなので隔離を解除</button>';
+  document.body.appendChild(el);
+}
+async function rescueFullDownload(){
+  toast('完全救出ファイルを作成中…（録音・写真が多いと時間がかかります）');
   try{
-    const dump={};
+    const data=await buildFullBackup();
+    download('bird_survey_rescue_full_'+dateValue().replace(/-/g,'')+'.json', JSON.stringify(data), 'application/json');
+    toast('完全救出ファイルを保存しました');
+  }catch(e){ toast('完全救出ファイルを作れませんでした'); }
+}
+function quarantineRelease(){
+  if(!confirm('隔離を解除して、掃除と自動バックアップを再開します。\n「録音・写真込みの完全救出」は保存しましたか？')) return;
+  try{
+    const drop=[];
     for(let i2=0;i2<localStorage.length;i2++){
       const k=localStorage.key(i2);
-      if(k && k.indexOf('bs_')===0) dump[k]=localStorage.getItem(k);
+      if(k && k.indexOf('bs_save_journal_quarantine')===0) drop.push(k);
     }
-    download('bird_survey_rescue_'+dateValue().replace(/-/g,'')+'.json', JSON.stringify(dump), 'application/json');
+    drop.forEach(k=>localStorage.removeItem(k));
+    location.reload();
+  }catch(e){ toast('解除できませんでした'); }
+}
+function rescueDownload(){
+  try{
+    // 2回読み取り、鍵の集合と中身の完全一致を確かめる（別のタブが書き換え中の姿を配らない）
+    const readAll=()=>{
+      const d={};
+      for(let i2=0;i2<localStorage.length;i2++){
+        const k=localStorage.key(i2);
+        if(k && k.indexOf('bs_')===0) d[k]=localStorage.getItem(k);
+      }
+      return d;
+    };
+    const a=readAll(), b=readAll();
+    if(JSON.stringify(a)!==JSON.stringify(b)){
+      toast('別のタブが書き込み中のようです。そのタブを閉じて、もう一度お試しください', 6000); return;
+    }
+    download('bird_survey_rescue_'+dateValue().replace(/-/g,'')+'.json', JSON.stringify(a), 'application/json');
     toast('救出ファイルを保存しました');
   }catch(e){ toast('救出ファイルを作れませんでした'); }
 }
 function rescueQuarantine(){
   if(!confirm('保存の控え（ジャーナル）を隔離して、次の起動から通常どおり使えるようにします。\n先に「記録の救出ファイルを保存」を済ませましたか？')) return;
   try{
+    if(typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT){
+      toast('別のタブの書き込みを検知しています。そのタブを閉じてからお試しください', 6000); return;
+    }
     const raw=localStorage.getItem('bs_save_journal');
-    if(raw!=null) localStorage.setItem('bs_save_journal_quarantine', raw);   // 消さずに別の鍵へ移す
+    if(raw!=null){
+      const qk='bs_save_journal_quarantine_'+Date.now();   // 以前の隔離を上書きしない鍵
+      localStorage.setItem(qk, raw);
+      if(localStorage.getItem(qk)!==raw){ toast('隔離の書き込みを確認できませんでした'); return; }
+      if(localStorage.getItem('bs_save_journal')!==raw){
+        toast('控えが書き換わっています。もう一度お試しください', 6000); return;   // 差し替え検知
+      }
+    }
     localStorage.removeItem('bs_save_journal');
+    if(localStorage.getItem('bs_save_journal')!==null){ toast('控えを消せませんでした'); return; }
     location.reload();
   }catch(e){ toast('隔離できませんでした（空き容量を確認してください）'); }
 }
 // 復旧用の基準配列: 競合で控えた相手の最新の姿があればそれを正本、無ければ厳格読み込み。
 // 相手の姿が壊れていれば null（触らず停止）
+// 復旧の書き戻しをキー単位でまとめて適用する。
+// 1件ごとに基準を取り直すと、同じキーの後の保存が先の補償を上書きしてしまう。
+// strict=true: 自分の書き込みと確かめられない姿があれば全体を失敗にする（writing段）
+// strict=false: そうした姿は相手の更新として残す（written段の巻き戻し・合成）
+function recoverApply(entries, strict){
+  const byKey=new Map();
+  entries.forEach(e=>{ if(!byKey.has(e.key)) byKey.set(e.key, []); byKey.get(e.key).push(e); });
+  for(const kv of byKey){
+    const key=kv[0], list=kv[1];
+    const arr=recoverBase(key);
+    if(!arr) return false;   // 読めない・相手の姿が壊れている＝触らない
+    let changed=false;
+    for(const e of list){
+      const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
+      const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
+      const prevJson= e.prev ? JSON.stringify(e.prev) : '';
+      if((idx<0 && !e.prev) || (idx>=0 && e.prev && curJson===prevJson)) continue;   // すでに書く前の姿
+      if((e.wroteRec && idx>=0 && curJson===e.wroteRec)
+        || (e.expectedRec && idx>=0 && stableJson(arr[idx])===e.expectedRec)){
+        if(e.prev) arr[idx]=e.prev; else arr.splice(idx,1);
+        changed=true;
+      } else if(strict){
+        return false;   // 自分の控えと違う姿＝別の書き手かもしれない。触らず停止
+      }
+      // strict=false: 相手の姿のまま＝相手の更新が正。触らない
+    }
+    if(changed || Object.prototype.hasOwnProperty.call(GUARD_SNAP||{}, key)){
+      if(!DB.save(key, arr)) return false;
+      const a2=loadStrict(key);
+      if(!a2 || JSON.stringify(a2)!==JSON.stringify(arr)) return false;   // 全文の再読込一致まで確認
+    }
+  }
+  return true;
+}
 function recoverBase(key){
   try{
     if(typeof GUARD_SNAP!=='undefined' && Object.prototype.hasOwnProperty.call(GUARD_SNAP, key)){
@@ -3932,50 +4029,15 @@ async function saveJournalRecover(){
       // 書き込みの途中で終了した＝取引は確定していない。
       // 「自分が書いたと確かめられる記録」だけを書く前の姿へ戻す。
       // 姿が違う記録は別の書き手の正当な更新かもしれないので触らず、控えを残して停止する
-      let okW=true;
       const normW=new Map();
       j.undo.forEach(e=>{ const k=e.key+'|'+e.uuid; if(!normW.has(k)) normW.set(k, e); });
-      for(const e of normW.values()){
-        const arr=recoverBase(e.key);
-        if(!arr){ okW=false; continue; }   // 読めない・相手の姿が壊れている＝触らない
-        const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
-        const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
-        const prevJson= e.prev ? JSON.stringify(e.prev) : '';
-        if((idx<0 && !e.prev) || (idx>=0 && e.prev && curJson===prevJson)) continue;   // 書く前のまま
-        if((e.wroteRec && idx>=0 && curJson===e.wroteRec)
-          || (e.expectedRec && idx>=0 && stableJson(arr[idx])===e.expectedRec)){
-          // 自分が書いた値（または予定値）のまま → 書く前の姿へ戻す
-          if(e.prev) arr[idx]=e.prev; else arr.splice(idx,1);
-          if(!DB.save(e.key,arr)){ okW=false; continue; }
-          const a2=loadStrict(e.key);
-          const cur2=a2?a2.find(x=>x&&x.uuid===e.uuid):null;
-          if(e.prev ? JSON.stringify(cur2)!==prevJson : !!cur2) okW=false;
-        } else {
-          okW=false;   // 自分の控えと違う姿＝別の書き手かもしれない。触らない
-        }
-      }
+      let okW=recoverApply(Array.from(normW.values()), true);
       await new Promise(r=>setTimeout(r,0));   // 別の書き手の書き込み通知（storage）を受け取る一拍
       if(okW && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT){
         // 相手の書き込みが先に反映され、こちらの書き戻しが相手の更新を消したかもしれない。
         // 相手の最新の姿を正本に、自分の分だけをもう一度戻して合成し直す
         okW=false;
-        let merged=true;
-        for(const e of normW.values()){
-          const arr=recoverBase(e.key);
-          if(!arr){ merged=false; break; }
-          const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
-          const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
-          const prevJson= e.prev ? JSON.stringify(e.prev) : '';
-          if((idx<0 && !e.prev) || (idx>=0 && e.prev && curJson===prevJson)) continue;
-          if((e.wroteRec && idx>=0 && curJson===e.wroteRec)
-            || (e.expectedRec && idx>=0 && stableJson(arr[idx])===e.expectedRec)){
-            if(e.prev) arr[idx]=e.prev; else arr.splice(idx,1);
-            if(!DB.save(e.key,arr)){ merged=false; break; }
-            const a2=loadStrict(e.key);
-            if(!a2 || JSON.stringify(a2)!==JSON.stringify(arr)){ merged=false; break; }
-          }
-          // 相手の姿のまま＝相手の更新が正。触らない
-        }
+        const merged=recoverApply(Array.from(normW.values()), false);
         if(merged){
           GUARD_SNAP={}; GUARD_CONFLICT=false;
           await new Promise(r=>setTimeout(r,0));
@@ -4046,10 +4108,17 @@ async function saveJournalRecover(){
         const isReal=normArr.some(e=>e.key===j.ghost.key && e.uuid===j.ghost.uuid);
         const gArr=recoverBase(j.ghost.key);
         if(!gArr){ ok=false; }
-        else if(!isReal && gArr.some(x=>x&&x.uuid===j.ghost.uuid)){
-          DISCARDED.add(j.ghost.uuid);
-          if(!DB.hardDelete(j.ghost.key, j.ghost.uuid)){ DISCARDED.delete(j.ghost.uuid); ok=false; }
-          else ghostDeleted=true;
+        else {
+          const gCur=gArr.find(x=>x&&x.uuid===j.ghost.uuid);
+          if(!isReal && gCur){
+            // 相手が同じ番号を正式な記録として更新していたら消さない（墓標も付けない）
+            if(j.ghost.rec!==undefined && JSON.stringify(gCur)!==j.ghost.rec){ ok=false; }
+            else {
+              DISCARDED.add(j.ghost.uuid);
+              if(!DB.hardDelete(j.ghost.key, j.ghost.uuid)){ DISCARDED.delete(j.ghost.uuid); ok=false; }
+              else ghostDeleted=true;
+            }
+          }
         }
       }
       await new Promise(r=>setTimeout(r,0));   // 別の書き手の書き込み通知（storage）を受け取る一拍
@@ -4062,10 +4131,28 @@ async function saveJournalRecover(){
           if(!gArr2){ merged=false; }
           else {
             const gi=gArr2.findIndex(x=>x&&x.uuid===j.ghost.uuid);
-            if(gi>=0){ gArr2.splice(gi,1);
-              if(!DB.save(j.ghost.key, gArr2)) merged=false;
-              else { const a2=loadStrict(j.ghost.key);
-                if(!a2 || JSON.stringify(a2)!==JSON.stringify(gArr2)) merged=false; }
+            if(gi>=0){
+              // 相手が正式な記録に変えていたら消さない（合成を諦めて停止）
+              if(j.ghost.rec!==undefined && JSON.stringify(gArr2[gi])!==j.ghost.rec){ merged=false; }
+              else { gArr2.splice(gi,1);
+                if(!DB.save(j.ghost.key, gArr2)) merged=false;
+                else { const a2=loadStrict(j.ghost.key);
+                  if(!a2 || JSON.stringify(a2)!==JSON.stringify(gArr2)) merged=false; }
+              }
+            }
+          }
+        }
+        // 合成後の最終的な姿から、添付の持ち主が正しいか（飛翔が生きていて参照しているか）を確かめ直す
+        if(merged && j.fl){
+          const fl3=loadStrict(DB.key.fl);
+          const flCur3=fl3?fl3.find(x=>x&&x.uuid===j.fl.flId && !x.deleted_at):null;
+          if(!flCur3){ merged=false; }
+          else {
+            for(const it of items){
+              try{
+                const chk3=await dbOf(it.kind).get(it.id);
+                if(!chk3 || chk3.obs_uuid!=='' || chk3.flight_uuid!==j.fl.flId){ merged=false; break; }
+              }catch(e){ merged=false; break; }
             }
           }
         }
@@ -4080,24 +4167,8 @@ async function saveJournalRecover(){
       if(ok){ if(didWork) toast('前回の保存の後片付けを完了しました'); }
     } else {
       // 記録が変わっている（別のタブの書き込みなど）。
-      // 先に「最後の控えのまま」の記録だけ「最初のprev」へ戻し、読み直して確かめる
-      for(const e of normArr){
-        const arr=recoverBase(e.key);
-        if(!arr){ ok=false; continue; }
-        const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
-        const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
-        if(idx>=0 && curJson===e.wroteRec){
-          if(e.prev) arr[idx]=e.prev; else arr.splice(idx,1);
-          if(!DB.save(e.key, arr)) ok=false;
-          else {
-            const a2=loadStrict(e.key);
-            const cur2=a2?a2.find(x=>x&&x.uuid===e.uuid):null;
-            if(!a2){ ok=false; }
-            else if(e.prev ? JSON.stringify(cur2)!==JSON.stringify(e.prev) : !!cur2) ok=false;
-          }
-        }
-        // すでに戻っている・別の書き手の姿はそのまま（戻す対象ではない）
-      }
+      // 「最後の控えのまま」の記録だけ「最初のprev」へ戻す（キー単位でまとめて適用）
+      if(!recoverApply(normArr, false)) ok=false;
       // 巻き戻しの後に生き残っている飛翔（競合版）を読み直し、
       // それが実際に参照する添付だけ持ち主を維持。それ以外は仮記録へ戻す
       let keepK=new Set(), keepBad=false;
@@ -4143,19 +4214,7 @@ async function saveJournalRecover(){
       if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT){
         // 相手の最新の姿を正本に、自分の分だけをもう一度戻して合成し直す
         ok=false;
-        let merged=true;
-        for(const e of normArr){
-          const arr=recoverBase(e.key);
-          if(!arr){ merged=false; break; }
-          const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
-          const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
-          if(idx>=0 && curJson===e.wroteRec){
-            if(e.prev) arr[idx]=e.prev; else arr.splice(idx,1);
-            if(!DB.save(e.key,arr)){ merged=false; break; }
-            const a2=loadStrict(e.key);
-            if(!a2 || JSON.stringify(a2)!==JSON.stringify(arr)){ merged=false; break; }
-          }
-        }
+        const merged=recoverApply(normArr, false);
         if(merged){
           GUARD_SNAP={}; GUARD_CONFLICT=false;
           await new Promise(r=>setTimeout(r,0));
@@ -4817,7 +4876,8 @@ function saveObs(u, svUuid, editing, cont){
   // 観察を作る保存では仮記録が完成した観察そのものになるため、載せると復旧が誤って消す
   const writtenJ={ t: nowISO(), tx: (txJournal&&txJournal.j&&txJournal.j.tx)||undefined, phase:'written', undo: undoLog,
     fl: flOwnerJobs ? { flId: flOwnerJobs.flId, items: flOwnerJobs.items.map(it=>({kind:it.kind, id:it.id})) } : null,
-    ghost: (!obRecs.length && SCREENS._ghost) ? { key: SCREENS._ghost.key, uuid: SCREENS._ghost.uuid } : null };
+    ghost: (!obRecs.length && SCREENS._ghost) ? { key: SCREENS._ghost.key, uuid: SCREENS._ghost.uuid,
+      rec: JSON.stringify((loadStrict(SCREENS._ghost.key)||[]).find(x=>x&&x.uuid===SCREENS._ghost.uuid)||null) } : null };
   if(!saveJournalSet(writtenJ)){
     // 復旧の控えを残せない状態で後処理へ進まない（途中終了すると回収できなくなる）
     saveCancel('空き容量が足りず、保存を安全に完了できませんでした。空き容量を確保してからやり直してください');
@@ -10363,6 +10423,11 @@ function startApp(){
     backupConfirmPoint();   // 復旧までの保留分をここで一度だけ予約し直す
     bootNoticeSet('');
     render();   // 確認中に出していた案内・出し分けを最新にする
+    if(quarantineActive()){
+      // 隔離中: 参照を失った添付を掃除で消してしまわないよう、掃除・同期を止めて案内する
+      quarantineBannerShow();
+      return;
+    }
     // 掃除が終わってから同期チェック（並行させると、取り込んだ直後の録音・写真を「参照なし」と誤判定して消す恐れがある）
     mediaGcAll().catch(()=>{}).then(()=>gdriveStartupCheck()); // ドライブに別端末の新しい保存があれば取り込みを提案
   });
