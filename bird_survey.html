@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v171（2026-08-09 監査73巡目：仮記録削除の共通化・GCの中央門・隔離の厳密化）';
+const APP_VERSION = 'v172（2026-08-09 監査74巡目：仮記録全文の開始時固定・削除確認の厳格化・バックアップ直列化）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3982,7 +3982,18 @@ function ghostDeleteVerified(key, uuidV, recJson){
   DISCARDED.add(uuidV);
   if(!DB.hardDelete(key, uuidV)){ DISCARDED.delete(uuidV); return 'fail'; }
   const a2=loadStrict(key);
-  if(a2 && a2.some(x=>x&&x.uuid===uuidV)) return 'fail';
+  if(a2===null) return 'fatal';   // 消えたことを確認できない（読めない）＝墓標が付いたまま。致命停止へ
+  const back=a2.find(x=>x&&x.uuid===uuidV);
+  if(back){
+    // 競合で同じ番号が再出現した。付けた墓標を外し、外れたことまで確かめる
+    //（墓標が残ると、残した記録が後日の同期で消される）
+    try{ DB._untomb(uuidV); }catch(e){}
+    let still=true;
+    try{ still=tombstonesList().some(t=>t && (t===uuidV || t.uuid===uuidV)); }catch(e){ still=true; }
+    if(still) return 'fatal';
+    DISCARDED.delete(uuidV);
+    return (recJson!==undefined && recJson!==null && JSON.stringify(back)!==recJson) ? 'changed' : 'fail';
+  }
   return 'deleted';
 }
 // 復旧の書き戻しをキー単位でまとめて適用する。
@@ -4142,7 +4153,7 @@ async function saveJournalRecover(){
         else if(!isReal){
           const st=ghostDeleteVerified(j.ghost.key, j.ghost.uuid, j.ghost.rec);
           if(st==='deleted') ghostDeleted=true;
-          else if(st==='changed' || st==='fail') ok=false;   // 相手の正式な記録は消さない
+          else if(st!=='gone') ok=false;   // changed/fail/fatal: 消さず（または確認できず）停止
         }
       }
       await new Promise(r=>setTimeout(r,0));   // 別の書き手の書き込み通知（storage）を受け取る一拍
@@ -4844,6 +4855,19 @@ function saveObs(u, svUuid, editing, cont){
   if(typeof GUARD_CONFLICT!=='undefined'){ GUARD_CONFLICT=false; GUARD_SNAP={}; }   // この保存の間の競合だけを見る
   if(typeof BACKUP_GEN!=='undefined'){ BACKUP_GEN++; _backupPending=true; _folderPending=true; }   // 作成中のバックアップを無効化し、確定点で予約し直す
   const saveAbort=()=>{ SAVE_BUSY=false; saveBusyShow(false); };
+  // 仮記録（ghost）の全文はこの時点（自分の書き込みだけが済んでいる状態）で固定する。
+  // 記録を書き終えた後に読み直すと、その間に別のタブが正式化した記録を
+  // 「消してよい仮記録」として控えてしまう
+  let ghostRecFixed;
+  if(!obRecs.length && SCREENS._ghost){
+    const gA=loadStrict(SCREENS._ghost.key);
+    if(!gA){
+      toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000);
+      SAVE_BUSY=false; saveBusyShow(false); return;
+    }
+    const gC=gA.find(x=>x&&x.uuid===SCREENS._ghost.uuid);
+    ghostRecFixed = gC ? JSON.stringify(gC) : undefined;
+  }
   // 取引の第1段: これから書く全記録（削除対象も含む）の「書く前の姿」を先に控える。
   // 各記録を書くたびに「書いた直後の控え」も書き足す（writeOne 内）。
   // 途中で終了しても、起動時に「自分が書いた分だけ」を安全に元へ戻せる
@@ -4929,7 +4953,7 @@ function saveObs(u, svUuid, editing, cont){
   const writtenJ={ t: nowISO(), tx: (txJournal&&txJournal.j&&txJournal.j.tx)||undefined, phase:'written', undo: undoLog,
     fl: flOwnerJobs ? { flId: flOwnerJobs.flId, items: flOwnerJobs.items.map(it=>({kind:it.kind, id:it.id})) } : null,
     ghost: (!obRecs.length && SCREENS._ghost) ? { key: SCREENS._ghost.key, uuid: SCREENS._ghost.uuid,
-      rec: JSON.stringify((loadStrict(SCREENS._ghost.key)||[]).find(x=>x&&x.uuid===SCREENS._ghost.uuid)||null) } : null };
+      rec: ghostRecFixed } : null };   // 取引開始時に固定した全文（DBから再取得しない）
   if(!saveJournalSet(writtenJ)){
     // 復旧の控えを残せない状態で後処理へ進まない（途中終了すると回収できなくなる）
     saveCancel('空き容量が足りず、保存を安全に完了できませんでした。空き容量を確保してからやり直してください');
@@ -4951,6 +4975,7 @@ function saveObs(u, svUuid, editing, cont){
       const gh=SCREENS._ghost;
       if(gh){
         const st=ghostDeleteVerified(gh.key, gh.uuid, (writtenJ&&writtenJ.ghost)?writtenJ.ghost.rec:undefined);
+        if(st==='fatal'){ saveFatalHalt('仮記録の片付けを確認できませんでした。'); return true; }   // 補償へ進まず停止（控えは残る）
         if(st==='changed' || st==='fail') return false;   // 相手の正式な記録は消さない／確認できなければ補償へ
         SCREENS._ghost=null; mediaGcAll().catch(function(){});
       }
@@ -8714,15 +8739,19 @@ async function fsWrite(name, text){
   await w.write(new Blob([text],{type:'application/json'})); await w.close(); return true;
 }
 async function fsBackupRecords(){ if(!_fsDir) return;
+  const gen0=BACKUP_GEN;
   let json; try{ json=JSON.stringify(buildRecordsBackup()); }
   catch(e){ return; }   // 記録を読めない時は latest を上書きしない（原本保護）
+  if(gen0!==BACKUP_GEN || backupBlocked()){ _folderPending=true; return; }   // 書き込み直前にも確認
   const ymd=dateValue().replace(/-/g,'');
   const ok=await fsWrite('birdsurvey_records_latest.json', json).catch(()=>false);
   await fsWrite('birdsurvey_records_'+ymd+'.json', json).catch(()=>{});
+  if(gen0!==BACKUP_GEN){ _folderPending=true; return; }   // 古い内容を「最新の保存」として扱わない
   if(ok) localStorage.setItem('bs_fs_last', nowISO());
 }
 let _fullRunning=false;
 async function fsBackupFullCore(){
+  return backupRun(async ()=>{   // 記録のバックアップと同じ列で直列に（追い越しの上書きを防ぐ）
   if(backupBlocked()){ _folderPending=true; return; }   // 取引の途中の記録・添付を混ぜて保存しない
   if(!_fsDir || _fullRunning) return false; _fullRunning=true;
   const gen0=BACKUP_GEN;
@@ -8740,6 +8769,7 @@ async function fsBackupFullCore(){
     if(ok) localStorage.setItem('bs_fs_last', nowISO());
     return ok;
   } finally { _fullRunning=false; }
+  });
 }
 async function fsBackupFull(){ if(!_fsDir){ toast('先に保存フォルダを設定してください'); return; }
   toast('録音・写真を含めてフォルダに保存中…'); const ok=await fsBackupFullCore();
@@ -8769,18 +8799,36 @@ function cloudPost(kind, dataObj){
     .then(()=>{ localStorage.setItem('bs_cloud_sent', nowISO()); localStorage.setItem('bs_cloud_last_kind', kind); });
 }
 function cloudBackupRecords(){ if(!cloudCfg().url) return Promise.resolve();
+  const gen0=BACKUP_GEN;
   let data; try{ data=buildRecordsBackup(); }catch(e){ return Promise.reject(e); }
-  return cloudPost('records', data); }
+  if(gen0!==BACKUP_GEN || backupBlocked()){ _backupPending=true; return Promise.resolve(); }   // 送信直前にも確認
+  return cloudPost('records', data).then(r=>{
+    if(gen0!==BACKUP_GEN){ _backupPending=true; }   // 送信中に取引が始まった＝最新内容の再送を予約
+    return r;
+  }); }
 async function cloudBackupFull(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
   toast('録音・写真を含めてクラウド送信中…');
   let data; try{ data=await buildFullBackup(); }
   catch(e){ toast('クラウド送信を中止しました（データを読めませんでした）'); return; }
   return cloudPost('full', data).then(()=>toast('クラウドに送信しました（相手側の保存確認はできません）')).catch(()=>toast('クラウド送信に失敗しました')); }
 // URL・フォルダ・Googleドライブへ記録を自動保存（設定済みの方だけ動く）
+// バックアップは1列に直列化する。古い内容の送信・書き込みが、後から確定した
+// 新しいバックアップを追い越して上書きしないようにするため
+let _backupChain=Promise.resolve();
+function backupRun(fn){
+  _backupChain=_backupChain.then(()=>fn()).catch(()=>{});
+  return _backupChain;
+}
 function autoBackupRecords(){
-  // 発火後でも取引が始まっていたら送らない（不完全な途中状態が復元で拡散する）
-  if(backupBlocked()){ _backupPending=true; return Promise.resolve(); }
-  return Promise.all([ cloudBackupRecords().catch(()=>{}), fsBackupRecords().catch(()=>{}), gdriveBackupRecords().catch(()=>{}) ]);
+  return backupRun(async ()=>{
+    // 発火後でも取引が始まっていたら送らない（不完全な途中状態が復元で拡散する）
+    if(backupBlocked()){ _backupPending=true; return; }
+    const gen0=BACKUP_GEN;
+    await cloudBackupRecords().catch(()=>{});
+    await fsBackupRecords().catch(()=>{});
+    await gdriveBackupRecords().catch(()=>{});
+    if(gen0!==BACKUP_GEN){ _backupPending=true; }   // 実行中に取引が始まった＝最新内容での再実行を予約
+  });
 }
 function backupConfigured(){ return !!cloudCfg().url || !!_fsDir || !!gdriveCfg().clientId; }
 // データ変更のたびに、少し待ってから記録を自動バックアップ（まとめて1回）
@@ -8920,6 +8968,7 @@ async function gdriveBackupRecords(){
   // 送信直前にも取引が始まっていないかを確かめる（途中の姿を配らない）
   if(gen0!==BACKUP_GEN || backupBlocked()){ _backupPending=true; return; }
   await gdrivePush('records', buildRecordsBackup({onlyValid:true}), token, buildRecordsBackup());
+  if(gen0!==BACKUP_GEN){ _backupPending=true; }   // 送信中に取引が始まった＝最新内容の再送を予約
 }
 async function gdriveSignIn(){
   try{
