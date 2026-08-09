@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v163（2026-08-09 監査65巡目：書いた値の照合・保守的中止・厳格読み込み・バックアップ封鎖）';
+const APP_VERSION = 'v164（2026-08-09 監査66巡目：控えの厳格管理・厳格読み込みの徹底・持ち主の再確認・競合即取消）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -391,9 +391,7 @@ const DB = {
     catch(e){ try{ toast('⚠ 空き容量不足で保存できませんでした。写真・動画を整理するかバックアップ後に空けてください'); }catch(_){}
       try{ console.error('localStorage save failed', e); }catch(_){}
       return false; }
-    if(typeof scheduleCloud==='function' && !window.RECOVERY_OK
-       && !(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY)
-       && !localStorage.getItem('bs_save_journal')) scheduleCloud(); return true; },
+    if(typeof scheduleCloud==='function') scheduleCloud(); return true; },   // 門は scheduleCloud 側で判定（遮断中は保留）
   surveys(){ return this.load(this.key.sv).filter(s=>!s.deleted_at); },
   allSurveys(){ return this.load(this.key.sv); },
   observations(){ return this.load(this.key.ob).filter(o=>!o.deleted_at); },
@@ -3744,6 +3742,18 @@ function saveFatalHalt(msg){
    完了処理（仮記録の削除・添付の持ち主変更）は非同期に進むため、途中でアプリが
    終了すると中間状態が残る。書き込み後に控えを残し、起動時に検証して
    完了をやり直すか、持ち主を戻す */
+// 自動バックアップの門: 取引中・復旧中・停止中は予約も発火もしない。
+// 遮断中の要求は保留し、確定点（取引の完了）で一度だけ予約し直す
+let _backupPending=false, _folderPending=false;
+function backupBlocked(){
+  return (typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) || !!window.RECOVERY_OK
+    || (typeof SAVE_FATAL!=='undefined' && SAVE_FATAL) || !!localStorage.getItem('bs_save_journal');
+}
+function backupConfirmPoint(){
+  if(backupBlocked()) return;
+  if(_backupPending){ _backupPending=false; if(typeof scheduleCloud==='function') scheduleCloud(); }
+  if(_folderPending){ _folderPending=false; if(typeof scheduleFolderFull==='function') scheduleFolderFull(); }
+}
 // 鍵の並び順に依存しない全文比較（保存された値と「書こうとした値」の照合用）
 function stableJson(v){
   // JSON.stringify と同じ規則に合わせる: オブジェクトの undefined 項目は無いものとして扱い、
@@ -3770,16 +3780,25 @@ function saveJournalClear(){
   try{
     const had=!!localStorage.getItem('bs_save_journal');
     localStorage.removeItem('bs_save_journal');
+    if(localStorage.getItem('bs_save_journal')!=null) return false;   // 消えたことまで確かめる
     // 取引が確定した（控えを消せた）ときに一度だけ自動バックアップを予約する
-    if(had && !localStorage.getItem('bs_save_journal') && typeof scheduleCloud==='function'
-       && !window.RECOVERY_OK && !(typeof SAVE_FATAL!=='undefined' && SAVE_FATAL)) scheduleCloud();
-  }catch(e){}
+    if(had){ _backupPending=true; _folderPending=true; backupConfirmPoint(); }
+    return true;
+  }catch(e){ return false; }
 }
 async function saveJournalRecover(){
+  const raw=localStorage.getItem('bs_save_journal');
+  if(raw==null || raw===''){ return true; }   // ジャーナル無し＝復旧不要
   let j=null;
-  try{ j=JSON.parse(localStorage.getItem('bs_save_journal')||'null'); }catch(e){}
-  if(!j || !Array.isArray(j.undo)){ saveJournalClear(); return true; }
+  try{ j=JSON.parse(raw); }catch(e){}
+  if(!j || !Array.isArray(j.undo)){
+    // 壊れた控えは消さない（何の取引だったかの唯一の手掛かり）。停止して点検を案内する
+    try{ clearTimeout(_cloudTimer); }catch(e){}
+    toast('保存の控えが壊れています。ページを再読み込みし、データ点検・修復画面で確認してください', 10000);
+    return false;
+  }
   window.RECOVERY_OK=true;   // 復旧専用の内部書き込み権限（WRITE_OK はまだ開放しない）
+  if(typeof GUARD_CONFLICT!=='undefined') GUARD_CONFLICT=false;   // この復旧の間の競合だけを見る
   try{
     // 先に対象の記録がすべて読めることを確かめる（読めない状態で書くと全記録を失う）
     {
@@ -3819,7 +3838,9 @@ async function saveJournalRecover(){
           okW=false;   // 自分の控えと違う姿＝別の書き手かもしれない。触らない
         }
       }
-      if(okW){ saveJournalClear(); toast('前回の保存が途中で止まっていたため、書く前の状態に戻しました。内容を確認してください', 8000); }
+      if(okW && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) okW=false;   // 復旧中に別の書き手を検知
+      if(okW){ if(!saveJournalClear()) okW=false; }
+      if(okW){ toast('前回の保存が途中で止まっていたため、書く前の状態に戻しました。内容を確認してください', 8000); }
       else { try{ clearTimeout(_cloudTimer); }catch(e){} }
       if(okW){ try{ if(typeof scheduleCloud==='function') scheduleCloud(); }catch(e){} }
       return okW;
@@ -3833,10 +3854,18 @@ async function saveJournalRecover(){
       if(!norm.has(k)) norm.set(k,{key:e.key,uuid:e.uuid,prev:e.prev,wroteRec:e.wroteRec});
       else norm.get(k).wroteRec=e.wroteRec; });
     const normArr=Array.from(norm.values());
+    let readBad=false;
     const intact=normArr.every(e=>{
-      const cur=(DB.load(e.key)||[]).find(x=>x&&x.uuid===e.uuid);
+      const a=loadStrict(e.key);
+      if(!a){ readBad=true; return false; }
+      const cur=a.find(x=>x&&x.uuid===e.uuid);
       return !!cur && JSON.stringify(cur)===e.wroteRec;
     });
+    if(readBad){
+      try{ clearTimeout(_cloudTimer); }catch(e){}
+      toast('記録の読み込みに失敗したため、復旧を行えません。データ点検・修復画面で確認してください', 10000);
+      return false;
+    }
     let ok=true;
     if(intact){
       // 記録は書いた直後の姿のまま → 完了処理をやり直す（何度やっても同じ結果になる操作だけ）
@@ -3851,41 +3880,67 @@ async function saveJournalRecover(){
           }
         }catch(e){ ok=false; }
       }
+      // 仮記録を消す直前に、全添付の持ち主をもう一度読み直して確かめる
+      if(ok){
+        for(const it of items){
+          try{
+            const rF=await dbOf(it.kind).get(it.id);
+            if(!rF || rF.obs_uuid!=='' || rF.flight_uuid!==j.fl.flId){ ok=false; break; }
+          }catch(e){ ok=false; break; }
+        }
+        if(!items.length){ /* 添付なしの取引 */ }
+      }
       if(ok && j.ghost){
         // 完了済みの生きた記録（undoに控えがある）は仮記録ではない。誤って消さない
         const isReal=normArr.some(e=>e.key===j.ghost.key && e.uuid===j.ghost.uuid);
-        const gArr=DB.load(j.ghost.key)||[];
-        if(!isReal && gArr.some(x=>x&&x.uuid===j.ghost.uuid)){
+        const gArr=loadStrict(j.ghost.key);
+        if(!gArr){ ok=false; }
+        else if(!isReal && gArr.some(x=>x&&x.uuid===j.ghost.uuid)){
           DISCARDED.add(j.ghost.uuid);
           if(!DB.hardDelete(j.ghost.key, j.ghost.uuid)){ DISCARDED.delete(j.ghost.uuid); ok=false; }
         }
       }
-      if(ok){ saveJournalClear(); if(didWork) toast('前回の保存の後片付けを完了しました'); }
+      if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) ok=false;   // 復旧中に別の書き手を検知
+      if(ok){ ok=saveJournalClear(); }
+      if(ok){ if(didWork) toast('前回の保存の後片付けを完了しました'); }
     } else {
       // 記録が変わっている（別のタブの書き込みなど）。
       // 先に「最後の控えのまま」の記録だけ「最初のprev」へ戻し、読み直して確かめる
       for(const e of normArr){
-        const arr=DB.load(e.key)||[];
+        const arr=loadStrict(e.key);
+        if(!arr){ ok=false; continue; }
         const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
         const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
         if(idx>=0 && curJson===e.wroteRec){
           if(e.prev) arr[idx]=e.prev; else arr.splice(idx,1);
           if(!DB.save(e.key, arr)) ok=false;
           else {
-            const cur2=(DB.load(e.key)||[]).find(x=>x&&x.uuid===e.uuid);
-            if(e.prev ? JSON.stringify(cur2)!==JSON.stringify(e.prev) : !!cur2) ok=false;
+            const a2=loadStrict(e.key);
+            const cur2=a2?a2.find(x=>x&&x.uuid===e.uuid):null;
+            if(!a2){ ok=false; }
+            else if(e.prev ? JSON.stringify(cur2)!==JSON.stringify(e.prev) : !!cur2) ok=false;
           }
         }
         // すでに戻っている・別の書き手の姿はそのまま（戻す対象ではない）
       }
       // 巻き戻しの後に生き残っている飛翔（競合版）を読み直し、
       // それが実際に参照する添付だけ持ち主を維持。それ以外は仮記録へ戻す
-      let keepK=new Set();
+      let keepK=new Set(), keepBad=false;
       try{
-        const flCur=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===((j.fl&&j.fl.flId)||'') && !x.deleted_at);
-        if(flCur) keepK=new Set((flCur.audio||[]).filter(a=>a&&a.id).map(a=>'audio:'+a.id)
-          .concat((flCur.media||[]).filter(m=>m&&m.id).map(m=>'media:'+m.id)));
-      }catch(e){}
+        const flArr2=loadStrict(DB.key.fl);
+        if(!flArr2){ keepBad=true; }
+        else {
+          const flCur=flArr2.find(x=>x&&x.uuid===((j.fl&&j.fl.flId)||'') && !x.deleted_at);
+          if(flCur) keepK=new Set((flCur.audio||[]).filter(a=>a&&a.id).map(a=>'audio:'+a.id)
+            .concat((flCur.media||[]).filter(m=>m&&m.id).map(m=>'media:'+m.id)));
+        }
+      }catch(e){ keepBad=true; }
+      if(keepBad){
+        // 参照を確かめられない状態では、添付の持ち主を一切変えない
+        try{ clearTimeout(_cloudTimer); }catch(e){}
+        toast('記録の読み込みに失敗したため、復旧を行えません。データ点検・修復画面で確認してください', 10000);
+        return false;
+      }
       for(const it of items){
         try{
           const r=await dbOf(it.kind).get(it.id);
@@ -3903,7 +3958,9 @@ async function saveJournalRecover(){
           }
         }catch(e){ ok=false; }
       }
-      if(ok){ saveJournalClear(); toast('前回の保存が完了していなかったため、途中の変更を戻しました。内容を確認してください', 8000); }
+      if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) ok=false;   // 復旧中に別の書き手を検知
+      if(ok){ ok=saveJournalClear(); }
+      if(ok){ toast('前回の保存が完了していなかったため、途中の変更を戻しました。内容を確認してください', 8000); }
     }
     // 失敗したらジャーナルは残す（次回の起動でもう一度試せる）
     if(ok){ try{ if(typeof scheduleCloud==='function') scheduleCloud(); }catch(e){} }
@@ -4545,7 +4602,7 @@ function saveObs(u, svUuid, editing, cont){
         if(!DB.hardDelete(gh.key, gh.uuid)){ DISCARDED.delete(gh.uuid); return false; }
         SCREENS._ghost=null; mediaGcAll().catch(function(){});
       }
-      saveJournalClear();   // ここまで来れば完了。起動時の復旧対象から外す
+      if(!saveJournalClear()) return false;   // 控えを消せなければ完了とは言えない（補償側に任せる）
       if(name) DB.pushRecent(name);
       SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
       SCREENS._dirty=false; SCREENS._ghost=null;
@@ -4596,6 +4653,10 @@ function saveObs(u, svUuid, editing, cont){
             r.obs_uuid=''; r.flight_uuid=flOwnerJobs.flId;
             await j.db.put(r);
             doneUndo.push({db:j.db, kind:j.kind, id:j.id, prev});
+            // 付け替わったことを読み直して確かめる（書けたつもりで進まない）
+            const chkO=await j.db.get(j.id);
+            if(!chkO || chkO.obs_uuid!=='' || chkO.flight_uuid!==flOwnerJobs.flId)
+              throw new Error('owner verify failed: '+j.id);
           }
           swapped=true;
         }catch(e){
@@ -4611,20 +4672,24 @@ function saveObs(u, svUuid, editing, cont){
             toast('付け替えを完全に戻せませんでした。ページを再読み込みし、データ点検・修復画面で確認してください', 10000);
           }
         }
-        if(swapped && !undoStillOk()){
+        if(swapped && ((typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) || !undoStillOk())){
           // 付け替えの間に別の書き手（旧版タブなど）を検知した。
           // 先に「記録側」の補償（巻き戻し）を行い、そのあとで補償後も生き残っている
           // 飛翔を読み直して、それが実際に参照する添付だけを飛翔所有のまま維持する。
           //（維持を先に決めると、直後の巻き戻しで飛翔が消え、持ち主だけが残る）
           const undone=rollback();
-          let keepKeys=null;
+          let keepKeys=null, keepBad2=false;
           try{
-            const flCur=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===flOwnerJobs.flId && !x.deleted_at);
-            if(flCur) keepKeys=new Set(
-              (flCur.audio||[]).filter(a=>a&&a.id).map(a=>'audio:'+a.id)
-              .concat((flCur.media||[]).filter(m=>m&&m.id).map(m=>'media:'+m.id)));
-          }catch(_){}
-          if(await restoreOwners(keepKeys) && undone){
+            const flArrK=loadStrict(DB.key.fl);
+            if(!flArrK){ keepBad2=true; }
+            else {
+              const flCur=flArrK.find(x=>x&&x.uuid===flOwnerJobs.flId && !x.deleted_at);
+              if(flCur) keepKeys=new Set(
+                (flCur.audio||[]).filter(a=>a&&a.id).map(a=>'audio:'+a.id)
+                .concat((flCur.media||[]).filter(m=>m&&m.id).map(m=>'media:'+m.id)));
+            }
+          }catch(_){ keepBad2=true; }
+          if(!keepBad2 && await restoreOwners(keepKeys) && undone){
             saveJournalClear();
             if(!localStorage.getItem('bs_save_journal')){ SAVE_BUSY=false;
               toast('別のタブによる書き換えを検知したため、この保存を取り消しました。内容を確認してから保存し直してください', 9000); }
@@ -4636,6 +4701,25 @@ function saveObs(u, svUuid, editing, cont){
           }
         }
         else if(swapped){
+          // 仮記録を消す直前に、全添付の持ち主をもう一度読み直して確かめる
+          let ownersOk=true;
+          for(const j2 of flOwnerJobs.items){
+            try{
+              const r2=await j2.db.get(j2.id);
+              if(!r2 || r2.obs_uuid!=='' || r2.flight_uuid!==flOwnerJobs.flId){ ownersOk=false; break; }
+            }catch(_){ ownersOk=false; break; }
+          }
+          if(!ownersOk){
+            if(await restoreOwners() && rollback()){
+              saveJournalClear();
+              if(!localStorage.getItem('bs_save_journal')){ SAVE_BUSY=false;
+                toast('写真・録音の付け替えを確認できなかったため、この保存を取り消しました。もう一度保存してください', 8000); }
+              else toast('保存の控えを片付けられませんでした。ページを再読み込みしてください', 10000);
+            } else {
+              toast('付け替えを完全に戻せませんでした。ページを再読み込みし、データ点検・修復画面で確認してください', 10000);
+            }
+          }
+          else {
           SAVE_BUSY=false;
           if(finish()===false){
             // 仮記録を片付けられなかった。補償が終わるまで保存・離脱を再び止める
@@ -4650,6 +4734,7 @@ function saveObs(u, svUuid, editing, cont){
               toast('片付けに失敗しました。ページを再読み込みし、データ点検・修復画面で確認してください', 10000);
             }
           }
+          }
         }
         } finally {
           if(!SAVE_BUSY) saveBusyShow(false);
@@ -4659,7 +4744,8 @@ function saveObs(u, svUuid, editing, cont){
     } else { if(finish()===false){ if(rollback()) saveJournalClear(); else saveHalt(); } }
     return;
   }
-  SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
+  if(!saveJournalClear()){ saveFatalHalt('保存の控えを片付けられませんでした。'); return; }
+  SAVE_BUSY=false; saveBusyShow(false); backupConfirmPoint();
   PF_SEGS=[]; PF_NEWLINE=true;
   { const nSaved=obRecs.length+flRecs.length;
     if(nSaved>1) toast('記録を'+nSaved+'件（観察'+obRecs.length+'・経路'+flRecs.length+'）保存しました', 3000); }
@@ -4682,7 +4768,9 @@ function saveObs(u, svUuid, editing, cont){
   (async ()=>{
     await new Promise(r=>setTimeout(r,0));   // storage イベントが届くのを一拍待つ
     // 検証はフラグに頼らず毎回行う（イベントの届く順序は書き込みの反映順と一致するとは限らない）
-    if(!undoStillOk()){
+    if((typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) || !undoStillOk()){
+      // 別の書き手を検知したら、自分の記録が無事に見えても完了扱いにしない
+      //（後勝ち保存の配列では、自分の書き込みが相手の更新を上書きした可能性がある）
       saveCancel('別のタブによる書き換えを検知したため、この保存を取り消しました。内容を確認してから保存し直してください');
       return;
     }
@@ -5727,17 +5815,23 @@ function saveFlightMulti(svUuid){
     return okAll;
   };
   SAVE_BUSY=true; saveBusyShow(true);
-  // 取引の第1段: 書く前の姿を控える（途中終了は起動時に取引ごと中止できる）
-  {
-    const planned=act.map(a=>{
-      const cur=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===a.tr.uuid);
-      return { key:DB.key.fl, uuid:a.tr.uuid, prev: cur?JSON.parse(JSON.stringify(cur)):null, wroteRec:'' };
-    });
-    if(!saveJournalSet({ t: nowISO(), phase:'writing', undo: planned, fl:null, ghost:null })){
-      SAVE_BUSY=false; saveBusyShow(false);
-      toast('空き容量が足りず、保存を開始できませんでした。空き容量を確保してからやり直してください', 8000);
-      return;
-    }
+  if(typeof GUARD_CONFLICT!=='undefined') GUARD_CONFLICT=false;   // この保存の間の競合だけを見る
+  // 取引の第1段: 書く前の姿を控える（途中終了は起動時に取引ごと中止できる）。
+  // 各記録を書くたびに進み具合（wroteRec）も書き足す
+  const arrPreM=loadStrict(DB.key.fl);
+  if(!arrPreM){ SAVE_BUSY=false; saveBusyShow(false);
+    toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000);
+    return; }
+  const plannedM=new Map();
+  act.forEach(a=>{
+    const cur=arrPreM.find(x=>x&&x.uuid===a.tr.uuid);
+    plannedM.set(a.tr.uuid, { key:DB.key.fl, uuid:a.tr.uuid, prev: cur?JSON.parse(JSON.stringify(cur)):null, wroteRec:'' });
+  });
+  const jM={ t: nowISO(), phase:'writing', undo: Array.from(plannedM.values()), fl:null, ghost:null };
+  if(!saveJournalSet(jM)){
+    SAVE_BUSY=false; saveBusyShow(false);
+    toast('空き容量が足りず、保存を開始できませんでした。空き容量を確保してからやり直してください', 8000);
+    return;
   }
   for(const a of act){ const fl=a.tr.fields;
     const name=(fl.species_name_snapshot||'').trim();
@@ -5750,21 +5844,41 @@ function saveFlightMulti(svUuid){
       count:fl.count||'', memo:(fl.memo||'').trim(), needs_review:!!fl.needs_review,
       individual_key:a.tr.indKey||'',   // 観察から引き継いだ結び付きはそのトラックだけが持つ
       audio:fl.audio||[], media:fl.media||[] };
-    const prev0=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===rec.uuid)||null;
-    if(!DB.upsertFlight(rec)){
+    const arrWM=loadStrict(DB.key.fl);
+    if(!arrWM){
+      if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
+        toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000); }
+      else saveFatalHalt();
+      return;
+    }
+    const iWM=arrWM.findIndex(x=>x&&x.uuid===rec.uuid);
+    const prev0=(iWM>=0)?JSON.parse(JSON.stringify(arrWM[iWM])):null;
+    rec.updated_at=nowISO(); if(iWM<0){ if(!rec.created_at) rec.created_at=nowISO(); arrWM.push(rec); } else arrWM[iWM]=rec;
+    if(!DB.save(DB.key.fl, arrWM)){
       // 途中で失敗したら、先に書けた分も全部戻す（一部だけ確定させない）
       if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
         toast('保存に失敗しました。空き容量を確保してからもう一度保存してください', 4500); }
       else saveFatalHalt();
       return;
     }
-    const now=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===rec.uuid)||null;
+    const aNM=loadStrict(DB.key.fl);
+    const now=aNM?(aNM.find(x=>x&&x.uuid===rec.uuid)||null):null;
     if(!now || stableJson(now)!==stableJson(rec)){
       // 書けていない、または書けたのが自分の値でない（横から上書きされた）
       if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
         toast('保存に失敗しました。もう一度保存してください（空き容量も確認）', 4500); }
       else saveFatalHalt();
       return;
+    }
+    // 進み具合を控える（復旧が「自分の書いた分」を確かめられるように）
+    const peM=plannedM.get(rec.uuid);
+    if(peM){ peM.wroteRec=JSON.stringify(now);
+      if(!saveJournalSet(jM)){
+        if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
+          toast('空き容量が足りず、保存を安全に完了できませんでした。空き容量を確保してからやり直してください', 8000); }
+        else saveFatalHalt();
+        return;
+      }
     }
     mUndo.push({ uuid:rec.uuid, prev: prev0?JSON.parse(JSON.stringify(prev0)):null, wroteRec: JSON.stringify(now) });
     // 保存できたトラックを記録（後で破棄しても保存済みレコードを破棄済み名簿に入れないため）
@@ -5781,17 +5895,19 @@ function saveFlightMulti(svUuid){
   }
   (async ()=>{
     await new Promise(r=>setTimeout(r,0));   // 別のタブの書き込み通知（storage）が届くのを一拍待つ
-    const bad=mUndo.some(e=>{
-      const cur=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===e.uuid);
+    const aVM=loadStrict(DB.key.fl);
+    const bad=!aVM || mUndo.some(e=>{
+      const cur=aVM.find(x=>x&&x.uuid===e.uuid);
       return !cur || JSON.stringify(cur)!==e.wroteRec;
-    });
+    }) || (typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT);
     if(bad){
       if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
         toast('別のタブによる書き換えを検知したため、この保存を取り消しました。内容を確認してから保存し直してください', 9000); }
       else saveFatalHalt();
       return;
     }
-    SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
+    if(!saveJournalClear()){ saveFatalHalt('保存の控えを片付けられませんでした。'); return; }
+    SAVE_BUSY=false; saveBusyShow(false); backupConfirmPoint();
     act.forEach(a=>{ const n=(a.tr.fields.species_name_snapshot||'').trim(); if(n) DB.pushRecent(n); });
     SCREENS._audio=null; SCREENS._media=null; SCREENS._mediaCtx=null;
     SCREENS._ftracks=null; SCREENS._ftDirty=false; SCREENS._ftSaved=null; SCREENS._dirty=false;
@@ -6000,12 +6116,24 @@ function saveFlight(u,svUuid,editing,cont){
 
   }
   // 統合画面の保存と同じ順序: 控え→覆い→書き込み→一拍→全文再検証→完了/補償。
-  // 検証はフラグに頼らず毎回行う（別のタブの書き込み通知は一拍遅れて届く）
-  const prevFl0=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===u)||null;
+  // 検証はフラグに頼らず毎回行う（別のタブの書き込み通知は一拍遅れて届く）。
+  // 読み込みは厳格版（壊れたJSONを空として上書きすると全飛翔記録を失う）
+  const arrPre=loadStrict(DB.key.fl);
+  if(!arrPre){ toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000); return; }
+  const prevFl0=arrPre.find(x=>x&&x.uuid===u)||null;
   const prevFlJson=prevFl0?JSON.stringify(prevFl0):'';
   SAVE_BUSY=true; saveBusyShow(true);
-  if(!DB.upsertFlight(rec)){ SAVE_BUSY=false; saveBusyShow(false); return; }   // 保存失敗なら成功表示も遷移もしない
-  const wroteObj=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===u)||null;
+  if(typeof GUARD_CONFLICT!=='undefined') GUARD_CONFLICT=false;   // この保存の間の競合だけを見る
+  {
+    const arrW=loadStrict(DB.key.fl);
+    if(!arrW){ SAVE_BUSY=false; saveBusyShow(false);
+      toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000); return; }
+    const iW=arrW.findIndex(x=>x&&x.uuid===u);
+    rec.updated_at=nowISO(); if(iW<0){ if(!rec.created_at) rec.created_at=nowISO(); arrW.push(rec); } else arrW[iW]=rec;
+    if(!DB.save(DB.key.fl, arrW)){ SAVE_BUSY=false; saveBusyShow(false); return; }   // 保存失敗なら成功表示も遷移もしない
+  }
+  const aW0=loadStrict(DB.key.fl);
+  const wroteObj=aW0?(aW0.find(x=>x&&x.uuid===u)||null):null;
   if(wroteObj && stableJson(wroteObj)!==stableJson(rec)){
     // 書けたのが自分の値でない（直後に別のタブが上書きした）。
     // すでに書く前の姿なら完了扱いにせず解除、それ以外は停止
@@ -6030,8 +6158,32 @@ function saveFlight(u,svUuid,editing,cont){
   const wroteFl=JSON.stringify(wroteObj);
   (async ()=>{
   await new Promise(r=>setTimeout(r,0));
-  const curFl=(DB.load(DB.key.fl)||[]).find(x=>x&&x.uuid===u)||null;
+  const aV=loadStrict(DB.key.fl);
+  if(!aV){ saveFatalHalt('記録の読み込みに失敗しました。'); return; }
+  const curFl=aV.find(x=>x&&x.uuid===u)||null;
   const curJson=curFl?JSON.stringify(curFl):'';
+  const conflicted=(typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT);
+  if(conflicted && curJson===wroteFl){
+    // 別の書き手を検知した。自分の値のままなら取り消して仕切り直す
+    //（後勝ち保存の配列では、自分の書き込みが相手の更新を上書きした可能性がある）
+    const arrR=loadStrict(DB.key.fl);
+    let undone=false;
+    if(arrR){
+      const iR=arrR.findIndex(x=>x&&x.uuid===u);
+      if(iR>=0 && JSON.stringify(arrR[iR])===wroteFl){
+        if(prevFl0) arrR[iR]=prevFl0; else arrR.splice(iR,1);
+        if(DB.save(DB.key.fl, arrR)){
+          const a3=loadStrict(DB.key.fl);
+          const c3=a3?a3.find(x=>x&&x.uuid===u):null;
+          undone= prevFl0 ? (JSON.stringify(c3)===prevFlJson) : !c3;
+        }
+      }
+    }
+    if(undone){ SAVE_BUSY=false; saveBusyShow(false);
+      toast('別のタブによる書き換えを検知したため、この保存を取り消しました。内容を確認してから保存し直してください', 9000); }
+    else saveFatalHalt();
+    return;
+  }
   if(curJson!==wroteFl){
     // 別のタブの書き込みが残っている。補償規則は統合画面と同じ:
     // すでに書く前の姿なら「取り消し済み」として解除、それ以外は停止
@@ -6043,7 +6195,7 @@ function saveFlight(u,svUuid,editing,cont){
     saveFatalHalt();
     return;
   }
-  SAVE_BUSY=false; saveBusyShow(false);
+  SAVE_BUSY=false; saveBusyShow(false); backupConfirmPoint();
   if(name) DB.pushRecent(name);
   SCREENS._audio=null; SCREENS._media=null; SCREENS._mediaCtx=null;
   SCREENS._ftracks=null; SCREENS._ftDirty=false;   // 単線保存でもトラック状態は片付ける
@@ -8162,9 +8314,11 @@ async function fsBackupFull(){ if(!_fsDir){ toast('先に保存フォルダを�
 }
 // 録音・写真が増減したら、少し待ってからフォルダへ自動でフル保存（フォルダ設定時のみ）
 let _fullTimer=null;
-function scheduleFolderFull(){ if(!_fsDir) return; clearTimeout(_fullTimer);
+function scheduleFolderFull(){ if(!_fsDir) return;
+  if(backupBlocked()){ _folderPending=true; return; }   // 取引中は保留（確定点で予約し直す）
+  clearTimeout(_fullTimer);
   _fullTimer=setTimeout(()=>{
-    if((typeof SAVE_FATAL!=='undefined' && SAVE_FATAL) || localStorage.getItem('bs_save_journal')) return;
+    if(backupBlocked()){ _folderPending=true; return; }
     fsBackupFullCore().catch(()=>{});
   }, 20000); }
 
@@ -8194,10 +8348,12 @@ function autoBackupRecords(){ return Promise.all([ cloudBackupRecords().catch(()
 function backupConfigured(){ return !!cloudCfg().url || !!_fsDir || !!gdriveCfg().clientId; }
 // データ変更のたびに、少し待ってから記録を自動バックアップ（まとめて1回）
 let _cloudTimer=null;
-function scheduleCloud(){ if(!backupConfigured()) return; clearTimeout(_cloudTimer);
+function scheduleCloud(){ if(!backupConfigured()) return;
+  if(backupBlocked()){ _backupPending=true; return; }   // 取引中は保留（確定点で予約し直す）
+  clearTimeout(_cloudTimer);
   _cloudTimer=setTimeout(()=>{
-    // 取引の途中・停止中の姿を送らない（不完全な状態が復元で拡散する）
-    if((typeof SAVE_FATAL!=='undefined' && SAVE_FATAL) || localStorage.getItem('bs_save_journal')) return;
+    // 発火時にも再確認する（取引の途中・停止中の姿を送らない）
+    if(backupBlocked()){ _backupPending=true; return; }
     autoBackupRecords();
   }, 6000); }
 function cloudSyncNow(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
