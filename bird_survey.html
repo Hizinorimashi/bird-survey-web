@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v181（2026-08-09 複数個体の監査対応7：破棄の残り全文照合・兄弟観察の生存確認）';
+const APP_VERSION = 'v182（2026-08-09 複数個体の監査完了：仮記録の全文証明・書込前の生存再確認・再描画保全）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1271,17 +1271,19 @@ function leaveGuardOk(){
       for(let bi=0; bi<BIRDS.length; bi++){
         const b=BIRDS[bi];
         const gh2=b.media && b.media.ghost;
-        if(gh2) ghostsG.push({b, key:gh2.key, uuid:gh2.uuid});
+        if(gh2) ghostsG.push({b, key:gh2.key, uuid:gh2.uuid, exp:gh2.rec});
       }
       const resG=birdGhostPurge(ghostsG);
       if(resG!=='ok'){ birdGhostPurgeToast(resG); return false; }
-      ghostsG.forEach(g=>{ g.b.media.ghost=undefined; });
+      ghostsG.forEach(g=>{ g.b.media.ghost=undefined; if(g.keptReal && g.b.st) g.b.st.keptReal=true; });
       // 全部消せてから、未保存の個体を破棄済み名簿へ入れる（半端な名簿を作らない）
       for(let bi=0; bi<BIRDS.length; bi++){
         const b=BIRDS[bi];
+        if(b.st && b.st.keptReal) continue;   // 正式化された記録は名簿に入れない
         if(b.st && b.st.obs && !b.st.obsEditing) DISCARDED.add(b.st.obs.uuid);
       }
       mediaGcAll().catch(()=>{});
+      BIRDS=[newBird()]; BIRD_IDX=0;   // 片付いた一覧を持ち越さない（予期しない再描画の保全と両立させる）
     }
     // 複数羽トレース中の破棄は全トラック分を名簿へ（保存に成功した分は除く＝保存済みレコードを無効化しない）。
     // トラック状態もここで片付ける（残すと次に開いた画面で古い未保存扱いが復活する）
@@ -2269,7 +2271,12 @@ SCREENS.obsEdit = (argStr)=>{
   const arg = JSON.parse(argStr||'{}');
   const svUuid = arg.sv || currentSurveyUuid;
   // 複数個体: 内部の組み直し（切替・追加・保存後）は BIRDS を保つ。外から開いたら仕切り直す
-  const revisit = SCREENS._birdKeep===true; SCREENS._birdKeep=false;
+  let revisit = SCREENS._birdKeep===true; SCREENS._birdKeep=false;
+  if(!revisit && typeof BIRDS!=='undefined' && BIRDS.some(b=>b&&b.dirty)){
+    // 内部フラグの無い再描画（同期後の render など）が書きかけの最中に走っても、
+    // 個体一覧を初期化して入力・仮記録の管理を失わない（切替と同じ復元の道を通す）
+    revisit=true;
+  }
   if(!revisit){ BIRDS=[newBird()]; BIRD_IDX=0; }
   let editing = !!arg.id;
   let revisitBird=null;
@@ -3370,6 +3377,9 @@ function birdGhostPurge(ghosts){
     const cur=arr.find(x=>x&&x.uuid===g.uuid);
     if(!cur) continue;   // 本体が無い＝消すものが無い（墓標だけ付ける事故を防ぐため対象外）
     g.prev=JSON.stringify(cur);
+    // 「自分が書いた仮記録のまま」を証明できる場合だけ消す。控え（exp）が無い・
+    // 一致しない場合は、別の書き手が正式化した可能性があるため触らない（残す）
+    if(!g.exp || g.exp!==g.prev){ g.keptReal=true; continue; }
     // 事前の墓標の有無を控える（補償で外してよいのは自分が付けた墓標だけ）
     try{ g.hadTomb=tombstonesList().some(t=>t && (t===g.uuid || t.uuid===g.uuid)); }catch(e){ g.hadTomb=true; }
     live.push(g);
@@ -3481,13 +3491,16 @@ function birdDrop(){
   if(!confirm('この個体の入力を消しますか？（保存済みの記録は消えません）')) return;
   const b=CUR();
   const gh=b.media && b.media.ghost;
+  let keptRealD=false;
   if(gh){
-    const resD=birdGhostPurge([{b, key:gh.key, uuid:gh.uuid}]);
+    const gJob={b, key:gh.key, uuid:gh.uuid, exp:gh.rec};
+    const resD=birdGhostPurge([gJob]);
     if(resD!=='ok'){ birdGhostPurgeToast(resD); return; }
+    keptRealD=!!gJob.keptReal;
     b.media.ghost=undefined;
     mediaGcAll().catch(()=>{});
   }
-  if(b.st && b.st.obs && !b.st.obsEditing) DISCARDED.add(b.st.obs.uuid);
+  if(!keptRealD && b.st && b.st.obs && !b.st.obsEditing) DISCARDED.add(b.st.obs.uuid);   // 正式化された記録は名簿に入れない
   BIRDS.splice(BIRD_IDX,1);
   if(BIRD_IDX>=BIRDS.length) BIRD_IDX=BIRDS.length-1;
   SCREENS._birdKeep=true;
@@ -5371,6 +5384,23 @@ function saveObs(u, svUuid, editing, cont){
       saveAbort(); if(msg) toast(msg, 8000);
     } else saveHalt();
   };
+  // 書き込み直前の生存再確認（入口確認からここまでの間に別の書き手が消していないか）。
+  // 消えた対象へ書くと、削除の取り消しや新しい番号での復活＝取り違いになる
+  {
+    let goneLate=false;
+    if(editing && !DB.observations().some(x=>x&&x.uuid===u)) goneLate=true;
+    if(!goneLate && SCREENS._flAnchorUuid && !DB.flights().some(f=>f.uuid===SCREENS._flAnchorUuid)) goneLate=true;
+    if(!goneLate) PF_SEGS.forEach(sg=>{
+      if(sg.t==='F' && sg.srcUuid && !DB.flights().some(f=>f.uuid===sg.srcUuid)) goneLate=true;
+      if(sg.t==='P' && sg.srcUuid && !DB.observations().some(o2=>o2&&o2.uuid===sg.srcUuid)) goneLate=true;
+    });
+    if(goneLate){
+      saveJournalClear();
+      saveAbort();
+      toast('読み込んだ記録が別の端末・タブで削除されています。画面を開き直してから保存してください', 7000);
+      return;
+    }
+  }
   for(const fr of flRecs){ if(!writeOne(DB.key.fl, fr, r=>DB.upsertFlight(r))){ saveCancel(); return; } }
   for(const r2 of obRecs){ if(!writeOne(DB.key.ob, r2, r=>DB.upsertObs(r))){ saveCancel(); return; } }
   for(const sb of sibs){ if(!writeOne(DB.key.ob, sb, r=>DB.upsertObs(r))){ saveCancel(); return; } }
@@ -5953,6 +5983,15 @@ function attachMediaMeta(target, field, meta){
         species_id:'', species_name_snapshot:'', count:1, detection_method:'', behavior:'', habitat:'',
         identification_status:'未同定', confidence:'中', needs_review:false, note:'', external_photo_reference:'', audio:[], media:[], [field]:[meta] });
     } }
+  // 仮記録（ghost）への書き込みが成功したら、その全文を控える。
+  // 破棄はこの控えと完全一致する場合だけ行う（別の書き手が正式化した記録を仮記録と誤認して消さない）
+  if(ok && SCREENS._ghost && SCREENS._ghost.uuid===target.uuid){
+    try{
+      const gA=loadStrict(SCREENS._ghost.key);
+      const gC=gA?gA.find(x=>x&&x.uuid===target.uuid):null;
+      if(gC) SCREENS._ghost.rec=JSON.stringify(gC);
+    }catch(e){}
+  }
   // 複数羽トレースの退避済みトラックに遅れてメディアが完成した場合、トラック側にも反映する
   //（反映しないと一括保存が空のメディア配列で仮レコードを上書きし、参照を失う）
   if(ok && target.kind==='flight' && SCREENS._ftracks){
