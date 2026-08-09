@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v185（2026-08-09 個体名：同じ鳥を1羽として数える・チップで選ぶ・個体ごとにまとめる）';
+const APP_VERSION = 'v186（2026-08-10 監査対応：個体名のまとまりを揃える・巣の解決順・欄の一本化）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1709,7 +1709,7 @@ function indLabelsOf(svUuid, spName){
   const map=new Map();   // 名前 → {label, sp, key, n}
   const add=r=>{
     const l=indLabelOf(r); if(!l) return;
-    const k=l+'|'+String(r.species_name_snapshot||'').trim();
+    const k=JSON.stringify([l, String(r.species_name_snapshot||'').trim()]);   // 連結だと「|」入りの名前で衝突する
     const e=map.get(k);
     if(e){ e.n++; if(!e.key && r.individual_key) e.key=r.individual_key; }
     else map.set(k, {label:l, sp:String(r.species_name_snapshot||'').trim(), key:r.individual_key||'', n:1});
@@ -1719,14 +1719,35 @@ function indLabelsOf(svUuid, spName){
   return Array.from(map.values()).sort((a,b)=>
     ((b.sp===sp)-(a.sp===sp)) || (b.n-a.n) || String(a.label).localeCompare(String(b.label)));
 }
-// 同じ調査・同じ種・同じ個体名の記録が既にあれば、その目印を引き継ぐ（＝同じ1羽になる）
-function indKeyForLabel(svUuid, spName, label, fallback){
+// 個体名から「同じ1羽」の正規の目印を決め、あわせて揃えるべき既存記録も返す。
+// 目印を返すだけだと、同名なのに目印が空の記録や、名前を変えたときの元の仲間が
+// 取り残されて「同じ名前なのに集計では複数羽」に割れてしまう（2026-08-10 監査）
+function indResolve(svUuid, spName, label, curKey, selfUuid){
+  const out={ key:'', keys:[], fixObs:[], fixFl:[], merge:false };
   const l=String(label||'').trim();
-  if(!l) return fallback||'';
+  if(!l) return out;
   const sp=String(spName||'').trim();
-  const hit=indLabelsOf(svUuid, sp).find(x=>x.label===l && x.sp===sp && x.key);
-  if(hit) return hit.key;
-  return fallback || uuid();
+  const obs=DB.obsOf(svUuid), fls=DB.flightsOf(svUuid);
+  const same=r=> indLabelOf(r)===l && String(r.species_name_snapshot||'').trim()===sp;
+  // 同じ名前で使われている目印を集める（自分は除く）
+  const keys=new Set();
+  obs.forEach(o=>{ if(o.uuid!==selfUuid && same(o) && o.individual_key) keys.add(o.individual_key); });
+  fls.forEach(f=>{ if(same(f) && f.individual_key) keys.add(f.individual_key); });
+  out.keys=Array.from(keys);
+  // 正規の目印: 既にあるものの中でいちばん記録の多いもの。無ければ今の目印、それも無ければ新規
+  if(out.keys.length){
+    const cnt=k=>obs.filter(o=>o.individual_key===k).length + fls.filter(f=>f.individual_key===k).length;
+    out.key=out.keys.slice().sort((a,b)=>cnt(b)-cnt(a) || String(a).localeCompare(String(b)))[0];
+  } else out.key=curKey||uuid();
+  // 揃えるべき記録: 同じ名前なのに目印が違う（空も含む）ものと、
+  // いま編集している記録の元の仲間（名前を変えたときに置き去りにしないため）
+  const need=r=> (same(r) || (curKey && r.individual_key===curKey)) && r.individual_key!==out.key;
+  obs.forEach(o=>{ if(o.uuid!==selfUuid && need(o)) out.fixObs.push(o); });
+  fls.forEach(f=>{ if(need(f)) out.fixFl.push(f); });
+  // 別々のまとまりが1つになる場合だけ「まとめますか」と確かめる
+  const all=new Set(out.keys); if(curKey) all.add(curKey);
+  out.merge = all.size>1;
+  return out;
 }
 // 個体名のチップ（タップで入力欄に入る）。その調査で使った名前だけを出す
 function indLabelChips(){
@@ -1760,8 +1781,10 @@ function obsGroupToggle(){
   obsListPaint();
 }
 function obsFoldAll(){ SCREENS._obsOpen=new Set(); obsListPaint(); }
+// 自動でまとめるかは「種の数」で決める（個体名で分かれた数ではない）
 function obsSpeciesCount(items){
-  const set=new Set(); items.forEach(it=>set.add(obsSpOf(it.rec)));
+  const set=new Set();
+  items.forEach(it=>set.add(String((it.rec&&it.rec.species_name_snapshot)||'').trim() || '（未同定）'));
   return set.size;
 }
 // 一覧のまとめの単位。個体名があれば種名と分けて持つ（追っている個体の記録が1か所に集まる）
@@ -1798,7 +1821,7 @@ function obsGroupsOf(items){
 function obsGrpBodyHtml(u, sp){
   const g=(SCREENS._obsGroups instanceof Map) ? SCREENS._obsGroups.get(sp) : null;
   if(!g) return '';
-  const lim=SCREENS._obsGrpShown[sp]||50;
+  const lim=((SCREENS._obsGrpShown instanceof Map) ? SCREENS._obsGrpShown.get(sp) : 0)||50;
   const shown=g.items.slice(0, lim);
   const more=g.items.length>shown.length
     ? `<button class="btn" onclick="obsGrpMore(this)">さらに50件表示（残り${g.items.length-shown.length}件）</button>` : '';
@@ -1820,7 +1843,8 @@ function obsFoldFill(el, sp){
 function obsGrpMore(btn){
   const d=btn.closest('details.grp'); if(!d) return;
   const sp=d.getAttribute('data-sp')||'';
-  SCREENS._obsGrpShown[sp]=(SCREENS._obsGrpShown[sp]||50)+50;
+  if(!(SCREENS._obsGrpShown instanceof Map)) SCREENS._obsGrpShown=new Map();
+  SCREENS._obsGrpShown.set(sp, (SCREENS._obsGrpShown.get(sp)||50)+50);
   obsFoldFill(d, sp);
 }
 // 一覧のカード1枚（観察／経路だけの記録。どちらもタップで同じ統合画面が開く）
@@ -1934,7 +1958,7 @@ SCREENS.survey = (u)=>{
 
   // 一覧の表示件数と「要確認のみ」絞り込み（別の調査に移ったらリセット）
   if(SCREENS._obsListSv!==u){ SCREENS._obsListSv=u; SCREENS._obsLimit=50; SCREENS._obsReviewOnly=false;
-    SCREENS._obsGroup=null; SCREENS._obsOpen=new Set(); SCREENS._obsGrpShown={}; }
+    SCREENS._obsGroup=null; SCREENS._obsOpen=new Set(); SCREENS._obsGrpShown=new Map(); }
 
   const _ld = obsListData(u);
   const selMode = _ld.selMode;
@@ -1989,7 +2013,7 @@ function obsMore(){ if(recBusy()){ toast('録音を停止してから操作し�
   SCREENS._obsLimit=(SCREENS._obsLimit||50)+50;
   obsListPaint(); }   // 画面を丸ごと描き直さない＝押した位置のまま増える（録音・GPS・地図も切れない）
 function obsReviewToggle(){
-  SCREENS._obsGrpShown={}; if(recBusy()){ toast('録音を停止してから操作してください'); return; }
+  SCREENS._obsGrpShown=new Map(); if(recBusy()){ toast('録音を停止してから操作してください'); return; }
   SCREENS._sel=null;   // 絞り込みで見えなくなった記録が選択されたまま削除されるのを防ぐ（選択は解除）
   SCREENS._obsReviewOnly=!SCREENS._obsReviewOnly; SCREENS._obsLimit=50; render(); }
 /* ---------- すぐ録音（調査中画面からワンタップ・種名は後付け） ----------
@@ -2641,7 +2665,7 @@ SCREENS.obsEdit = (argStr)=>{
             <span class="small muted">種名・数・齢・行動など</span></summary>
           <label class="field"><span class="lab">種名（未入力でも保存可）</span>
             <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
-              placeholder="和名で検索…" oninput="spSearch(this.value)">
+              placeholder="和名で検索…" oninput="spSearch(this.value); indLabelChips()">
             <div id="spSuggest"></div>
             <div class="chips" id="spQuick"></div>
             <div class="chips" id="spRefLinks"></div>
@@ -2675,8 +2699,6 @@ SCREENS.obsEdit = (argStr)=>{
             <input type="checkbox" id="needsReview" style="width:auto;" ${o.needs_review?'checked':''}>
             <span class="lab" style="margin:0;">要確認フラグ（あとで見直す）</span></label>
           <!-- 時刻と距離帯は地図の操作から自動で入る。新規では隠し、保存後の編集でだけ直せるようにする -->
-          ${flAnchor?`<label class="field"><span class="lab">個体ラベル（この経路）</span>
-            <input id="flIndLabel" autocomplete="off" value="${esc(flAnchor.individual_label||'')}" placeholder="例：個体A／左翼損傷"></label>`:''}
           <div id="autoWrap" style="display:${(editing||flAnchor)?'':'none'};">
             <div class="two">
               <label class="field obs-only"><span class="lab">観察日時</span>
@@ -4393,6 +4415,7 @@ function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsRev
       // 既存の記録では、空は空のまま残す（触っていない項目を「不明」に化けさせない）。
       // 齢は画面で触ったときだけそろえる（触っていないのに観察の齢で埋めない）
       age_class:(SCREENS._ageTouched ? ageCls : (cur.age_class||'')), count:count, individual_key:indKey||'',
+      individual_label:String(indLabel||''),   // 同じ鳥の呼び名は観察と飛翔でそろえる
       height_class: heightRaw,
       behavior: behaviorNew,
     });
@@ -5035,11 +5058,25 @@ function saveObs(u, svUuid, editing, cont){
     tlat=''; tlon='';
   }
 
+  // 個体名は巣の目印より先に決める。巣は「同じ鳥の記録」から候補を探すので、
+  // 目印が決まる前に探すと、既存の個体名を付けたのに別の巣として発行してしまう
+  const indLabel=String((($('#indLabel')&&$('#indLabel').value)||'')).trim();
+  const indR = indLabel
+    ? indResolve(svUuid, name, indLabel,
+        ((base||{}).individual_key || (SCREENS._obs&&SCREENS._obs.individual_key) || ''), u)
+    : null;
+  if(indR && indR.merge){
+    const n=indR.fixObs.length+indR.fixFl.length;
+    if(!confirm('「'+indLabel+'」として記録されている'+n+'件と、この記録を同じ1羽としてまとめます。\n'
+      +'（集計では1羽として数えます）\n\nよろしいですか？')) return;
+  }
+  const indKeyLbl = indR ? indR.key : '';
+
   // 巣の目印をここで決める。PF_NEST_ID へ書くのは保存がすべて成功してから。
   //（途中で保存が止まったのに決めかけの目印が残ると、次の保存で照合されずに別の巣と混ざる）
   const resolvedNestId = nestFilled()
     ? (PF_NEST_ID || (!nestTouched() ? '' : (function(){
-        const ik=(SCREENS._obs&&SCREENS._obs.individual_key)||((base||{}).individual_key||'');
+        const ik=indKeyLbl||(SCREENS._obs&&SCREENS._obs.individual_key)||((base||{}).individual_key||'');
         if(ik){ const found=new Set(); const fPos=new Map(); const fFp=new Map();
           // 候補は画面・件数と同じ「生きている記録」だけから集める。
           // ごみ箱まで見ると、画面では1つの巣が保存時だけ複数候補になって分裂する
@@ -5190,9 +5227,8 @@ function saveObs(u, svUuid, editing, cont){
   }
   // 個体名を付けたら、その名前の目印に合わせる（同じ調査・同じ種の同名は「同じ1羽」）。
   // 名前が無ければ従来どおり（記録が2件以上なら新しい目印で結ぶ）
-  const indLabel=String((($('#indLabel')&&$('#indLabel').value)||'')).trim();
   const indKey = indLabel
-    ? indKeyForLabel(svUuid, name, indLabel, rec.individual_key||'')
+    ? indKeyLbl
     : ((nRec>1) ? (rec.individual_key || uuid()) : (rec.individual_key||''));
   rec.individual_key = indKey;   // 位置なしの記録に経路だけ足したときも同じ目印で結ぶ
   rec.individual_label = indLabel;
@@ -5340,7 +5376,7 @@ function saveObs(u, svUuid, editing, cont){
       fr.media=(SCREENS._media||[]).slice();
       fr.memo=String(g('note')||'').trim();
       fr.needs_review=!!($('#needsReview') && $('#needsReview').checked);
-      const il=$('#flIndLabel'); if(il) fr.individual_label=String(il.value||'').trim();
+      fr.individual_label=String(indLabel||'');   // 個体名の欄は種名の下の1つだけ（食い違いを作らない）
     }
   }
   // 飛翔だけの保存で写真・録音があれば、書き込む前に、その1本の経路の記録へ付ける。
@@ -5567,6 +5603,19 @@ function saveObs(u, svUuid, editing, cont){
     }
     ghostRecFixed=JSON.stringify(gC);
   }
+  // 個体名でまとめた分の書き直し（同じ名前の記録を、決めた目印へ揃える）。
+  // 同じ保存の取引の中で書くので、途中で失敗すればまとめて元へ戻る
+  const indFixFl=[];
+  if(indR){
+    indR.fixObs.forEach(o=>{
+      if(obRecs.some(r=>r.uuid===o.uuid) || sibs.some(r=>r.uuid===o.uuid)) return;   // 二重に書かない
+      sibs.push(Object.assign({}, o, { individual_key:indKey, individual_label:indLabel }));
+    });
+    indR.fixFl.forEach(f=>{
+      if(flRecs.some(r=>r.uuid===f.uuid)) return;
+      indFixFl.push(Object.assign({}, f, { individual_key:indKey, individual_label:indLabel }));
+    });
+  }
   // 取引の第1段: これから書く全記録（削除対象も含む）の「書く前の姿」を先に控える。
   // 各記録を書くたびに「書いた直後の控え」も書き足す（writeOne 内）。
   // 途中で終了しても、起動時に「自分が書いた分だけ」を安全に元へ戻せる
@@ -5581,6 +5630,7 @@ function saveObs(u, svUuid, editing, cont){
       const cur=arr.find(x=>x&&x.uuid===uuid);
       plannedMap.set(k, {key, uuid, prev: cur?JSON.parse(JSON.stringify(cur)):null, wroteRec:''}); };
     flRecs.forEach(fr=>addPlan(DB.key.fl, fr.uuid));
+    indFixFl.forEach(fr=>addPlan(DB.key.fl, fr.uuid));
     obRecs.forEach(r2=>addPlan(DB.key.ob, r2.uuid));
     sibs.forEach(sb=>addPlan(DB.key.ob, sb.uuid));
     if(editing || (SCREENS._loadedFl||[]).length || (SCREENS._loadedObs||[]).length){
@@ -5627,6 +5677,7 @@ function saveObs(u, svUuid, editing, cont){
     }
   }
   for(const fr of flRecs){ if(!writeOne(DB.key.fl, fr, r=>DB.upsertFlight(r))){ saveCancel(); return; } }
+  for(const fr of indFixFl){ if(!writeOne(DB.key.fl, fr, r=>DB.upsertFlight(r))){ saveCancel(); return; } }
   for(const r2 of obRecs){ if(!writeOne(DB.key.ob, r2, r=>DB.upsertObs(r))){ saveCancel(); return; } }
   for(const sb of sibs){ if(!writeOne(DB.key.ob, sb, r=>DB.upsertObs(r))){ saveCancel(); return; } }
   // まとめ読みした記録のうち、画面の一覧で「✕ 消す」されたものは削除する（明示的に消したものだけ）。
@@ -6800,8 +6851,10 @@ SCREENS.flightEdit = (argStr)=>{
           <textarea name="memo" placeholder="飛翔の様子・方向など">${esc(f.memo||'')}</textarea></label>
         <div class="two">
           ${localOnly?'':`<label class="field"><span class="lab">齢</span>${segH('age_class',OPT.flightAge)}</label>`}
-          <label class="field"><span class="lab">個体ラベル</span>
-            <input name="individual_label" autocomplete="off" value="${esc(f.individual_label||'')}" placeholder="例：個体A／左翼損傷"></label>
+          ${localOnly
+            ? `<input type="hidden" name="individual_label" value="${esc(f.individual_label||'')}">`
+            : `<label class="field"><span class="lab">個体ラベル</span>
+            <input name="individual_label" autocomplete="off" value="${esc(f.individual_label||'')}" placeholder="例：個体A／左翼損傷"></label>`}
         </div>
         <div class="two">
           <label class="field"><span class="lab">開始時刻</span>
@@ -7257,6 +7310,7 @@ function saveFlight(u,svUuid,editing,cont){
     // 添付・メモ専用の画面。共有項目（種名・種ID・個体数・齢）は欄が無いので、元の値をそのまま保つ
     rec.species_id=prev.species_id||''; rec.species_name_snapshot=prev.species_name_snapshot||'';
     rec.count=prev.count; rec.age_class=prev.age_class;
+    rec.individual_label=prev.individual_label||'';   // 個体名は統合画面だけで変える（食い違いを作らない）
 
   }
   // 統合画面の保存と同じ順序: 控え→覆い→書き込み→一拍→全文再検証→完了/補償。
