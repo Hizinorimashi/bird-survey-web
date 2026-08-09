@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v168（2026-08-09 監査70巡目：CASの完全一致条件・復旧前の監視登録・控え片付けの統一完了）';
+const APP_VERSION = 'v169（2026-08-09 監査71巡目：復旧の合成補償・救出画面）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3856,6 +3856,50 @@ function saveJournalClear(tx){
     return true;
   }catch(e){ return false; }
 }
+// 復旧を完了できないとき: 通常保存は閉じたまま、救出の導線を出す。
+// 「再読み込み→また停止」の堂々巡りから、救出ファイルの保存と控えの隔離で抜けられるようにする
+function recoveryRescueShow(){
+  SAVE_FATAL=true; window.WRITE_OK=false; SAVE_BUSY=true; saveBusyShow(true);
+  const el=document.getElementById('saveBusyOverlay');
+  if(!el) return;
+  const btn='padding:10px 18px;border-radius:10px;border:0;background:#2f6f4f;color:#fff;margin-top:10px;';
+  el.innerHTML='<div style="max-width:340px;text-align:center;line-height:1.8;padding:8px;">'
+    +'前回の保存の後片付けを完了できませんでした。<br>次の順で救出してください。'
+    +'<br><br><button style="'+btn+'" onclick="rescueDownload()">1) 記録の救出ファイルを保存</button>'
+    +'<br><button style="'+btn+'background:#8a5a2f;" onclick="rescueQuarantine()">2) 保存の控えを隔離して起動し直す</button>'
+    +'<br><br><button style="'+btn+'background:#555;" onclick="location.reload()">再読み込み（もう一度復旧を試す）</button></div>';
+}
+function rescueDownload(){
+  try{
+    const dump={};
+    for(let i2=0;i2<localStorage.length;i2++){
+      const k=localStorage.key(i2);
+      if(k && k.indexOf('bs_')===0) dump[k]=localStorage.getItem(k);
+    }
+    download('bird_survey_rescue_'+dateValue().replace(/-/g,'')+'.json', JSON.stringify(dump), 'application/json');
+    toast('救出ファイルを保存しました');
+  }catch(e){ toast('救出ファイルを作れませんでした'); }
+}
+function rescueQuarantine(){
+  if(!confirm('保存の控え（ジャーナル）を隔離して、次の起動から通常どおり使えるようにします。\n先に「記録の救出ファイルを保存」を済ませましたか？')) return;
+  try{
+    const raw=localStorage.getItem('bs_save_journal');
+    if(raw!=null) localStorage.setItem('bs_save_journal_quarantine', raw);   // 消さずに別の鍵へ移す
+    localStorage.removeItem('bs_save_journal');
+    location.reload();
+  }catch(e){ toast('隔離できませんでした（空き容量を確認してください）'); }
+}
+// 復旧用の基準配列: 競合で控えた相手の最新の姿があればそれを正本、無ければ厳格読み込み。
+// 相手の姿が壊れていれば null（触らず停止）
+function recoverBase(key){
+  try{
+    if(typeof GUARD_SNAP!=='undefined' && Object.prototype.hasOwnProperty.call(GUARD_SNAP, key)){
+      const v=JSON.parse(GUARD_SNAP[key]);
+      return Array.isArray(v)?v:null;
+    }
+  }catch(e){ return null; }
+  return loadStrict(key);
+}
 async function saveJournalRecover(){
   const raw=localStorage.getItem('bs_save_journal');
   if(raw===null){ return true; }   // ジャーナル無し＝復旧不要（不在は null だけ）
@@ -3892,8 +3936,8 @@ async function saveJournalRecover(){
       const normW=new Map();
       j.undo.forEach(e=>{ const k=e.key+'|'+e.uuid; if(!normW.has(k)) normW.set(k, e); });
       for(const e of normW.values()){
-        const arr=loadStrict(e.key);
-        if(!arr){ okW=false; continue; }   // 読めない状態で書くと全記録を失う
+        const arr=recoverBase(e.key);
+        if(!arr){ okW=false; continue; }   // 読めない・相手の姿が壊れている＝触らない
         const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
         const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
         const prevJson= e.prev ? JSON.stringify(e.prev) : '';
@@ -3911,7 +3955,33 @@ async function saveJournalRecover(){
         }
       }
       await new Promise(r=>setTimeout(r,0));   // 別の書き手の書き込み通知（storage）を受け取る一拍
-      if(okW && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) okW=false;   // 復旧中に別の書き手を検知
+      if(okW && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT){
+        // 相手の書き込みが先に反映され、こちらの書き戻しが相手の更新を消したかもしれない。
+        // 相手の最新の姿を正本に、自分の分だけをもう一度戻して合成し直す
+        okW=false;
+        let merged=true;
+        for(const e of normW.values()){
+          const arr=recoverBase(e.key);
+          if(!arr){ merged=false; break; }
+          const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
+          const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
+          const prevJson= e.prev ? JSON.stringify(e.prev) : '';
+          if((idx<0 && !e.prev) || (idx>=0 && e.prev && curJson===prevJson)) continue;
+          if((e.wroteRec && idx>=0 && curJson===e.wroteRec)
+            || (e.expectedRec && idx>=0 && stableJson(arr[idx])===e.expectedRec)){
+            if(e.prev) arr[idx]=e.prev; else arr.splice(idx,1);
+            if(!DB.save(e.key,arr)){ merged=false; break; }
+            const a2=loadStrict(e.key);
+            if(!a2 || JSON.stringify(a2)!==JSON.stringify(arr)){ merged=false; break; }
+          }
+          // 相手の姿のまま＝相手の更新が正。触らない
+        }
+        if(merged){
+          GUARD_SNAP={}; GUARD_CONFLICT=false;
+          await new Promise(r=>setTimeout(r,0));
+          okW = !(typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT);   // 合成中にまた来たら停止
+        }
+      }
       if(okW && localStorage.getItem('bs_save_journal')!==raw) okW=false;   // 復旧中に控えが差し替わった
       if(okW){ if(!saveJournalClear(j.tx||null)) okW=false; }
       if(okW){ toast('前回の保存が途中で止まっていたため、書く前の状態に戻しました。内容を確認してください', 8000); }
@@ -3970,18 +4040,41 @@ async function saveJournalRecover(){
         if(!items.length){ /* 添付なしの取引 */ }
       }
       if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) ok=false;   // 仮記録を消す前に競合を確かめる（消してからでは戻せない）
+      let ghostDeleted=false;
       if(ok && j.ghost){
         // 完了済みの生きた記録（undoに控えがある）は仮記録ではない。誤って消さない
         const isReal=normArr.some(e=>e.key===j.ghost.key && e.uuid===j.ghost.uuid);
-        const gArr=loadStrict(j.ghost.key);
+        const gArr=recoverBase(j.ghost.key);
         if(!gArr){ ok=false; }
         else if(!isReal && gArr.some(x=>x&&x.uuid===j.ghost.uuid)){
           DISCARDED.add(j.ghost.uuid);
           if(!DB.hardDelete(j.ghost.key, j.ghost.uuid)){ DISCARDED.delete(j.ghost.uuid); ok=false; }
+          else ghostDeleted=true;
         }
       }
       await new Promise(r=>setTimeout(r,0));   // 別の書き手の書き込み通知（storage）を受け取る一拍
-      if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) ok=false;   // 復旧中に別の書き手を検知
+      if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT){
+        // 相手の最新の姿を正本に、仮記録の削除だけを再適用して合成し直す
+        ok=false;
+        let merged=true;
+        if(ghostDeleted && j.ghost){
+          const gArr2=recoverBase(j.ghost.key);
+          if(!gArr2){ merged=false; }
+          else {
+            const gi=gArr2.findIndex(x=>x&&x.uuid===j.ghost.uuid);
+            if(gi>=0){ gArr2.splice(gi,1);
+              if(!DB.save(j.ghost.key, gArr2)) merged=false;
+              else { const a2=loadStrict(j.ghost.key);
+                if(!a2 || JSON.stringify(a2)!==JSON.stringify(gArr2)) merged=false; }
+            }
+          }
+        }
+        if(merged){
+          GUARD_SNAP={}; GUARD_CONFLICT=false;
+          await new Promise(r=>setTimeout(r,0));
+          ok = !(typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT);
+        }
+      }
       if(ok && localStorage.getItem('bs_save_journal')!==raw) ok=false;   // 復旧中に控えが差し替わった
       if(ok){ ok=saveJournalClear(j.tx||null); }
       if(ok){ if(didWork) toast('前回の保存の後片付けを完了しました'); }
@@ -3989,7 +4082,7 @@ async function saveJournalRecover(){
       // 記録が変わっている（別のタブの書き込みなど）。
       // 先に「最後の控えのまま」の記録だけ「最初のprev」へ戻し、読み直して確かめる
       for(const e of normArr){
-        const arr=loadStrict(e.key);
+        const arr=recoverBase(e.key);
         if(!arr){ ok=false; continue; }
         const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
         const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
@@ -4047,7 +4140,28 @@ async function saveJournalRecover(){
         }catch(e){ ok=false; }
       }
       await new Promise(r=>setTimeout(r,0));   // 別の書き手の書き込み通知（storage）を受け取る一拍
-      if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) ok=false;   // 復旧中に別の書き手を検知
+      if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT){
+        // 相手の最新の姿を正本に、自分の分だけをもう一度戻して合成し直す
+        ok=false;
+        let merged=true;
+        for(const e of normArr){
+          const arr=recoverBase(e.key);
+          if(!arr){ merged=false; break; }
+          const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
+          const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
+          if(idx>=0 && curJson===e.wroteRec){
+            if(e.prev) arr[idx]=e.prev; else arr.splice(idx,1);
+            if(!DB.save(e.key,arr)){ merged=false; break; }
+            const a2=loadStrict(e.key);
+            if(!a2 || JSON.stringify(a2)!==JSON.stringify(arr)){ merged=false; break; }
+          }
+        }
+        if(merged){
+          GUARD_SNAP={}; GUARD_CONFLICT=false;
+          await new Promise(r=>setTimeout(r,0));
+          ok = !(typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT);
+        }
+      }
       if(ok && localStorage.getItem('bs_save_journal')!==raw) ok=false;   // 復旧中に控えが差し替わった
       if(ok){ ok=saveJournalClear(j.tx||null); }
       if(ok){ toast('前回の保存が完了していなかったため、途中の変更を戻しました。内容を確認してください', 8000); }
@@ -10241,7 +10355,7 @@ function startApp(){
   saveJournalRecover().catch(()=>false).then(ok=>{
     if(ok===false){
       bootNoticeSet('');
-      saveFatalHalt();
+      recoveryRescueShow();
       render();
       return;
     }
