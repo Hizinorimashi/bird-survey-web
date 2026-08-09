@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v180（2026-08-09 複数個体の監査対応6：他者削除の尊重・保存前の生存確認）';
+const APP_VERSION = 'v181（2026-08-09 複数個体の監査対応7：破棄の残り全文照合・兄弟観察の生存確認）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3370,6 +3370,8 @@ function birdGhostPurge(ghosts){
     const cur=arr.find(x=>x&&x.uuid===g.uuid);
     if(!cur) continue;   // 本体が無い＝消すものが無い（墓標だけ付ける事故を防ぐため対象外）
     g.prev=JSON.stringify(cur);
+    // 事前の墓標の有無を控える（補償で外してよいのは自分が付けた墓標だけ）
+    try{ g.hadTomb=tombstonesList().some(t=>t && (t===g.uuid || t.uuid===g.uuid)); }catch(e){ g.hadTomb=true; }
     live.push(g);
   }
   const attempted=[]; let fail=false;
@@ -3379,13 +3381,17 @@ function birdGhostPurge(ghosts){
     const aD=loadStrict(g.key);
     const cD=aD?aD.find(x=>x&&x.uuid===g.uuid):null;
     if(!aD || !cD || JSON.stringify(cD)!==g.prev){ fail=true; break; }
+    // 削除後にあるべき「残りの全文」を先に確定しておく。
+    // 削除の読み書きの隙に別の書き手が他の記録を更新していたら、この照合で検知して補償へ回す
+    //（検知せず進むと、古い配列の後勝ち保存で相手の更新を消してしまう）
+    const expectRest=JSON.stringify(aD.filter(x=>!(x&&x.uuid===g.uuid)));
     attempted.push(g);   // 削除を実行する対象だけを補償の対象にする（触っていない対象を復活させない）
     let okD=false;
     try{
       okD=DB.hardDelete(g.key, g.uuid);
       if(okD){
         const aP=loadStrict(g.key);
-        if(!aP || aP.some(x=>x&&x.uuid===g.uuid)) okD=false;   // 消えたことまで確認
+        if(!aP || JSON.stringify(aP)!==expectRest) okD=false;   // 消えたこと＋他の記録が無傷なことまで確認
       }
     }catch(e){ okD=false; }
     if(!okD){ fail=true; break; }
@@ -3393,7 +3399,16 @@ function birdGhostPurge(ghosts){
   if(!fail) return 'ok';
   let restoredAll=true;
   for(const d of attempted.slice().reverse()){
+    // 先に「自分が付けた墓標」だけを外す（事前から墓標があった対象は他者の削除＝外さない）
+    let tombLeft=true;
+    if(!d.hadTomb){
+      if(untombVerified(d.uuid)) tombLeft=false;
+      else restoredAll=false;
+    }
     try{
+      // 墓標がまだ残っている（他者の削除・外せなかった）なら、本体を戻さない
+      //（戻すと他者の削除の取り消しになり、墓標との食い違いも生む）
+      if(tombLeft){ if(!d.hadTomb) restoredAll=false; continue; }
       const arr=loadStrict(d.key);
       if(!arr){ restoredAll=false; }
       else {
@@ -3408,15 +3423,11 @@ function birdGhostPurge(ghosts){
             if(!cV || JSON.stringify(cV)!==d.prev) restoredAll=false;
           }
         } else if(JSON.stringify(arr[idx])!==d.prev){
-          // 別の書き手の本体が既にある＝絶対に上書きしない（墓標だけ外して停止）
+          // 別の書き手の本体が既にある＝絶対に上書きしない
           restoredAll=false;
         }
       }
     }catch(e){ restoredAll=false; }
-    finally{
-      // 復元の成否にかかわらず、墓標は必ず外しにいく（残すと同期で記録が消される）
-      if(!untombVerified(d.uuid)) restoredAll=false;
-    }
   }
   return restoredAll?'restored':'broken';
 }
@@ -4746,14 +4757,17 @@ function saveObs(u, svUuid, editing, cont){
     toast('この記録は別の端末・タブで削除されています。保存できません（入力内容は画面に残っています）', 7000);
     return;
   }
-  // 読み込み済みの飛翔（軸・既存経路）が消えていたら保存しない（消えた対象への保存は取り違いになる）
+  // 読み込み済みの飛翔（軸・既存経路）・兄弟の観察が消えていたら保存しない
+  //（消えた対象への保存は、削除の取り消しや新しい番号での復活＝取り違いになる）
   {
-    let missFl=false;
+    let missFl=false, missOb=false;
     if(SCREENS._flAnchorUuid && !DB.flights().some(f=>f.uuid===SCREENS._flAnchorUuid)) missFl=true;
-    if(!missFl) PF_SEGS.forEach(sg=>{
-      if(sg.t==='F' && sg.srcUuid && !DB.flights().some(f=>f.uuid===sg.srcUuid)) missFl=true; });
-    if(missFl){
-      toast('読み込んだ飛翔経路が別の端末・タブで削除されています。画面を開き直してから保存してください', 7000);
+    PF_SEGS.forEach(sg=>{
+      if(sg.t==='F' && sg.srcUuid && !DB.flights().some(f=>f.uuid===sg.srcUuid)) missFl=true;
+      if(sg.t==='P' && sg.srcUuid && !DB.observations().some(o2=>o2&&o2.uuid===sg.srcUuid)) missOb=true;
+    });
+    if(missFl || missOb){
+      toast('読み込んだ'+(missOb?'観察':'飛翔経路')+'が別の端末・タブで削除されています。画面を開き直してから保存してください', 7000);
       return;
     }
   }
@@ -4981,7 +4995,7 @@ function saveObs(u, svUuid, editing, cont){
     }
     obRecs.push(rec);
   }
-  else { const uClaimed = pts.some(sg=>sg.srcUuid===u); let assignedU=false;
+  else { const uClaimed = pts.some(sg=>sg.srcUuid===u); let assignedU=false; let sibMissing=false;
   // 編集中に足した新しいPの観察者位置は、開いた記録の古い位置ではなく、保存した今の測位を使う
   const fxNow = editing ? freshFix() : null;
   pts.forEach((sg,i)=>{
@@ -4990,6 +5004,8 @@ function saveObs(u, svUuid, editing, cont){
     // 共有の項目（種名・個体数・齢・性別など）を開いた画面の内容にそろえる
     const sibSrc = (editing && sg.srcUuid && sg.srcUuid!==u)
       ? DB.observations().find(x=>x.uuid===sg.srcUuid) : null;
+    // 読み込んだ兄弟が消えている＝新しい番号で作り直すと削除の取り消しになる。構築を中止する
+    if(editing && sg.srcUuid && sg.srcUuid!==u && !sibSrc){ sibMissing=true; return; }
     let r2;
     if(editing && sg.srcUuid===u){ r2=rec; assignedU=true; }
     else if(sibSrc){
@@ -5062,6 +5078,10 @@ function saveObs(u, svUuid, editing, cont){
     }
     obRecs.push(r2);
   });
+  if(sibMissing){
+    toast('読み込んだ観察が別の端末・タブで削除されています。画面を開き直してから保存してください', 7000);
+    return;
+  }
   if(editing && !obRecs.some(r=>r.uuid===u)){
     // 開いた記録のPを一覧で消した（または元から無い）場合も、開いた記録自体は必ず保存する。
     // 保存しないと、共有項目の変更が落ち、消したはずの位置が残ったまま再び現れる
