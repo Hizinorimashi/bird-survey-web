@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v187（2026-08-10 監査2巡目：名前の行き渡り・巣の統合・畳んだ経路の要確認・自動名の重複回避）';
+const APP_VERSION = 'v188（2026-08-10 監査3巡目：最新版で書き戻す・名前外しの伝播・経路からの命名も統一）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1723,6 +1723,31 @@ function indLabelsOf(svUuid, spName){
   DB.flightsOf(svUuid).forEach(add);
   return Array.from(map.values()).sort((a,b)=>
     ((b.sp===sp)-(a.sp===sp)) || (b.n-a.n) || String(a.label).localeCompare(String(b.label)));
+}
+// 経路の画面から個体名を付けて保存するときの目印の引き継ぎ。
+// 観察・飛翔をまたぐ揃え直し（fix）は統合画面の保存取引でしか安全に行えないので、
+// ここでは目印を合わせるだけにし、食い違いが残る場合はその場で知らせる
+function flIndKeyFor(svUuid, spName, label, curKey, selfUuid){
+  const lb=String(label||'').trim();
+  if(!lb) return { key:curKey||'', fixN:0 };
+  const r=indResolve(svUuid, spName, lb, curKey||'', selfUuid||'');
+  return { key:r.key||curKey||'', fixN:r.fixObs.length+r.fixFl.length };
+}
+function flIndWarn(total){
+  if(!total) return true;
+  return confirm('同じ個体名の記録に、目印の食い違いが'+total+'件あります。\n'
+    +'ここでは経路だけを保存します（食い違いは、その個体の観察を開いて保存すると揃います）。\n\n'
+    +'このまま保存しますか？');
+}
+// 名前を外すときの解決。目印は変えず、同じまとまりの記録から名前だけを消す
+function indUnnameResolve(svUuid, curKey, selfUuid){
+  const out={ key:curKey, keys:[], fixObs:[], fixFl:[], merge:false };
+  if(!curKey) return out;
+  (DB.load(DB.key.ob)||[]).forEach(o=>{
+    if(o && o.survey_uuid===svUuid && o.uuid!==selfUuid && o.individual_key===curKey && indLabelOf(o)) out.fixObs.push(o); });
+  (DB.load(DB.key.fl)||[]).forEach(f=>{
+    if(f && f.survey_uuid===svUuid && f.individual_key===curKey && indLabelOf(f)) out.fixFl.push(f); });
+  return out;
 }
 // 個体名から「同じ1羽」の正規の目印を決め、あわせて揃えるべき既存記録も返す。
 // 目印を返すだけだと、同名なのに目印が空の記録や、名前を変えたときの元の仲間が
@@ -5075,10 +5100,12 @@ function saveObs(u, svUuid, editing, cont){
   // 個体名は巣の目印より先に決める。巣は「同じ鳥の記録」から候補を探すので、
   // 目印が決まる前に探すと、既存の個体名を付けたのに別の巣として発行してしまう
   const indLabel=String((($('#indLabel')&&$('#indLabel').value)||'')).trim();
+  const _curKey0=((base||{}).individual_key || (SCREENS._obs&&SCREENS._obs.individual_key) || '');
   const indR = indLabel
-    ? indResolve(svUuid, name, indLabel,
-        ((base||{}).individual_key || (SCREENS._obs&&SCREENS._obs.individual_key) || ''), u)
-    : null;
+    ? indResolve(svUuid, name, indLabel, _curKey0, u)
+    // 名前を外したときも、同じまとまりの記録から名前を消す
+    //（消さないと、ごみ箱に残った旧名がのちの保存で復活して勝手に統合される）
+    : (_curKey0 ? indUnnameResolve(svUuid, _curKey0, u) : null);
   if(indR && indR.merge){
     const n=indR.fixObs.length+indR.fixFl.length;
     if(!confirm('「'+indLabel+'」として記録されている'+n+'件と、この記録を同じ1羽としてまとめます。\n'
@@ -5595,6 +5622,17 @@ function saveObs(u, svUuid, editing, cont){
       if(diff) sibs.push(cp);
     });
   }
+  // 個体名でまとめる相手には、新しい記録からの保存でも共有項目をそろえる
+  //（目印と名前だけ移して、種名・個体数・齢などが食い違うのを防ぐ）
+  if(indMergeIds.size){
+    const mineM=new Set(obRecs.map(r=>r.uuid).concat(sibs.map(r=>r.uuid)));
+    DB.obsOf(svUuid).forEach(o2=>{
+      if(mineM.has(o2.uuid) || !indMergeIds.has(o2.uuid)) return;
+      const cp=Object.assign({}, o2, { individual_key:indKey, individual_label:indLabel });
+      OBS_SHARED_F.forEach(k=>{ cp[k]=rec[k]; });
+      sibs.push(cp);
+    });
+  }
   // 巣の照合に入らなかった「生きている兄弟」（位置なしで画面に載らない記録など）にも共有項目をそろえる
   if(editing && indKey){
     const mine=new Set(obRecs.map(r=>r.uuid).concat(sibs.map(r=>r.uuid)));
@@ -5636,17 +5674,36 @@ function saveObs(u, svUuid, editing, cont){
     ghostRecFixed=JSON.stringify(gC);
   }
   // 個体名でまとめた分の書き直し（同じ名前の記録を、決めた目印へ揃える）。
-  // 同じ保存の取引の中で書くので、途中で失敗すればまとめて元へ戻る
+  // 同じ保存の取引の中で書くので、途中で失敗すればまとめて元へ戻る。
+  // 書き戻すのは「いま読み直した最新の姿」に必要な項目だけを載せたもの。
+  // 見つけたときの写しをそのまま書くと、その間に別のタブがした削除・復元・修正を消してしまう
   const indFixFl=[];
   if(indR){
+    const nowObs=loadStrict(DB.key.ob), nowFl=loadStrict(DB.key.fl);
+    if(!nowObs || !nowFl){
+      toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000);
+      SAVE_BUSY=false; saveBusyShow(false); return;
+    }
+    const changed=(was, now)=> !now
+      || String(was.updated_at||'')!==String(now.updated_at||'')
+      || String(was.deleted_at||'')!==String(now.deleted_at||'');
+    let stale=false;
     indR.fixObs.forEach(o=>{
       if(obRecs.some(r=>r.uuid===o.uuid) || sibs.some(r=>r.uuid===o.uuid)) return;   // 二重に書かない
-      sibs.push(Object.assign({}, o, { individual_key:indKey, individual_label:indLabel }));
+      const cur=nowObs.find(x=>x&&x.uuid===o.uuid);
+      if(changed(o, cur)){ stale=true; return; }
+      sibs.push(Object.assign({}, cur, { individual_key:indKey, individual_label:indLabel }));
     });
     indR.fixFl.forEach(f=>{
       if(flRecs.some(r=>r.uuid===f.uuid)) return;
-      indFixFl.push(Object.assign({}, f, { individual_key:indKey, individual_label:indLabel }));
+      const cur=nowFl.find(x=>x&&x.uuid===f.uuid);
+      if(changed(f, cur)){ stale=true; return; }
+      indFixFl.push(Object.assign({}, cur, { individual_key:indKey, individual_label:indLabel }));
     });
+    if(stale){
+      toast('まとめる相手の記録が別の端末・タブで変わりました。画面を開き直してから保存してください', 8000);
+      SAVE_BUSY=false; saveBusyShow(false); return;
+    }
   }
   // 取引の第1段: これから書く全記録（削除対象も含む）の「書く前の姿」を先に控える。
   // 各記録を書くたびに「書いた直後の控え」も書き足す（writeOne 内）。
@@ -6875,7 +6932,7 @@ SCREENS.flightEdit = (argStr)=>{
       </div>
       <div class="tiny muted" id="fInfo" style="margin:6px 0;">—</div>
       <form id="flForm">
-        ${localOnly?`<div class="note">共有の項目（種名・個体数・齢）は、まとめ編集の画面で直してください。ここではこの経路だけの項目（添付・メモ・時刻・高度・行動）を扱います。<input id="spInput" type="hidden" value="${esc(f.species_name_snapshot)}"></div>`:`<label class="field"><span class="lab">種名</span>
+        ${localOnly?`<div class="note">共有の項目（種名・個体数・齢・個体名）は、まとめ編集の画面で直してください。ここではこの経路だけの項目（添付・メモ・時刻・高度・行動）を扱います。<input id="spInput" type="hidden" value="${esc(f.species_name_snapshot)}"></div>`:`<label class="field"><span class="lab">種名</span>
           <input id="spInput" autocomplete="off" value="${esc(f.species_name_snapshot)}" placeholder="種名を入力（かな可）" oninput="spSearch(this.value)">
           <div id="spSuggest"></div>
           <div class="chips" id="spRefLinks"></div>
@@ -7008,12 +7065,28 @@ function saveFlightMulti(svUuid){
       const used=new Set(indLabelsOf(svUuid, n).filter(x=>x.sp===n).map(x=>x.label));
       let j=0;
       g.forEach(a=>{
-        let lb;
-        do{ lb = j<26 ? ('個体'+String.fromCharCode(65+j)) : ('個体'+(j+1)); j++; }
-        while(used.has(lb) && j<200);
+        let lb='';
+        while(j<1000){
+          lb = j<26 ? ('個体'+String.fromCharCode(65+j)) : ('個体'+(j+1)); j++;
+          if(!used.has(lb)) break;
+          lb='';
+        }
+        if(!lb) lb='個体'+uuid().slice(0,6);   // 使い切ったら必ず一意になる名前にする
         used.add(lb); a.autoLabel=lb;
       });
     }});
+  // 個体名の解決は書き込みの前に全トラックぶんまとめて行う（途中で条件が変わらないように）
+  const indPre=new Map();
+  let indFixTotal=0;
+  act.forEach(a=>{
+    const fl=a.tr.fields;
+    const nm=(fl.species_name_snapshot||'').trim();
+    const lb=(fl.individual_label||'').trim()||a.autoLabel||'';
+    const r=flIndKeyFor(svUuid, nm, lb, a.tr.indKey||'', a.tr.uuid);
+    indPre.set(a.tr.uuid, r.key);
+    indFixTotal+=r.fixN;
+  });
+  if(!flIndWarn(indFixTotal)) return;
   // 取引化: 控え→覆い→全件書き込み→一拍→全文検証→完了/補償（統合画面の保存と同じ順序）
   const mUndo=[];   // {uuid, prev, wroteRec}
   const mRollback=()=>{
@@ -7071,12 +7144,7 @@ function saveFlightMulti(svUuid){
       count:fl.count||'', memo:(fl.memo||'').trim(), needs_review:!!fl.needs_review,
       // 観察から引き継いだ結び付きはそのトラックだけが持つ。
       // 個体名を付けたトラックは、同じ調査・同じ種の同名がすでにあればその目印に合わせる（＝同じ1羽）
-      individual_key:(function(){
-        const lb=(fl.individual_label||'').trim()||a.autoLabel||'';
-        if(!lb) return a.tr.indKey||'';
-        const r=indResolve(svUuid, name, lb, a.tr.indKey||'', a.tr.uuid);
-        return r.key||a.tr.indKey||'';
-      })(),
+      individual_key: indPre.get(a.tr.uuid) || a.tr.indKey || '',
       audio:fl.audio||[], media:fl.media||[] };
     const arrWM=loadStrict(DB.key.fl);
     if(!arrWM){
@@ -7341,6 +7409,11 @@ function saveFlight(u,svUuid,editing,cont){
   const stIn=g('start_time')||'', enIn=g('end_time')||'';
   const stOut=(editing && stIn===t0.dispStart) ? t0.start : stIn;
   const enOut=(editing && enIn===t0.dispEnd) ? t0.end : enIn;
+  // 個体名を付けたら、同じ調査・同じ種の同名と同じ目印にする（統合画面と同じ規則）
+  const _flInd = (SCREENS._flLocalOnly && editing)
+    ? { key:(prev.individual_key||''), fixN:0 }   // 添付・メモ専用では個体名を触らせない
+    : flIndKeyFor(svUuid, name, individual, (prev.individual_key||''), u);
+  if(!flIndWarn(_flInd.fixN)) return;
   const rec=Object.assign({},prev,{ uuid:u, survey_uuid:svUuid,
     species_id: name ? (SCREENS._chosenId||'') : '', species_name_snapshot:name,   // 種名が空なら種IDも空（観察側と同じ保証）
     path:flightPath.slice(),
@@ -7353,7 +7426,7 @@ function saveFlight(u,svUuid,editing,cont){
     needs_review:$('#flReview').checked,
     // 同一個体の目印。観察と行き来したときに引き継ぐ（画面で触れないので既存値を持ち越す）
     // 'obs'（止まった）と 'same'（見失って再発見＝同じ鳥）は、目印が無ければここで発行して結び付ける
-    individual_key: (((SCREENS._ftracks||[])[SCREENS._ftIdx]||{}).indKey||'') || (SCREENS._flIndKey||'')
+    individual_key: _flInd.key || (((SCREENS._ftracks||[])[SCREENS._ftIdx]||{}).indKey||'') || (SCREENS._flIndKey||'')
       || (prev.individual_key||'') || ((cont==='obs'||cont==='same') ? uuid() : ''),
     audio:SCREENS._audio||[], media:SCREENS._media||[] });
   if(SCREENS._flLocalOnly && editing && prev){
