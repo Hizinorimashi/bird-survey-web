@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v164（2026-08-09 監査66巡目：控えの厳格管理・厳格読み込みの徹底・持ち主の再確認・競合即取消）';
+const APP_VERSION = 'v165（2026-08-09 監査67巡目：取引番号・予定値の先行控え・相手基準の合成・比較付き復帰）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3747,7 +3747,8 @@ function saveFatalHalt(msg){
 let _backupPending=false, _folderPending=false;
 function backupBlocked(){
   return (typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) || !!window.RECOVERY_OK
-    || (typeof SAVE_FATAL!=='undefined' && SAVE_FATAL) || !!localStorage.getItem('bs_save_journal');
+    || (typeof SAVE_FATAL!=='undefined' && SAVE_FATAL)
+    || localStorage.getItem('bs_save_journal')!==null;   // 空文字も「控えあり」として扱う
 }
 function backupConfirmPoint(){
   if(backupBlocked()) return;
@@ -3769,6 +3770,27 @@ function stableJson(v){
 function loadStrict(key){
   try{ const v=DB.loadRaw(key); return Array.isArray(v)?v:null; }catch(e){ return null; }
 }
+// 控え（ジャーナル）の形の検証。壊れた控えを受理すると、未知の途中状態のまま
+// 通常保存やバックアップへ進んでしまう
+function saveJournalValid(j){
+  try{
+    if(!j || typeof j!=='object' || !Array.isArray(j.undo)) return false;
+    if(j.phase!==undefined && j.phase!=='writing' && j.phase!=='written') return false;
+    const KEYS=new Set([DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.hr,DB.key.fl,DB.key.recent,DB.key.fav]);
+    for(const e of j.undo){
+      if(!e || typeof e!=='object') return false;
+      if(typeof e.key!=='string' || !KEYS.has(e.key)) return false;
+      if(typeof e.uuid!=='string' || !e.uuid) return false;
+      if(!(e.prev===null || e.prev===undefined || (e.prev && typeof e.prev==='object'))) return false;
+      if(typeof e.wroteRec!=='string') return false;
+      if(e.expectedRec!==undefined && typeof e.expectedRec!=='string') return false;
+    }
+    if(!(j.fl==null || (typeof j.fl==='object' && typeof j.fl.flId==='string' && Array.isArray(j.fl.items)
+      && j.fl.items.every(it=>it && (it.kind==='audio'||it.kind==='media') && typeof it.id==='string')))) return false;
+    if(!(j.ghost==null || (typeof j.ghost==='object' && typeof j.ghost.key==='string' && typeof j.ghost.uuid==='string'))) return false;
+    return true;
+  }catch(e){ return false; }
+}
 function saveJournalSet(j){
   try{
     const txt=JSON.stringify(j);
@@ -3776,29 +3798,36 @@ function saveJournalSet(j){
     return localStorage.getItem('bs_save_journal')===txt;   // 読み直しまで確かめる
   }catch(e){ return false; }
 }
-function saveJournalClear(){
+let CUR_TX=null;   // いま進行中の取引の番号（控えの取り違え防止）
+function saveJournalClear(tx){
   try{
-    const had=!!localStorage.getItem('bs_save_journal');
+    const raw=localStorage.getItem('bs_save_journal');
+    if(raw===null) return true;
+    const t=(tx!==undefined)?tx:CUR_TX;
+    if(t){
+      let cur=null; try{ cur=JSON.parse(raw); }catch(e){}
+      if(!cur || cur.tx!==t) return false;   // 自分の取引の控えでなければ消さない
+    }
     localStorage.removeItem('bs_save_journal');
-    if(localStorage.getItem('bs_save_journal')!=null) return false;   // 消えたことまで確かめる
+    if(localStorage.getItem('bs_save_journal')!==null) return false;   // 消えたことまで確かめる
     // 取引が確定した（控えを消せた）ときに一度だけ自動バックアップを予約する
-    if(had){ _backupPending=true; _folderPending=true; backupConfirmPoint(); }
+    _backupPending=true; _folderPending=true; backupConfirmPoint();
     return true;
   }catch(e){ return false; }
 }
 async function saveJournalRecover(){
   const raw=localStorage.getItem('bs_save_journal');
-  if(raw==null || raw===''){ return true; }   // ジャーナル無し＝復旧不要
+  if(raw===null){ return true; }   // ジャーナル無し＝復旧不要（不在は null だけ）
   let j=null;
   try{ j=JSON.parse(raw); }catch(e){}
-  if(!j || !Array.isArray(j.undo)){
+  if(!saveJournalValid(j)){
     // 壊れた控えは消さない（何の取引だったかの唯一の手掛かり）。停止して点検を案内する
     try{ clearTimeout(_cloudTimer); }catch(e){}
     toast('保存の控えが壊れています。ページを再読み込みし、データ点検・修復画面で確認してください', 10000);
     return false;
   }
   window.RECOVERY_OK=true;   // 復旧専用の内部書き込み権限（WRITE_OK はまだ開放しない）
-  if(typeof GUARD_CONFLICT!=='undefined') GUARD_CONFLICT=false;   // この復旧の間の競合だけを見る
+  if(typeof GUARD_CONFLICT!=='undefined'){ GUARD_CONFLICT=false; GUARD_SNAP={}; }   // この復旧の間の競合だけを見る
   try{
     // 先に対象の記録がすべて読めることを確かめる（読めない状態で書くと全記録を失う）
     {
@@ -3827,8 +3856,9 @@ async function saveJournalRecover(){
         const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
         const prevJson= e.prev ? JSON.stringify(e.prev) : '';
         if((idx<0 && !e.prev) || (idx>=0 && e.prev && curJson===prevJson)) continue;   // 書く前のまま
-        if(e.wroteRec && idx>=0 && curJson===e.wroteRec){
-          // 自分が書いた値のまま → 書く前の姿へ戻す
+        if((e.wroteRec && idx>=0 && curJson===e.wroteRec)
+          || (e.expectedRec && idx>=0 && stableJson(arr[idx])===e.expectedRec)){
+          // 自分が書いた値（または予定値）のまま → 書く前の姿へ戻す
           if(e.prev) arr[idx]=e.prev; else arr.splice(idx,1);
           if(!DB.save(e.key,arr)){ okW=false; continue; }
           const a2=loadStrict(e.key);
@@ -3839,10 +3869,9 @@ async function saveJournalRecover(){
         }
       }
       if(okW && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) okW=false;   // 復旧中に別の書き手を検知
-      if(okW){ if(!saveJournalClear()) okW=false; }
+      if(okW){ if(!saveJournalClear(j.tx||null)) okW=false; }
       if(okW){ toast('前回の保存が途中で止まっていたため、書く前の状態に戻しました。内容を確認してください', 8000); }
       else { try{ clearTimeout(_cloudTimer); }catch(e){} }
-      if(okW){ try{ if(typeof scheduleCloud==='function') scheduleCloud(); }catch(e){} }
       return okW;
     }
     const dbOf=k=>(k==='audio')?AudioDB:PhotoDB;
@@ -3890,6 +3919,7 @@ async function saveJournalRecover(){
         }
         if(!items.length){ /* 添付なしの取引 */ }
       }
+      if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) ok=false;   // 仮記録を消す前に競合を確かめる（消してからでは戻せない）
       if(ok && j.ghost){
         // 完了済みの生きた記録（undoに控えがある）は仮記録ではない。誤って消さない
         const isReal=normArr.some(e=>e.key===j.ghost.key && e.uuid===j.ghost.uuid);
@@ -3901,7 +3931,7 @@ async function saveJournalRecover(){
         }
       }
       if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) ok=false;   // 復旧中に別の書き手を検知
-      if(ok){ ok=saveJournalClear(); }
+      if(ok){ ok=saveJournalClear(j.tx||null); }
       if(ok){ if(didWork) toast('前回の保存の後片付けを完了しました'); }
     } else {
       // 記録が変わっている（別のタブの書き込みなど）。
@@ -3959,12 +3989,11 @@ async function saveJournalRecover(){
         }catch(e){ ok=false; }
       }
       if(ok && typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) ok=false;   // 復旧中に別の書き手を検知
-      if(ok){ ok=saveJournalClear(); }
+      if(ok){ ok=saveJournalClear(j.tx||null); }
       if(ok){ toast('前回の保存が完了していなかったため、途中の変更を戻しました。内容を確認してください', 8000); }
     }
     // 失敗したらジャーナルは残す（次回の起動でもう一度試せる）
-    if(ok){ try{ if(typeof scheduleCloud==='function') scheduleCloud(); }catch(e){} }
-    else { try{ clearTimeout(_cloudTimer); }catch(e){} }   // 不完全な途中状態を自動バックアップしない
+    if(!ok){ try{ clearTimeout(_cloudTimer); }catch(e){} }   // 不完全な途中状態を自動バックアップしない
     return ok;
   } finally { window.RECOVERY_OK=false; }
 }
@@ -4343,11 +4372,28 @@ function saveObs(u, svUuid, editing, cont){
   const undoLog=[];   // {key, uuid, prev（書く前の記録。無ければnull）, wrote（書いた直後のupdated_at）}
   let txJournal=null;   // 第1段ジャーナル（書き込みの進み具合を逐次控える）
   const writeOne=(key, rec, upsert, expect)=>{
-    const arr0=DB.load(key)||[];
+    const arr0=loadStrict(key);
+    if(!arr0) return false;   // 読めない状態で書くと全記録を失う
     const cur=arr0.find(x=>x&&x.uuid===rec.uuid);
     const prev=cur?JSON.parse(JSON.stringify(cur)):null;
-    if(!upsert(rec)) return false;
-    const arr1=DB.load(key)||[];
+    if(!expect){
+      // 予定値（時刻印含む）を先に確定して控える。書いた後では
+      // 「これは自分の書き込みだ」と復旧が証明できない
+      rec.updated_at=nowISO();
+      if(!cur && !rec.created_at) rec.created_at=nowISO();
+      if(txJournal){
+        const pe=txJournal.map.get(key+'|'+rec.uuid);
+        if(pe){ pe.expectedRec=stableJson(rec);
+          if(!saveJournalSet(txJournal.j)) return false; }
+      }
+      const iS=arr0.findIndex(x=>x&&x.uuid===rec.uuid);
+      if(iS<0) arr0.push(rec); else arr0[iS]=rec;
+      if(!DB.save(key, arr0)) return false;
+    } else {
+      if(!upsert(rec)) return false;
+    }
+    const arr1=loadStrict(key);
+    if(!arr1) return false;
     const now=arr1.find(x=>x&&x.uuid===rec.uuid);
     if(!now) return false;   // 書いたはずの記録が見つからない＝成功とは言えない
     // 書けたのが「自分の書こうとした値」であることを照合する。直後に別のタブが
@@ -4375,9 +4421,17 @@ function saveObs(u, svUuid, editing, cont){
     const byKey=new Map();
     const restored=[];
     for(const e of Array.from(norm.values()).reverse()){
-      if(!byKey.has(e.key)) byKey.set(e.key, loadStrict(e.key));
+      if(!byKey.has(e.key)){
+        let base=null;
+        if(typeof GUARD_SNAP!=='undefined' && Object.prototype.hasOwnProperty.call(GUARD_SNAP, e.key)){
+          // 相手の最新の姿を基準に合成する。自分の後勝ち保存が相手の別の記録の更新を
+          // 消していても、この基準の上で自分の分だけ戻せば相手の更新は保たれる
+          try{ const v=JSON.parse(GUARD_SNAP[e.key]); if(Array.isArray(v)) base=v; }catch(_){ }
+        } else base=loadStrict(e.key);
+        byKey.set(e.key, base);
+      }
       const arr=byKey.get(e.key);
-      if(!arr){ okAll=false; continue; }   // 読めない状態で書くと全記録を失う
+      if(!arr){ okAll=false; continue; }   // 読めない・合成の基準が壊れている＝触らない
       const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
       const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
       if(idx>=0 && curJson===e.wroteRec){
@@ -4497,7 +4551,7 @@ function saveObs(u, svUuid, editing, cont){
   }
   // ここからは一続きの保存。書き終えて検証するまで、新しい操作は覆いで止める
   SAVE_BUSY=true; saveBusyShow(true);
-  if(typeof GUARD_CONFLICT!=='undefined') GUARD_CONFLICT=false;   // この保存の間の競合だけを見る
+  if(typeof GUARD_CONFLICT!=='undefined'){ GUARD_CONFLICT=false; GUARD_SNAP={}; }   // この保存の間の競合だけを見る
   const saveAbort=()=>{ SAVE_BUSY=false; saveBusyShow(false); };
   // 取引の第1段: これから書く全記録（削除対象も含む）の「書く前の姿」を先に控える。
   // 各記録を書くたびに「書いた直後の控え」も書き足す（writeOne 内）。
@@ -4525,7 +4579,8 @@ function saveObs(u, svUuid, editing, cont){
       toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000);
       saveAbort(); return;
     }
-    const j0={ t: nowISO(), phase:'writing', undo: Array.from(plannedMap.values()), fl:null, ghost:null };
+    const j0={ t: nowISO(), tx: uuid(), phase:'writing', undo: Array.from(plannedMap.values()), fl:null, ghost:null };
+    CUR_TX=j0.tx;
     if(!saveJournalSet(j0)){
       toast('空き容量が足りず、保存を開始できませんでした。空き容量を確保してからやり直してください', 8000);
       saveAbort(); return;
@@ -4578,7 +4633,7 @@ function saveObs(u, svUuid, editing, cont){
   // 完了処理は非同期に進むため、途中でアプリが終了しても復旧できるように控えを残す。
   // 仮記録（ghost）は「観察を作らない＝本当に消す」場合だけ載せる。
   // 観察を作る保存では仮記録が完成した観察そのものになるため、載せると復旧が誤って消す
-  if(!saveJournalSet({ t: nowISO(), phase:'written', undo: undoLog,
+  if(!saveJournalSet({ t: nowISO(), tx: (txJournal&&txJournal.j&&txJournal.j.tx)||undefined, phase:'written', undo: undoLog,
     fl: flOwnerJobs ? { flId: flOwnerJobs.flId, items: flOwnerJobs.items.map(it=>({kind:it.kind, id:it.id})) } : null,
     ghost: (!obRecs.length && SCREENS._ghost) ? { key: SCREENS._ghost.key, uuid: SCREENS._ghost.uuid } : null })){
     // 復旧の控えを残せない状態で後処理へ進まない（途中終了すると回収できなくなる）
@@ -4596,13 +4651,17 @@ function saveObs(u, svUuid, editing, cont){
       // 観察を作らないので、写真・録音の都合で作られた仮記録を片付ける。
       // 片付けに失敗したら false を返す（巻き戻すかは呼び出し側が決める——
       // 添付の付け替えを先に戻さないと、実体が消えた飛翔を指したままになる）
+      // 仮記録を消す前に、競合と記録の生存をもう一度確かめる（消してからでは戻せない）
+      if((typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT) || !undoStillOk()) return false;
       const gh=SCREENS._ghost;
       if(gh){
         DISCARDED.add(gh.uuid);
         if(!DB.hardDelete(gh.key, gh.uuid)){ DISCARDED.delete(gh.uuid); return false; }
         SCREENS._ghost=null; mediaGcAll().catch(function(){});
       }
-      if(!saveJournalClear()) return false;   // 控えを消せなければ完了とは言えない（補償側に任せる）
+      // 仮記録を消した後は巻き戻さない（添付の持ち主が消えた記録を指してしまう）。
+      // 控えを消せなければ完成した状態のまま停止し、次回起動の復旧に確定させてもらう
+      if(!saveJournalClear()){ saveFatalHalt('保存の控えを片付けられませんでした。'); return true; }
       if(name) DB.pushRecent(name);
       SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
       SCREENS._dirty=false; SCREENS._ghost=null;
@@ -4635,6 +4694,8 @@ function saveObs(u, svUuid, editing, cont){
             try{
               const r=await u2.db.get(u2.id);
               if(!r){ allOk=false; continue; }   // 実体が見つからない＝戻せたとは言えない
+              if(r.obs_uuid===u2.prev.obs_uuid && r.flight_uuid===u2.prev.flight_uuid) continue;   // すでに元の持ち主
+              if(!(r.obs_uuid==='' && r.flight_uuid===flOwnerJobs.flId)){ allOk=false; continue; } // 別の書き手が動かした＝触らない
               r.obs_uuid=u2.prev.obs_uuid; r.flight_uuid=u2.prev.flight_uuid;
               await u2.db.put(r);
               const chk=await u2.db.get(u2.id);
@@ -5796,8 +5857,11 @@ function saveFlightMulti(svUuid){
   const mUndo=[];   // {uuid, prev, wroteRec}
   const mRollback=()=>{
     let okAll=true;
-    const arr=loadStrict(DB.key.fl);
-    if(!arr) return false;   // 読めない状態で書くと全記録を失う
+    let arr=null;
+    if(typeof GUARD_SNAP!=='undefined' && Object.prototype.hasOwnProperty.call(GUARD_SNAP, DB.key.fl)){
+      try{ const v=JSON.parse(GUARD_SNAP[DB.key.fl]); if(Array.isArray(v)) arr=v; }catch(_){ }
+    } else arr=loadStrict(DB.key.fl);
+    if(!arr) return false;   // 読めない・合成の基準が壊れている＝触らない
     for(let i=mUndo.length-1;i>=0;i--){ const e=mUndo[i];
       const idx=arr.findIndex(x=>x&&x.uuid===e.uuid);
       const curJson= idx>=0 ? JSON.stringify(arr[idx]) : '';
@@ -5815,7 +5879,7 @@ function saveFlightMulti(svUuid){
     return okAll;
   };
   SAVE_BUSY=true; saveBusyShow(true);
-  if(typeof GUARD_CONFLICT!=='undefined') GUARD_CONFLICT=false;   // この保存の間の競合だけを見る
+  if(typeof GUARD_CONFLICT!=='undefined'){ GUARD_CONFLICT=false; GUARD_SNAP={}; }   // この保存の間の競合だけを見る
   // 取引の第1段: 書く前の姿を控える（途中終了は起動時に取引ごと中止できる）。
   // 各記録を書くたびに進み具合（wroteRec）も書き足す
   const arrPreM=loadStrict(DB.key.fl);
@@ -5827,7 +5891,8 @@ function saveFlightMulti(svUuid){
     const cur=arrPreM.find(x=>x&&x.uuid===a.tr.uuid);
     plannedM.set(a.tr.uuid, { key:DB.key.fl, uuid:a.tr.uuid, prev: cur?JSON.parse(JSON.stringify(cur)):null, wroteRec:'' });
   });
-  const jM={ t: nowISO(), phase:'writing', undo: Array.from(plannedM.values()), fl:null, ghost:null };
+  const jM={ t: nowISO(), tx: uuid(), phase:'writing', undo: Array.from(plannedM.values()), fl:null, ghost:null };
+  CUR_TX=jM.tx;
   if(!saveJournalSet(jM)){
     SAVE_BUSY=false; saveBusyShow(false);
     toast('空き容量が足りず、保存を開始できませんでした。空き容量を確保してからやり直してください', 8000);
@@ -5846,7 +5911,7 @@ function saveFlightMulti(svUuid){
       audio:fl.audio||[], media:fl.media||[] };
     const arrWM=loadStrict(DB.key.fl);
     if(!arrWM){
-      if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
+      if(mRollback() && saveJournalClear(jM.tx)){ SAVE_BUSY=false; saveBusyShow(false);
         toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000); }
       else saveFatalHalt();
       return;
@@ -5856,7 +5921,7 @@ function saveFlightMulti(svUuid){
     rec.updated_at=nowISO(); if(iWM<0){ if(!rec.created_at) rec.created_at=nowISO(); arrWM.push(rec); } else arrWM[iWM]=rec;
     if(!DB.save(DB.key.fl, arrWM)){
       // 途中で失敗したら、先に書けた分も全部戻す（一部だけ確定させない）
-      if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
+      if(mRollback() && saveJournalClear(jM.tx)){ SAVE_BUSY=false; saveBusyShow(false);
         toast('保存に失敗しました。空き容量を確保してからもう一度保存してください', 4500); }
       else saveFatalHalt();
       return;
@@ -5865,30 +5930,31 @@ function saveFlightMulti(svUuid){
     const now=aNM?(aNM.find(x=>x&&x.uuid===rec.uuid)||null):null;
     if(!now || stableJson(now)!==stableJson(rec)){
       // 書けていない、または書けたのが自分の値でない（横から上書きされた）
-      if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
+      if(mRollback() && saveJournalClear(jM.tx)){ SAVE_BUSY=false; saveBusyShow(false);
         toast('保存に失敗しました。もう一度保存してください（空き容量も確認）', 4500); }
       else saveFatalHalt();
       return;
     }
+    // 先に mUndo へ入れる（進み具合の控えに失敗しても、この1件を含めて全部戻せるように）
+    mUndo.push({ uuid:rec.uuid, prev: prev0?JSON.parse(JSON.stringify(prev0)):null, wroteRec: JSON.stringify(now) });
     // 進み具合を控える（復旧が「自分の書いた分」を確かめられるように）
     const peM=plannedM.get(rec.uuid);
     if(peM){ peM.wroteRec=JSON.stringify(now);
       if(!saveJournalSet(jM)){
-        if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
+        if(mRollback() && saveJournalClear(jM.tx)){ SAVE_BUSY=false; saveBusyShow(false);
           toast('空き容量が足りず、保存を安全に完了できませんでした。空き容量を確保してからやり直してください', 8000); }
         else saveFatalHalt();
         return;
       }
     }
-    mUndo.push({ uuid:rec.uuid, prev: prev0?JSON.parse(JSON.stringify(prev0)):null, wroteRec: JSON.stringify(now) });
     // 保存できたトラックを記録（後で破棄しても保存済みレコードを破棄済み名簿に入れないため）
     (SCREENS._ftSaved=SCREENS._ftSaved||new Set()).add(a.tr.uuid);
   }
   // 取引の第2段: 全件書けた（控え付き）。途中終了しても起動時に検証して片付けられる
-  if(!saveJournalSet({ t: nowISO(), phase:'written',
+  if(!saveJournalSet({ t: nowISO(), tx: jM.tx, phase:'written',
       undo: mUndo.map(e=>({key:DB.key.fl, uuid:e.uuid, prev:e.prev, wroteRec:e.wroteRec})),
       fl:null, ghost:null })){
-    if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
+    if(mRollback() && saveJournalClear(jM.tx)){ SAVE_BUSY=false; saveBusyShow(false);
       toast('空き容量が足りず、保存を安全に完了できませんでした。空き容量を確保してからやり直してください', 8000); }
     else saveFatalHalt();
     return;
@@ -5901,12 +5967,12 @@ function saveFlightMulti(svUuid){
       return !cur || JSON.stringify(cur)!==e.wroteRec;
     }) || (typeof GUARD_CONFLICT!=='undefined' && GUARD_CONFLICT);
     if(bad){
-      if(mRollback()){ SAVE_BUSY=false; saveBusyShow(false); saveJournalClear();
+      if(mRollback() && saveJournalClear(jM.tx)){ SAVE_BUSY=false; saveBusyShow(false);
         toast('別のタブによる書き換えを検知したため、この保存を取り消しました。内容を確認してから保存し直してください', 9000); }
       else saveFatalHalt();
       return;
     }
-    if(!saveJournalClear()){ saveFatalHalt('保存の控えを片付けられませんでした。'); return; }
+    if(!saveJournalClear(jM.tx)){ saveFatalHalt('保存の控えを片付けられませんでした。'); return; }
     SAVE_BUSY=false; saveBusyShow(false); backupConfirmPoint();
     act.forEach(a=>{ const n=(a.tr.fields.species_name_snapshot||'').trim(); if(n) DB.pushRecent(n); });
     SCREENS._audio=null; SCREENS._media=null; SCREENS._mediaCtx=null;
@@ -6123,17 +6189,27 @@ function saveFlight(u,svUuid,editing,cont){
   const prevFl0=arrPre.find(x=>x&&x.uuid===u)||null;
   const prevFlJson=prevFl0?JSON.stringify(prevFl0):'';
   SAVE_BUSY=true; saveBusyShow(true);
-  if(typeof GUARD_CONFLICT!=='undefined') GUARD_CONFLICT=false;   // この保存の間の競合だけを見る
+  if(typeof GUARD_CONFLICT!=='undefined'){ GUARD_CONFLICT=false; GUARD_SNAP={}; }   // この保存の間の競合だけを見る
+  // 単独の飛翔も取引の控えを持つ（検証の一拍の間に終了しても復旧できるように）
+  const txS=uuid(); CUR_TX=txS;
+  const jS={ t:nowISO(), tx:txS, phase:'writing', fl:null, ghost:null,
+    undo:[{ key:DB.key.fl, uuid:u, prev: prevFl0?JSON.parse(JSON.stringify(prevFl0)):null, wroteRec:'', expectedRec:'' }] };
   {
     const arrW=loadStrict(DB.key.fl);
     if(!arrW){ SAVE_BUSY=false; saveBusyShow(false);
       toast('記録の読み込みに失敗したため、保存を中止しました。データ点検・修復画面で確認してください', 8000); return; }
     const iW=arrW.findIndex(x=>x&&x.uuid===u);
     rec.updated_at=nowISO(); if(iW<0){ if(!rec.created_at) rec.created_at=nowISO(); arrW.push(rec); } else arrW[iW]=rec;
-    if(!DB.save(DB.key.fl, arrW)){ SAVE_BUSY=false; saveBusyShow(false); return; }   // 保存失敗なら成功表示も遷移もしない
+    jS.undo[0].expectedRec=stableJson(rec);
+    if(!saveJournalSet(jS)){ SAVE_BUSY=false; saveBusyShow(false);
+      toast('空き容量が足りず、保存を開始できませんでした。空き容量を確保してからやり直してください', 8000); return; }
+    if(!DB.save(DB.key.fl, arrW)){
+      if(!saveJournalClear(txS)){ saveFatalHalt('保存の控えを片付けられませんでした。'); return; }
+      SAVE_BUSY=false; saveBusyShow(false); return; }   // 保存失敗なら成功表示も遷移もしない
   }
   const aW0=loadStrict(DB.key.fl);
-  const wroteObj=aW0?(aW0.find(x=>x&&x.uuid===u)||null):null;
+  if(!aW0){ saveFatalHalt('記録の読み込みに失敗しました。'); return; }   // 厳格読み込みの保証を切らさない
+  const wroteObj=aW0.find(x=>x&&x.uuid===u)||null;
   if(wroteObj && stableJson(wroteObj)!==stableJson(rec)){
     // 書けたのが自分の値でない（直後に別のタブが上書きした）。
     // すでに書く前の姿なら完了扱いにせず解除、それ以外は停止
@@ -6156,6 +6232,22 @@ function saveFlight(u,svUuid,editing,cont){
     saveFatalHalt(); return;
   }
   const wroteFl=JSON.stringify(wroteObj);
+  jS.undo[0].wroteRec=wroteFl; jS.phase='written';
+  if(!saveJournalSet(jS)){
+    // 進み具合を控えられない。書いた分を戻して中止する
+    const arrB=loadStrict(DB.key.fl);
+    let undoneB=false;
+    if(arrB){ const iB=arrB.findIndex(x=>x&&x.uuid===u);
+      if(iB>=0 && JSON.stringify(arrB[iB])===wroteFl){
+        if(prevFl0) arrB[iB]=prevFl0; else arrB.splice(iB,1);
+        undoneB=DB.save(DB.key.fl, arrB);
+      }
+    }
+    if(undoneB && saveJournalClear(txS)){ SAVE_BUSY=false; saveBusyShow(false);
+      toast('空き容量が足りず、保存を安全に完了できませんでした。空き容量を確保してからやり直してください', 8000); }
+    else saveFatalHalt();
+    return;
+  }
   (async ()=>{
   await new Promise(r=>setTimeout(r,0));
   const aV=loadStrict(DB.key.fl);
@@ -6179,7 +6271,7 @@ function saveFlight(u,svUuid,editing,cont){
         }
       }
     }
-    if(undone){ SAVE_BUSY=false; saveBusyShow(false);
+    if(undone && saveJournalClear(txS)){ SAVE_BUSY=false; saveBusyShow(false);
       toast('別のタブによる書き換えを検知したため、この保存を取り消しました。内容を確認してから保存し直してください', 9000); }
     else saveFatalHalt();
     return;
@@ -6188,6 +6280,7 @@ function saveFlight(u,svUuid,editing,cont){
     // 別のタブの書き込みが残っている。補償規則は統合画面と同じ:
     // すでに書く前の姿なら「取り消し済み」として解除、それ以外は停止
     if(curJson===prevFlJson){
+      if(!saveJournalClear(txS)){ saveFatalHalt('保存の控えを片付けられませんでした。'); return; }
       SAVE_BUSY=false; saveBusyShow(false);
       toast('別のタブによる書き換えを検知したため、この保存は完了していません。内容を確認してから保存し直してください', 9000);
       return;
@@ -6195,6 +6288,7 @@ function saveFlight(u,svUuid,editing,cont){
     saveFatalHalt();
     return;
   }
+  if(!saveJournalClear(txS)){ saveFatalHalt('保存の控えを片付けられませんでした。'); return; }
   SAVE_BUSY=false; saveBusyShow(false); backupConfirmPoint();
   if(name) DB.pushRecent(name);
   SCREENS._audio=null; SCREENS._media=null; SCREENS._mediaCtx=null;
@@ -8297,6 +8391,7 @@ async function fsBackupRecords(){ if(!_fsDir) return;
 }
 let _fullRunning=false;
 async function fsBackupFullCore(){
+  if(backupBlocked()){ _folderPending=true; return; }   // 取引の途中の記録・添付を混ぜて保存しない
   if(!_fsDir || _fullRunning) return false; _fullRunning=true;
   try{
     let json; try{ json=JSON.stringify(await buildFullBackup()); }
@@ -8344,7 +8439,11 @@ async function cloudBackupFull(){ if(!cloudCfg().url){ toast('先にクラウド
   catch(e){ toast('クラウド送信を中止しました（データを読めませんでした）'); return; }
   return cloudPost('full', data).then(()=>toast('クラウドに送信しました（相手側の保存確認はできません）')).catch(()=>toast('クラウド送信に失敗しました')); }
 // URL・フォルダ・Googleドライブへ記録を自動保存（設定済みの方だけ動く）
-function autoBackupRecords(){ return Promise.all([ cloudBackupRecords().catch(()=>{}), fsBackupRecords().catch(()=>{}), gdriveBackupRecords().catch(()=>{}) ]); }
+function autoBackupRecords(){
+  // 発火後でも取引が始まっていたら送らない（不完全な途中状態が復元で拡散する）
+  if(backupBlocked()){ _backupPending=true; return Promise.resolve(); }
+  return Promise.all([ cloudBackupRecords().catch(()=>{}), fsBackupRecords().catch(()=>{}), gdriveBackupRecords().catch(()=>{}) ]);
+}
 function backupConfigured(){ return !!cloudCfg().url || !!_fsDir || !!gdriveCfg().clientId; }
 // データ変更のたびに、少し待ってから記録を自動バックアップ（まとめて1回）
 let _cloudTimer=null;
@@ -10038,6 +10137,7 @@ function startApp(){
       return;
     }
     window.WRITE_OK=true;   // ここで初めて書き込みを許可する
+    backupConfirmPoint();   // 復旧までの保留分をここで一度だけ予約し直す
     bootNoticeSet('');
     render();   // 確認中に出していた案内・出し分けを最新にする
     // 掃除が終わってから同期チェック（並行させると、取り込んだ直後の録音・写真を「参照なし」と誤判定して消す恐れがある）
@@ -10087,6 +10187,7 @@ async function countLegacyAsk(){
 // 起動後に古い版のタブが開かれたときの見張り。古い版は使用権の仕組みを知らないため、
 // 起動時の1回きりの確認では、あとから開かれた場合を防げない（2026-08-08 監査58巡目）
 let GUARD_FROZEN=false, GUARD_CONFLICT=false, GUARD_GEN=0, FREEZE_PENDING=false;
+let GUARD_SNAP={};   // 競合検知時の相手の書き込み内容（キー別の最新の姿）
 // 競合からの再開＝再読み込み（テストではここを差し替えて確かめる）
 let GUARD_RELOAD=()=>{ try{ location.reload(); }catch(e){} };
 function guardFreezeShow(){
@@ -10205,6 +10306,7 @@ async function guardRecheck(){
     try{
       if(!ev || typeof ev.key!=='string' || ev.key.indexOf('bs_')!==0) return;
       GUARD_CONFLICT=true;   // 進行中の保存の後片付けに競合を知らせる（凍結済みでも立てる）
+      try{ GUARD_SNAP[ev.key]=ev.newValue; }catch(e){}   // 相手の最新の姿を取り消しの基準に使う
       if(GUARD_FROZEN || !window.WRITE_OK) return;
       guardFreeze();
     }catch(e){}
