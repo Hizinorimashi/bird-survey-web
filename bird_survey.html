@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v186（2026-08-10 監査対応：個体名のまとまりを揃える・巣の解決順・欄の一本化）';
+const APP_VERSION = 'v187（2026-08-10 監査2巡目：名前の行き渡り・巣の統合・畳んだ経路の要確認・自動名の重複回避）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1683,20 +1683,25 @@ function obsListData(u){
   // つながっていない経路（経路だけの記録）だけ、観察と同じ一覧にカードを出す
   const obsKeys = new Set(obs.map(o2=>o2.individual_key).filter(Boolean));
   const flKeys = new Set(allFlights.map(f=>String(f.individual_key||'').trim()).filter(Boolean));
+  // 観察に畳んだ経路が「要確認」なら、観察のカード側にも出す（畳んだせいで見落とさないように）
+  const flReviewKeys = new Set(allFlights.filter(f=>f.needs_review)
+    .map(f=>String(f.individual_key||'').trim()).filter(Boolean));
+  const obsNeedsReview = o=> !!o.needs_review
+    || (!!o.individual_key && flReviewKeys.has(String(o.individual_key).trim()));
   const flights = allFlights
     .filter(f=>!(f.individual_key && obsKeys.has(f.individual_key)))
     .sort((a,b)=>(b.start_time||b.created_at||'').localeCompare(a.start_time||a.created_at||''));
   const selMode = !!(SCREENS._sel && SCREENS._sel.scope==='obs' && SCREENS._sel.sv===u);
   // 選んで削除している間は観察だけを出す（削除の対象を取り違えないため）
-  const reviewCount=obs.filter(o=>o.needs_review).length
+  const reviewCount=obs.filter(obsNeedsReview).length
     + (selMode?0:flights.filter(f=>f.needs_review).length);
-  const listSrc=(SCREENS._obsReviewOnly ? obs.filter(o=>o.needs_review) : obs)
+  const listSrc=(SCREENS._obsReviewOnly ? obs.filter(obsNeedsReview) : obs)
     .map(o=>({kind:'obs', rec:o, k:obsAtKey(o.observed_at)}))
     .concat(selMode ? [] :
       (SCREENS._obsReviewOnly ? flights.filter(f=>f.needs_review) : flights)
         .map(f=>({kind:'fl', rec:f, k:obsAtKey(f.start_time||f.created_at)})));
   const sorted=listSrc.slice().sort((a,b)=>String(b.k).localeCompare(String(a.k)));
-  return { obs, flights, flKeys, selMode, reviewCount, sorted, total:obs.length+flights.length };
+  return { obs, flights, flKeys, obsNeedsReview, selMode, reviewCount, sorted, total:obs.length+flights.length };
 }
 /* ---------- 個体名（同じ鳥を追い続けるときの呼び名） ----------
    同じ調査で同じ種・同じ個体名を付けた記録は「同じ1羽」として扱う。
@@ -1740,10 +1745,15 @@ function indResolve(svUuid, spName, label, curKey, selfUuid){
     out.key=out.keys.slice().sort((a,b)=>cnt(b)-cnt(a) || String(a).localeCompare(String(b)))[0];
   } else out.key=curKey||uuid();
   // 揃えるべき記録: 同じ名前なのに目印が違う（空も含む）ものと、
-  // いま編集している記録の元の仲間（名前を変えたときに置き去りにしないため）
-  const need=r=> (same(r) || (curKey && r.individual_key===curKey)) && r.individual_key!==out.key;
-  obs.forEach(o=>{ if(o.uuid!==selfUuid && need(o)) out.fixObs.push(o); });
-  fls.forEach(f=>{ if(need(f)) out.fixFl.push(f); });
+  // いま編集している記録の元の仲間（名前を変えたときに置き去りにしないため）。
+  // 目印が同じでも名前が違えば直す（初めて名付けたとき、仲間に名前が付かないのを防ぐ）
+  const need=r=> (same(r) || (curKey && r.individual_key===curKey))
+    && (r.individual_key!==out.key || indLabelOf(r)!==l);
+  // ごみ箱の記録も揃える（復元したときに古い目印・古い名前で再び割れないように）
+  const allObs=(DB.load(DB.key.ob)||[]).filter(o=>o && o.survey_uuid===svUuid);
+  const allFls=(DB.load(DB.key.fl)||[]).filter(f=>f && f.survey_uuid===svUuid);
+  allObs.forEach(o=>{ if(o.uuid!==selfUuid && need(o)) out.fixObs.push(o); });
+  allFls.forEach(f=>{ if(need(f)) out.fixFl.push(f); });
   // 別々のまとまりが1つになる場合だけ「まとめますか」と確かめる
   const all=new Set(out.keys); if(curKey) all.add(curKey);
   out.merge = all.size>1;
@@ -1794,6 +1804,8 @@ function obsSpOf(rec){
   const lb=indLabelOf(rec);
   return lb ? (sp+OBS_GRP_SEP+lb) : sp;
 }
+// 群の見出しに出す「要確認」の数。観察は畳んだ経路の分も含める
+let obsGrpReview=o=>!!(o&&o.needs_review);
 // 種ごとの群をつくる。並びは「その群のいちばん新しい記録が新しい順」
 //（現場の「さっき記録したものが上」の感覚を壊さない）
 function obsGroupsOf(items){
@@ -1810,7 +1822,7 @@ function obsGroupsOf(items){
     g.items.push(it);
     if(it.k){ if(!g.newest || it.k>g.newest) g.newest=it.k;
       if(!g.oldest || it.k<g.oldest) g.oldest=it.k; }
-    if(it.rec && it.rec.needs_review) g.review++;
+    if(it.rec && (it.kind==='obs' ? obsGrpReview(it.rec) : it.rec.needs_review)) g.review++;
   });
   return Array.from(map.values()).sort((a,b)=>
     String(b.newest).localeCompare(String(a.newest))
@@ -1857,7 +1869,7 @@ function obsListHtml(u){
       <div style="font-weight:700;">${esc(o.species_name_snapshot||'（未同定）')}
         ${conservBadges(o.species_name_snapshot)}
         ${indLabelOf(o)?`<span class="pill">${esc(indLabelOf(o))}</span>`:''}
-        ${o.needs_review?'<span class="badge warn">要確認</span>':''}
+        ${d.obsNeedsReview(o)?'<span class="badge warn">要確認</span>':''}
         ${o.identification_status&&o.identification_status!=='確定'?`<span class="badge">${esc(o.identification_status)}</span>`:''}
       </div>
       <div class="small muted">${fmtTime(o.observed_at)} ・ ${esc(indCount(o.count))}個体 ・ ${esc(o.detection_method||'')}${o.habitat?' ・ '+esc(o.habitat):''}${o.age_class&&ageNorm(o.age_class)!=='不明'?' ・ '+esc(ageNorm(o.age_class)):''}${o.sex&&o.sex!=='不明'?' ・ '+esc(o.sex):''}</div>
@@ -1887,6 +1899,7 @@ function obsListHtml(u){
       ? `<div class="sp"></div><button class="btn" onclick="obsMore()">さらに50件表示（残り${d.sorted.length-recent.length}件）</button>` : '';
     return (selMode?'':chips) + recent.map(cardOf).join('') + moreBtn;
   }
+  obsGrpReview=d.obsNeedsReview;   // 群の要確認の数も、畳んだ経路を含めて数える
   const groups=obsGroupsOf(d.sorted);
   SCREENS._obsGroups=new Map(groups.map(g=>[g.sp,g]));   // 開いたときに中身を作るための置き場
   if(!(SCREENS._obsOpen instanceof Set)) SCREENS._obsOpen=new Set();
@@ -2556,6 +2569,7 @@ SCREENS.obsEdit = (argStr)=>{
         o.species_id=(speciesByName(k.species_name)||{}).species_id||''; }
       if(k.count!=null && k.count!=='') o.count=k.count;   // 0羽もそのまま引き継ぐ（0は未指定ではない）
       if(k.age_class) o.age_class=k.age_class;
+      if(k.individual_label) o.individual_label=k.individual_label;   // 同じ鳥の続きなら呼び名も引き継ぐ
       if(k.individual_key){
         o.individual_key=k.individual_key;
         // その鳥にすでに巣があるなら、画面にも読み込む。
@@ -5077,10 +5091,13 @@ function saveObs(u, svUuid, editing, cont){
   const resolvedNestId = nestFilled()
     ? (PF_NEST_ID || (!nestTouched() ? '' : (function(){
         const ik=indKeyLbl||(SCREENS._obs&&SCREENS._obs.individual_key)||((base||{}).individual_key||'');
+        // 個体名でまとめる保存では、統合される相手の記録も巣の候補に含める
+        //（含めないと、相手側にしかない巣を見落として新しい巣を発行してしまう）
+        const mergeIds=new Set((indR?indR.fixObs:[]).map(o=>o.uuid));
         if(ik){ const found=new Set(); const fPos=new Map(); const fFp=new Map();
           // 候補は画面・件数と同じ「生きている記録」だけから集める。
           // ごみ箱まで見ると、画面では1つの巣が保存時だけ複数候補になって分裂する
-          DB.obsOf(svUuid).forEach(o=>{ if(o.individual_key===ik && nestId(o)){
+          DB.obsOf(svUuid).forEach(o=>{ if((o.individual_key===ik || mergeIds.has(o.uuid)) && nestId(o)){
             const nid0=nestId(o); found.add(nid0);
             if(!fPos.has(nid0)) fPos.set(nid0, new Set());
             fPos.get(nid0).add(nestPosKey(o));
@@ -5505,6 +5522,9 @@ function saveObs(u, svUuid, editing, cont){
   // 1つだけ直すと、地図に古い巣と新しい巣が2つ出たり、消したはずの巣が復活したりする
   const NEST_F=['nest_id','nest_latitude','nest_longitude','nest_tree_species','nest_tree_height','nest_state'];
   const sibs=[];
+  // 個体名でまとめる保存で、これから同じ目印へ移す記録。
+  // 巣・共有項目をそろえる対象に含める（目印だけ移して中身が食い違うのを防ぐ）
+  const indMergeIds=new Set((indR?indR.fixObs:[]).map(o=>o.uuid));
   // 巣が空になる保存でも、開いたとき巣が見えていなかった画面からは配らない（見えないものは消せない）
   const nestWiping = !rec.nest_id;
   if(indKey && obRecs.length && nestTouched() && !(nestWiping && !SCREENS._hadNestAtOpen)){
@@ -5512,7 +5532,7 @@ function saveObs(u, svUuid, editing, cont){
     const all=DB.load(DB.key.ob)||[];
     // このまとまりにある巣の目印。1つだけなら、目印の無い記録も同じ巣とみなす
     // 目印の解決は画面・件数と同じ「生きている記録」だけで行う（ごみ箱は伝播先としてだけ扱う）
-    const liveGroup=DB.obsOf(svUuid).filter(o=>o.individual_key===indKey);
+    const liveGroup=DB.obsOf(svUuid).filter(o=>o.individual_key===indKey || indMergeIds.has(o.uuid));
     const idsInGroup=new Set();
     liveGroup.forEach(o=>{ if(nestId(o)) idsInGroup.add(nestId(o)); });
     // 照合の基準は「開いたときに見えていた巣」。editing の元記録でも keep の読込でも同じ。
@@ -5554,7 +5574,8 @@ function saveObs(u, svUuid, editing, cont){
     });
     // ごみ箱の中の記録にも配る。配らないと、あとで復元したときに古い巣が戻ってくる
     all.forEach(o=>{
-      if(!o || mine.has(o.uuid) || o.survey_uuid!==svUuid || o.individual_key!==indKey) return;
+      if(!o || mine.has(o.uuid) || o.survey_uuid!==svUuid) return;
+      if(o.individual_key!==indKey && !indMergeIds.has(o.uuid)) return;
       if(!nestSameRec(o)) return;
       const cp=Object.assign({}, o);
       // 相手の巣座標が壊れていたら、その記録自身に元の値を控えてから置き換える
@@ -5563,6 +5584,11 @@ function saveObs(u, svUuid, editing, cont){
         cp.repair_note = repairNoteAdd(cp.repair_note, '巣の位置が不正だったため置き換えました（元の値: '+a+','+b+'）');
       }
       let diff=(cp.repair_note!==o.repair_note);
+      // 統合される記録は、目印と名前もここでそろえる（あとで足すと巣・共有項目が反映されない）
+      if(indMergeIds.has(o.uuid)){
+        if(cp.individual_key!==indKey){ cp.individual_key=indKey; diff=true; }
+        if(String(cp.individual_label||'')!==indLabel){ cp.individual_label=indLabel; diff=true; }
+      }
       NEST_F.forEach(k=>{ const v=rec[k]||''; if(String(cp[k]||'')!==String(v)){ cp[k]=v; diff=true; } });
       // 生きている兄弟なら、共有項目もここでそろえる（ごみ箱の記録の中身までは変えない）
       if(!o.deleted_at) OBS_SHARED_F.forEach(k=>{ if(String(cp[k]??'')!==String(rec[k]??'')){ cp[k]=rec[k]; diff=true; } });
@@ -5573,9 +5599,15 @@ function saveObs(u, svUuid, editing, cont){
   if(editing && indKey){
     const mine=new Set(obRecs.map(r=>r.uuid).concat(sibs.map(r=>r.uuid)));
     DB.obsOf(svUuid).forEach(o2=>{
-      if(mine.has(o2.uuid) || o2.individual_key!==indKey) return;
+      if(mine.has(o2.uuid)) return;
+      if(o2.individual_key!==indKey && !indMergeIds.has(o2.uuid)) return;
       const cp=Object.assign({}, o2);
       let diff=false;
+      // 統合される記録は目印と名前もそろえる
+      if(indMergeIds.has(o2.uuid)){
+        if(cp.individual_key!==indKey){ cp.individual_key=indKey; diff=true; }
+        if(String(cp.individual_label||'')!==indLabel){ cp.individual_label=indLabel; diff=true; }
+      }
       OBS_SHARED_F.forEach(k=>{ if(String(cp[k]??'')!==String(rec[k]??'')){ cp[k]=rec[k]; diff=true; } });
       if(diff) sibs.push(cp);
     });
@@ -5928,7 +5960,8 @@ function saveObs(u, svUuid, editing, cont){
     goBack();
     nav('flightEdit', JSON.stringify({sv:svUuid, keep:{
       species_id:rec.species_id, species_name:rec.species_name_snapshot, count:rec.count,
-      age_class:rec.age_class, individual_key:rec.individual_key }}));
+      age_class:rec.age_class, individual_key:rec.individual_key,
+      individual_label:rec.individual_label||'' }}));
   }
   else if(cont){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid, keep})); } // 位置を引き継いで次の種へ
   else goBack();
@@ -6771,7 +6804,7 @@ function newSurveyFromRoute(u){ if(!writeAllowed()) return; const s=DB.survey(u)
 let flightPath=[], flightLayer=null;
 SCREENS.flightEdit = (argStr)=>{
   const arg=JSON.parse(argStr||'{}'); const svUuid=arg.sv||currentSurveyUuid; const editing=!!arg.id;
-  // 統合画面から「この経路の添付・メモ」で来たとき。共有項目（種名・個体数・齢）は
+  // 統合画面から「この経路の添付・メモ」で来たとき。共有項目（種名・個体数・齢・個体名）は
   // 統合画面が受け持つので、この画面では隠す（両方で編集できると上書き合戦になる）
   const localOnly=!!arg.localOnly;
   SCREENS._flLocalOnly=localOnly;   // 保存時に共有項目を元のまま保つための印
@@ -6969,8 +7002,18 @@ function saveFlightMulti(svUuid){
   act.forEach(a=>{ const n=(a.tr.fields.species_name_snapshot||'').trim();
     (byName[n]=byName[n]||[]).push(a); });
   Object.keys(byName).forEach(n=>{ const g=byName[n];
-    if(n && g.length>1 && g.every(a=>!(a.tr.fields.individual_label||'').trim()))
-      g.forEach((a,j)=>{ a.autoLabel = j<26 ? '個体'+String.fromCharCode(65+j) : '個体'+(j+1); }); });
+    if(n && g.length>1 && g.every(a=>!(a.tr.fields.individual_label||'').trim())){
+      // 自動の名前は「その調査・その種でまだ使っていないもの」を選ぶ。
+      // いつもAから振ると、別の機会に描いた別個体が同じ名前になり、同じ1羽として数えられてしまう
+      const used=new Set(indLabelsOf(svUuid, n).filter(x=>x.sp===n).map(x=>x.label));
+      let j=0;
+      g.forEach(a=>{
+        let lb;
+        do{ lb = j<26 ? ('個体'+String.fromCharCode(65+j)) : ('個体'+(j+1)); j++; }
+        while(used.has(lb) && j<200);
+        used.add(lb); a.autoLabel=lb;
+      });
+    }});
   // 取引化: 控え→覆い→全件書き込み→一拍→全文検証→完了/補償（統合画面の保存と同じ順序）
   const mUndo=[];   // {uuid, prev, wroteRec}
   const mRollback=()=>{
@@ -7026,7 +7069,14 @@ function saveFlightMulti(svUuid){
       height_class:fl.height_class||'不明', age_class:fl.age_class||'不明',
       individual_label:(fl.individual_label||'').trim()||a.autoLabel||'', behavior:fl.behavior||'',
       count:fl.count||'', memo:(fl.memo||'').trim(), needs_review:!!fl.needs_review,
-      individual_key:a.tr.indKey||'',   // 観察から引き継いだ結び付きはそのトラックだけが持つ
+      // 観察から引き継いだ結び付きはそのトラックだけが持つ。
+      // 個体名を付けたトラックは、同じ調査・同じ種の同名がすでにあればその目印に合わせる（＝同じ1羽）
+      individual_key:(function(){
+        const lb=(fl.individual_label||'').trim()||a.autoLabel||'';
+        if(!lb) return a.tr.indKey||'';
+        const r=indResolve(svUuid, name, lb, a.tr.indKey||'', a.tr.uuid);
+        return r.key||a.tr.indKey||'';
+      })(),
       audio:fl.audio||[], media:fl.media||[] };
     const arrWM=loadStrict(DB.key.fl);
     if(!arrWM){
@@ -7447,7 +7497,8 @@ function saveFlight(u,svUuid,editing,cont){
     // 終点＝止まった場所なので、観察者の位置ではなく P（鳥がいた場所）として渡す
     nav('obsEdit', JSON.stringify({sv:svUuid, keep:{
       plat:last?last[0]:'', plon:last?last[1]:'',
-      species_name:name, count:rec.count, age_class:age, individual_key:rec.individual_key }}));
+      species_name:name, count:rec.count, age_class:age, individual_key:rec.individual_key,
+      individual_label:individual }}));   // 個体名も引き継ぐ（同じ鳥の続きなので）
   }
   else if(cont==='same'){
     // 見失って再発見した同じ鳥の続き。目印も渡すので、集計では1個体として数えられる
@@ -8289,7 +8340,8 @@ function galOpen(idx){
 function galJump(idx){
   const it=(SCREENS._galItems||[])[idx]; if(!it) return;
   galClose();
-  if(it.ownerType==='flight') nav('flightEdit', JSON.stringify({sv:it.svUuid, id:it.ownerUuid}));
+  // 飛翔も統合画面で開く（記録の入口は観察に一本化した。専用画面は添付・メモ専用でだけ使う）
+  if(it.ownerType==='flight') openFlightUnified(it.svUuid, it.ownerUuid);
   else nav('obsEdit', JSON.stringify({sv:it.svUuid, id:it.ownerUuid}));
 }
 
