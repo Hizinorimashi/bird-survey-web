@@ -243,7 +243,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v172（2026-08-09 監査74巡目：仮記録全文の開始時固定・削除確認の厳格化・バックアップ直列化）';
+const APP_VERSION = 'v173（2026-08-09 監査75巡目：仮記録の証明必須化・墓標解除の確認・保存時刻の世代管理）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3845,7 +3845,8 @@ function saveJournalValid(j){
           || (typeof it.prevObs==='string' && typeof it.prevFl==='string')))))) return false;
     if(!(j.ghost==null || (plainObj(j.ghost) && typeof j.ghost.key==='string' && KEYS.has(j.ghost.key)
       && typeof j.ghost.uuid==='string' && j.ghost.uuid
-      && (j.ghost.rec===undefined || typeof j.ghost.rec==='string')))) return false;
+      && ((j.phase==='written') ? (typeof j.ghost.rec==='string')            // 現行形式は全文必須
+                                 : (j.ghost.rec===undefined || typeof j.ghost.rec==='string'))))) return false;
     return true;
   }catch(e){ return false; }
 }
@@ -3973,26 +3974,34 @@ async function rescueQuarantine(){
 // 相手の姿が壊れていれば null（触らず停止）
 // 仮記録の削除（全文照合つき）。'deleted'=消した / 'gone'=元から無い /
 // 'changed'=別の書き手が正式な記録に変えている（消さない） / 'fail'=削除・確認に失敗
+// 墓標を外し、外れたことまで確かめる（確かめられなければ false）
+function untombVerified(uuidV){
+  try{ DB._untomb(uuidV); }catch(e){}
+  try{ return !tombstonesList().some(t=>t && (t===uuidV || t.uuid===uuidV)); }catch(e){ return false; }
+}
 function ghostDeleteVerified(key, uuidV, recJson){
   const arr=loadStrict(key);
   if(!arr) return 'fail';
   const cur=arr.find(x=>x&&x.uuid===uuidV);
   if(!cur) return 'gone';
-  if(recJson!==undefined && recJson!==null && JSON.stringify(cur)!==recJson) return 'changed';
+  // 全文の控えが無い（旧形式）場合は、証明できないので消さない
+  if(recJson==null) return 'changed';
+  if(JSON.stringify(cur)!==recJson) return 'changed';
   DISCARDED.add(uuidV);
-  if(!DB.hardDelete(key, uuidV)){ DISCARDED.delete(uuidV); return 'fail'; }
+  if(!DB.hardDelete(key, uuidV)){
+    // 失敗経路でも墓標が残っていないことを確かめる（hardDelete内の墓標戻しが失敗し得る）
+    DISCARDED.delete(uuidV);
+    return untombVerified(uuidV) ? 'fail' : 'fatal';
+  }
   const a2=loadStrict(key);
   if(a2===null) return 'fatal';   // 消えたことを確認できない（読めない）＝墓標が付いたまま。致命停止へ
   const back=a2.find(x=>x&&x.uuid===uuidV);
   if(back){
     // 競合で同じ番号が再出現した。付けた墓標を外し、外れたことまで確かめる
     //（墓標が残ると、残した記録が後日の同期で消される）
-    try{ DB._untomb(uuidV); }catch(e){}
-    let still=true;
-    try{ still=tombstonesList().some(t=>t && (t===uuidV || t.uuid===uuidV)); }catch(e){ still=true; }
-    if(still) return 'fatal';
+    if(!untombVerified(uuidV)) return 'fatal';
     DISCARDED.delete(uuidV);
-    return (recJson!==undefined && recJson!==null && JSON.stringify(back)!==recJson) ? 'changed' : 'fail';
+    return (JSON.stringify(back)!==recJson) ? 'changed' : 'fail';
   }
   return 'deleted';
 }
@@ -4171,7 +4180,7 @@ async function saveJournalRecover(){
               // 先に付けた墓標も外す（残すと、残した正式記録が同期で消される）
               if(j.ghost.rec!==undefined && JSON.stringify(gArr2[gi])!==j.ghost.rec){
                 merged=false;
-                try{ DB._untomb(j.ghost.uuid); }catch(e){}
+                untombVerified(j.ghost.uuid);   // 外れたことまで確認（できなくても merged=false で停止済み）
               }
               else { gArr2.splice(gi,1);
                 if(!DB.save(j.ghost.key, gArr2)) merged=false;
@@ -4866,7 +4875,12 @@ function saveObs(u, svUuid, editing, cont){
       SAVE_BUSY=false; saveBusyShow(false); return;
     }
     const gC=gA.find(x=>x&&x.uuid===SCREENS._ghost.uuid);
-    ghostRecFixed = gC ? JSON.stringify(gC) : undefined;
+    if(!gC){
+      // 仮記録が見つからない＝この取引で消してよい対象を証明できない。開始しない
+      toast('保存の準備に失敗しました（仮記録を確認できません）。もう一度お試しください', 8000);
+      SAVE_BUSY=false; saveBusyShow(false); return;
+    }
+    ghostRecFixed=JSON.stringify(gC);
   }
   // 取引の第1段: これから書く全記録（削除対象も含む）の「書く前の姿」を先に控える。
   // 各記録を書くたびに「書いた直後の控え」も書き足す（writeOne 内）。
@@ -8792,25 +8806,32 @@ function cloudLast(){ return localStorage.getItem('bs_cloud_sent')||localStorage
 // 送信本体（iPhoneで確実に動くよう no-cors の単純POST）。
 // 注意: no-cors では応答(HTTPステータス・本文)を一切読めないため、fetchが解決しても「相手が保存できたか」は確認できない。
 // よって「送信した時刻」だけを記録し、UIでも「保存確認済み」とは表示しない。
-function cloudPost(kind, dataObj){
+function cloudPost(kind, dataObj, opts){
   const c=cloudCfg(); if(!c.url) return Promise.reject(new Error('未設定'));
   return fetch(c.url, { method:'POST', mode:'no-cors', headers:{'Content-Type':'text/plain;charset=utf-8'},
     body: JSON.stringify({ token:c.token||'', kind, at:nowISO(), data:dataObj }) })
-    .then(()=>{ localStorage.setItem('bs_cloud_sent', nowISO()); localStorage.setItem('bs_cloud_last_kind', kind); });
+    .then(()=>{
+      // 自動経路では、送信中に取引が始まった古い世代の内容を「最新保存済み」と表示しない
+      if(opts && opts.noStamp) return;
+      localStorage.setItem('bs_cloud_sent', nowISO()); localStorage.setItem('bs_cloud_last_kind', kind);
+    });
 }
 function cloudBackupRecords(){ if(!cloudCfg().url) return Promise.resolve();
   const gen0=BACKUP_GEN;
   let data; try{ data=buildRecordsBackup(); }catch(e){ return Promise.reject(e); }
   if(gen0!==BACKUP_GEN || backupBlocked()){ _backupPending=true; return Promise.resolve(); }   // 送信直前にも確認
-  return cloudPost('records', data).then(r=>{
-    if(gen0!==BACKUP_GEN){ _backupPending=true; }   // 送信中に取引が始まった＝最新内容の再送を予約
+  return cloudPost('records', data, {noStamp:true}).then(r=>{
+    if(gen0!==BACKUP_GEN){ _backupPending=true; return r; }   // 送信中に取引が始まった＝最新内容の再送を予約（時刻は更新しない）
+    localStorage.setItem('bs_cloud_sent', nowISO()); localStorage.setItem('bs_cloud_last_kind', 'records');
     return r;
   }); }
 async function cloudBackupFull(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
   toast('録音・写真を含めてクラウド送信中…');
-  let data; try{ data=await buildFullBackup(); }
-  catch(e){ toast('クラウド送信を中止しました（データを読めませんでした）'); return; }
-  return cloudPost('full', data).then(()=>toast('クラウドに送信しました（相手側の保存確認はできません）')).catch(()=>toast('クラウド送信に失敗しました')); }
+  return backupRun(async ()=>{   // 同じ列で直列に（データの構築も列内で行い、取引と混ざった姿を送らない）
+    let data; try{ data=await buildFullBackup(); }
+    catch(e){ toast('クラウド送信を中止しました（データを読めませんでした）'); return; }
+    await cloudPost('full', data).then(()=>toast('クラウドに送信しました（相手側の保存確認はできません）')).catch(()=>toast('クラウド送信に失敗しました'));
+  }); }
 // URL・フォルダ・Googleドライブへ記録を自動保存（設定済みの方だけ動く）
 // バックアップは1列に直列化する。古い内容の送信・書き込みが、後から確定した
 // 新しいバックアップを追い越して上書きしないようにするため
@@ -8842,7 +8863,9 @@ function scheduleCloud(){ if(!backupConfigured()) return;
     autoBackupRecords();
   }, 6000); }
 function cloudSyncNow(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
-  cloudBackupRecords().then(()=>{ toast('記録をクラウドに送信しました（受領確認はできません）'); render(); }).catch(()=>toast('クラウド送信に失敗しました')); }
+  backupRun(()=>cloudBackupRecords())
+    .then(()=>{ toast('記録をクラウドに送信しました（受領確認はできません）'); render(); })
+    .catch(()=>toast('クラウド送信に失敗しました')); }
 function saveCloudCfg(){ const url=(($('#cloudUrl')&&$('#cloudUrl').value)||'').trim();
   const token=(($('#cloudToken')&&$('#cloudToken').value)||'').trim();
   if(url && !/^https:\/\/script\.google\.com\//.test(url)){ if(!confirm('URLがGoogle Apps Scriptの形式ではありません。このまま保存しますか？')) return; }
@@ -8930,7 +8953,7 @@ async function gdriveUpsertFile(folderId, name, contentStr, token){
 // 「検索→無い→作成」が二重に起きて同名フォルダ/ファイルを重複生成するため。
 let _gdriveChain=Promise.resolve();
 function gdriveSerial(fn){ const run=_gdriveChain.then(fn, fn); _gdriveChain=run.catch(()=>{}); return run; }
-async function gdrivePush(kind, dataObj, token, dailyObj){
+async function gdrivePush(kind, dataObj, token, dailyObj, opts){
   return gdriveSerial(async ()=>{
     const folderId=await gdriveEnsureFolder(token);
     const json=JSON.stringify(dataObj);
@@ -8948,7 +8971,8 @@ async function gdrivePush(kind, dataObj, token, dailyObj){
       await gdriveUpsertFile(folderId, 'birdsurvey_'+kind+'_latest.json', json, token);
       await gdriveUpsertFile(folderId, 'birdsurvey_'+kind+'_'+ymd+'.json', json, token);
     }
-    localStorage.setItem('bs_gdrive_last', nowISO());
+    // 自動経路では、送信中に取引が始まった古い世代の内容を「最新保存済み」と表示しない
+    if(!(opts && opts.noStamp)) localStorage.setItem('bs_gdrive_last', nowISO());
   });
 }
 // 自動保存：サインイン済み（有効トークンあり）のときだけ動く。切れていたら黙ってスキップ
@@ -8967,8 +8991,9 @@ async function gdriveBackupRecords(){
   // 同期用は壊れた記録を除外、日次控え（人が復元に使う）は全件のまま（原本を失わせない）。
   // 送信直前にも取引が始まっていないかを確かめる（途中の姿を配らない）
   if(gen0!==BACKUP_GEN || backupBlocked()){ _backupPending=true; return; }
-  await gdrivePush('records', buildRecordsBackup({onlyValid:true}), token, buildRecordsBackup());
-  if(gen0!==BACKUP_GEN){ _backupPending=true; }   // 送信中に取引が始まった＝最新内容の再送を予約
+  await gdrivePush('records', buildRecordsBackup({onlyValid:true}), token, buildRecordsBackup(), {noStamp:true});
+  if(gen0!==BACKUP_GEN){ _backupPending=true; return; }   // 送信中に取引が始まった＝最新内容の再送を予約（時刻は更新しない）
+  localStorage.setItem('bs_gdrive_last', nowISO());
 }
 async function gdriveSignIn(){
   try{
@@ -9018,7 +9043,9 @@ async function gdriveBackupFull(){
     const wasSignedIn=gdriveSignedIn();
     const token=await gdriveGetToken(true);
     if(!wasSignedIn && !await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗したため中止しました'); return; }
-    const data=await buildFullBackup(); await gdrivePush('full', data, token);
+    await backupRun(async ()=>{   // 同じ列で直列に（データの構築も列内で行う）
+      const data=await buildFullBackup(); await gdrivePush('full', data, token);
+    });
     toast('Googleドライブに保存しました（録音・写真含む）'); render();
   }catch(e){ toast('保存に失敗: '+(e.message||e)); }
 }
