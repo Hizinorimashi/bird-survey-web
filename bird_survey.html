@@ -197,6 +197,11 @@
     border:1px solid var(--line); border-radius:10px; font-weight:600; list-style:none;}
   details.fold summary::before{content:'▸ ';}
   details.fold[open] summary::before{content:'▾ ';}
+  /* 種ごとにまとめた一覧の見出し（1行で読み切れる高さに抑える） */
+  details.fold.grp{margin-bottom:8px;}
+  details.fold.grp summary{display:flex; align-items:center; gap:8px; padding:11px 12px; font-weight:600;}
+  details.fold.grp[open] summary{margin-bottom:8px;}
+  details.fold.grp .gbody .card{margin-bottom:8px;}
   details.fold[open] summary{margin-bottom:8px;}
   .lightbox{position:fixed; inset:0; background:rgba(0,0,0,.92); z-index:1500;
     display:flex; flex-direction:column; align-items:center; justify-content:center; padding:14px;}
@@ -243,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v183（2026-08-09 記録の入口を観察に一本化：経路だけの記録も同じ一覧へ統合）';
+const APP_VERSION = 'v184（2026-08-09 調査画面を見やすく：操作の折りたたみ・種ごとにまとめる・並び順の修正）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -371,6 +376,14 @@ function isoLocal(s){ if(!s) return ''; s=String(s);
   return `${t.getUTCFullYear()}-${p(t.getUTCMonth()+1)}-${p(t.getUTCDate())}`
     +`T${p(t.getUTCHours())}:${p(t.getUTCMinutes())}:${p(t.getUTCSeconds())}`
     +`.${String(t.getUTCMilliseconds()).padStart(3,'0')}+09:00`; }
+// 一覧の並べ替えに使う時刻のものさし。観察は世界標準時（nowISO）、飛翔経路は時差なしの
+// 文字列で保存されているため、生の文字列で比べると最大9時間ずれる（集計と同じ直し方）。
+// 日付だけ・暦にない日時は「時刻なし」として並びの末尾へ落とす
+function obsAtKey(t){
+  const v=String(t==null?'':t);
+  if(!v || DATE_ONLY_RE.test(v) || !okStamp(v)) return '';
+  return isoLocal(v)||'';
+}
 function fmtTime(s){ if(!s) return '—'; const d=new Date(s); if(isNaN(d)) return '—';
   const p=n=>String(n).padStart(2,'0'); return `${p(d.getHours())}:${p(d.getMinutes())}`; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -1658,6 +1671,154 @@ function deleteSelected(){
 /* ============================================================
    調査 詳細 / 調査中
    ============================================================ */
+/* ---------- 調査画面の記録一覧 ----------
+   画面ぜんぶを描き直さずに一覧だけ差し替えたいので、SCREENS.survey の外に出して
+   単体で呼べるようにしている（obsListPaint から使う）。
+   観察と「経路だけの記録」を1本の一覧にまとめ、どちらもタップで同じ統合画面が開く */
+function obsListData(u){
+  const obs = DB.obsOf(u);
+  // 飛翔は1回だけ読む（カードごとに読み直すと、記録が増えるほど一覧が重くなる）
+  const allFlights = DB.flightsOf(u);
+  // 観察とつながっている経路は、観察のカード（開けば止まりも経路も1画面）に含まれるので畳む。
+  // つながっていない経路（経路だけの記録）だけ、観察と同じ一覧にカードを出す
+  const obsKeys = new Set(obs.map(o2=>o2.individual_key).filter(Boolean));
+  const flKeys = new Set(allFlights.map(f=>String(f.individual_key||'').trim()).filter(Boolean));
+  const flights = allFlights
+    .filter(f=>!(f.individual_key && obsKeys.has(f.individual_key)))
+    .sort((a,b)=>(b.start_time||b.created_at||'').localeCompare(a.start_time||a.created_at||''));
+  const selMode = !!(SCREENS._sel && SCREENS._sel.scope==='obs' && SCREENS._sel.sv===u);
+  // 選んで削除している間は観察だけを出す（削除の対象を取り違えないため）
+  const reviewCount=obs.filter(o=>o.needs_review).length
+    + (selMode?0:flights.filter(f=>f.needs_review).length);
+  const listSrc=(SCREENS._obsReviewOnly ? obs.filter(o=>o.needs_review) : obs)
+    .map(o=>({kind:'obs', rec:o, k:obsAtKey(o.observed_at)}))
+    .concat(selMode ? [] :
+      (SCREENS._obsReviewOnly ? flights.filter(f=>f.needs_review) : flights)
+        .map(f=>({kind:'fl', rec:f, k:obsAtKey(f.start_time||f.created_at)})));
+  const sorted=listSrc.slice().sort((a,b)=>String(b.k).localeCompare(String(a.k)));
+  return { obs, flights, flKeys, selMode, reviewCount, sorted, total:obs.length+flights.length };
+}
+// 種が少ないうち（猛禽1羽を追う調査など）はまとめても1つの塊になるだけなので、
+// そのまま時系列で出す。一度でも切り替えたら、その調査の間はその選び方に従う
+function obsGroupOn(spN){ return SCREENS._obsGroup==null ? spN>=6 : !!SCREENS._obsGroup; }
+function obsGroupToggle(){
+  if(recBusy()){ toast('録音を停止してから操作してください'); return; }
+  const d=obsListData(SCREENS._obsListSv);
+  SCREENS._obsGroup=!obsGroupOn(obsSpeciesCount(d.sorted));
+  obsListPaint();
+}
+function obsFoldAll(){ SCREENS._obsOpen=new Set(); obsListPaint(); }
+function obsSpeciesCount(items){
+  const set=new Set(); items.forEach(it=>set.add(obsSpOf(it.rec)));
+  return set.size;
+}
+function obsSpOf(rec){ return String((rec&&rec.species_name_snapshot)||'').trim() || '（未同定）'; }
+// 種ごとの群をつくる。並びは「その群のいちばん新しい記録が新しい順」
+//（現場の「さっき記録したものが上」の感覚を壊さない）
+function obsGroupsOf(items){
+  const map=new Map();
+  items.forEach(it=>{
+    const sp=obsSpOf(it.rec);
+    let g=map.get(sp);
+    if(!g){ g={sp, items:[], newest:'', oldest:'', review:0}; map.set(sp,g); }
+    g.items.push(it);
+    if(it.k){ if(!g.newest || it.k>g.newest) g.newest=it.k;
+      if(!g.oldest || it.k<g.oldest) g.oldest=it.k; }
+    if(it.rec && it.rec.needs_review) g.review++;
+  });
+  return Array.from(map.values()).sort((a,b)=>
+    String(b.newest).localeCompare(String(a.newest))
+    || (b.items.length-a.items.length)
+    || String(a.sp).localeCompare(String(b.sp)));
+}
+// 群の中身（カード）。閉じている群は作らないので、記録が増えても一覧が重くならない
+function obsGrpBodyHtml(u, sp){
+  const g=(SCREENS._obsGroups instanceof Map) ? SCREENS._obsGroups.get(sp) : null;
+  if(!g) return '';
+  const lim=SCREENS._obsGrpShown[sp]||50;
+  const shown=g.items.slice(0, lim);
+  const more=g.items.length>shown.length
+    ? `<button class="btn" onclick="obsGrpMore(this)">さらに50件表示（残り${g.items.length-shown.length}件）</button>` : '';
+  return shown.map(it=>obsCardHtml(it)).join('') + more;   // カードは obsListHtml が束ねた作り方を使う
+}
+// 種ごとの折りたたみ。開いた種を覚え、開いた瞬間に中身を作る（render() は呼ばない）
+function obsFoldToggle(el){
+  const sp=el.getAttribute('data-sp')||'';
+  if(!(SCREENS._obsOpen instanceof Set)) SCREENS._obsOpen=new Set();
+  if(el.open){ SCREENS._obsOpen.add(sp); obsFoldFill(el,sp); }
+  else SCREENS._obsOpen.delete(sp);
+}
+function obsFoldFill(el, sp){
+  const body=el.querySelector('.gbody'); if(!body) return;
+  const u=SCREENS._obsListSv;
+  if(!u || !(SCREENS._obsGroups instanceof Map) || !SCREENS._obsGroups.has(sp)){ render(); return; }
+  body.innerHTML=obsGrpBodyHtml(u, sp);
+}
+function obsGrpMore(btn){
+  const d=btn.closest('details.grp'); if(!d) return;
+  const sp=d.getAttribute('data-sp')||'';
+  SCREENS._obsGrpShown[sp]=(SCREENS._obsGrpShown[sp]||50)+50;
+  obsFoldFill(d, sp);
+}
+// 一覧のカード1枚（観察／経路だけの記録。どちらもタップで同じ統合画面が開く）
+let obsCardHtml=()=>'';
+function obsListHtml(u){
+  const d=obsListData(u);
+  const selMode=d.selMode;
+  const obsInner = o=>`
+    <div class="grow">
+      <div style="font-weight:700;">${esc(o.species_name_snapshot||'（未同定）')}
+        ${conservBadges(o.species_name_snapshot)}
+        ${o.needs_review?'<span class="badge warn">要確認</span>':''}
+        ${o.identification_status&&o.identification_status!=='確定'?`<span class="badge">${esc(o.identification_status)}</span>`:''}
+      </div>
+      <div class="small muted">${fmtTime(o.observed_at)} ・ ${esc(indCount(o.count))}個体 ・ ${esc(o.detection_method||'')}${o.habitat?' ・ '+esc(o.habitat):''}${o.age_class&&ageNorm(o.age_class)!=='不明'?' ・ '+esc(ageNorm(o.age_class)):''}${o.sex&&o.sex!=='不明'?' ・ '+esc(o.sex):''}</div>
+    </div>
+    <span class="tiny muted">${(o.audio&&o.audio.length)?'🎤':''}${(o.media&&o.media.length)?'📷':''}${(o.individual_key&&d.flKeys.has(String(o.individual_key).trim()))?'🛩':''}${o.latitude?'📍':''}</span>`;
+  const obsCard = o=> selMode
+    ? `<div class="card tap selcard ${SCREENS._sel.set.has(o.uuid)?'selected':''}" onclick="toggleSel('${o.uuid}',this)">
+        <div class="row"><span class="selcb">${SCREENS._sel.set.has(o.uuid)?'☑':'☐'}</span>${obsInner(o)}</div></div>`
+    : `<div class="card tap" onclick="nav('obsEdit', JSON.stringify({sv:'${u}',id:'${o.uuid}'}))">
+        <div class="row">${obsInner(o)}</div></div>`;
+  const cardOf = it=> it.kind==='fl' ? flightCard(u,it.rec) : obsCard(it.rec);
+  obsCardHtml=cardOf;   // 群の中身を後から作るときにも同じカードを使う
+  if(!d.sorted.length){
+    return `<div class="empty small">${SCREENS._obsReviewOnly?'要確認の記録はありません。':'まだ記録がありません。'}</div>`;
+  }
+  // 選んで削除している間はまとめを一時的に解除する
+  //（畳んだ中に隠れたまま消える事故を防ぐ。切替の指定そのものは残るのでキャンセルで戻る）
+  const spN=obsSpeciesCount(d.sorted);
+  const grouped=obsGroupOn(spN) && !selMode;
+  const chips=`<div class="chips" style="margin:0 0 8px;">
+      <span class="c ${grouped?'on':''}" onclick="obsGroupToggle()">種ごとにまとめる</span>
+      ${(grouped && SCREENS._obsOpen && SCREENS._obsOpen.size)?`<span class="c" onclick="obsFoldAll()">すべて閉じる</span>`:''}
+    </div>`;
+  if(!grouped){
+    const recent=d.sorted.slice(0, SCREENS._obsLimit||50);
+    const moreBtn=d.sorted.length>recent.length
+      ? `<div class="sp"></div><button class="btn" onclick="obsMore()">さらに50件表示（残り${d.sorted.length-recent.length}件）</button>` : '';
+    return (selMode?'':chips) + recent.map(cardOf).join('') + moreBtn;
+  }
+  const groups=obsGroupsOf(d.sorted);
+  SCREENS._obsGroups=new Map(groups.map(g=>[g.sp,g]));   // 開いたときに中身を作るための置き場
+  if(!(SCREENS._obsOpen instanceof Set)) SCREENS._obsOpen=new Set();
+  const body=groups.map(g=>{
+    const open=SCREENS._obsOpen.has(g.sp);
+    const span=g.newest ? `${fmtTime(g.oldest)}〜${fmtTime(g.newest)}` : '';
+    return `<details class="fold grp" data-sp="${esc(g.sp)}" ${open?'open':''} ontoggle="obsFoldToggle(this)">
+      <summary><span class="grow">${esc(g.sp)}${conservBadges(g.sp)}${g.review?`<span class="badge warn">要確認${g.review}</span>`:''}</span>
+        <span class="small muted">${g.items.length}件${span?' ・ '+span:''}</span></summary>
+      <div class="gbody">${open?obsGrpBodyHtml(u,g.sp):''}</div>
+    </details>`;
+  }).join('');
+  return chips + body;
+}
+/* 一覧だけを描き直す。render() を通らないので、スクロール位置も録音もGPSも地図も触らない */
+function obsListPaint(){
+  const u=SCREENS._obsListSv, box=document.getElementById('obsList');
+  if(!u || !box || ((STACK[STACK.length-1]||{}).name)!=='survey'){ render(); return; }
+  box.innerHTML=obsListHtml(u);
+}
 SCREENS.survey = (u)=>{
   const s = DB.survey(u); if(!s) return SCREENS.home();
   currentSurveyUuid = u;
@@ -1684,73 +1845,45 @@ SCREENS.survey = (u)=>{
     : (s.status==='終了'
       ? roBtn(`<button class="btn" onclick="resumeSurvey('${u}')">▶ 調査を再開（記録を追加できるようにする）</button>`)
       : '');
+  // 現場でよく押す4つだけ手前に出し、残りは折りたたむ（開いた状態は覚える）
   const actions = running ? `
     <div class="actions">
       <button type="button" class="act sm primary wide" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🐦</span>観察を追加</button>
       ${roBtn(`<button type="button" class="act sm wide" id="quickRecBtn" onclick="quickRec('${u}')"><span class="ic">🎤</span>すぐ録音（種名はあとで）</button>`)}
-      <button type="button" class="act sm" onclick="nav('voiceObs','${u}')"><span class="ic">🎙</span>音声で追加</button>
       <button type="button" class="act sm" onclick="nav('obsBatch','${u}')"><span class="ic">🐦🐦</span>まとめて記録</button>
-      <button type="button" class="act sm" onclick="nav('flightList','${u}')"><span class="ic">🛩</span>経路まとめ</button>
-      <button type="button" class="act sm" onclick="nav('routeEdit','${u}')"><span class="ic">🧭</span>調査ルート</button>
-      <button type="button" class="act sm" onclick="nav('noteEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">📝</span>メモ</button>
-      <button type="button" class="act sm" onclick="nav('hypotheses','${u}')"><span class="ic">💡</span>仮説</button>
       <button type="button" class="act sm" onclick="nav('map','${u}')"><span class="ic">🗺</span>地図</button>
-      <button type="button" class="act sm" onclick="nav('summary','${u}')"><span class="ic">📊</span>集計</button>
-      <button type="button" class="act sm" onclick="nav('surveyEdit','${u}')"><span class="ic">✎</span>調査情報</button>
-      <button type="button" class="act sm wide" onclick="nav('surveyEnd','${u}')"><span class="ic">⏹</span>調査を終了</button>
-    </div>` : '';
-
-  // 観察とつながっている経路は、観察のカード（開けば止まりも経路も1画面）に含まれるので畳む。
-  // つながっていない経路（経路だけの記録）だけ、観察と同じ一覧にカードを出す
-  const obsKeys = new Set(obs.map(o2=>o2.individual_key).filter(Boolean));
-  const flights = DB.flightsOf(u)
-    .filter(f=>!(f.individual_key && obsKeys.has(f.individual_key)))
-    .sort((a,b)=>(b.start_time||b.created_at||'').localeCompare(a.start_time||a.created_at||''));
-
-  const selMode = !!(SCREENS._sel && SCREENS._sel.scope==='obs' && SCREENS._sel.sv===u);
-  // 一覧の表示件数と「要確認のみ」絞り込み（別の調査に移ったらリセット）
-  if(SCREENS._obsListSv!==u){ SCREENS._obsListSv=u; SCREENS._obsLimit=50; SCREENS._obsReviewOnly=false; }
-  // 観察と「経路だけの記録」を1本の一覧にまとめる（どちらもタップで同じ統合画面が開く）。
-  // 選んで削除している間は観察だけを出す（削除の対象を取り違えないため）
-  const reviewCount=obs.filter(o=>o.needs_review).length
-    + (selMode?0:flights.filter(f=>f.needs_review).length);
-  const listSrc=(SCREENS._obsReviewOnly ? obs.filter(o=>o.needs_review) : obs)
-    .map(o=>({kind:'obs', rec:o, at:o.observed_at||''}))
-    .concat(selMode ? [] :
-      (SCREENS._obsReviewOnly ? flights.filter(f=>f.needs_review) : flights)
-        .map(f=>({kind:'fl', rec:f, at:f.start_time||f.created_at||''})));
-  const sorted=listSrc.slice().sort((a,b)=>String(b.at).localeCompare(String(a.at)));
-  const recent=sorted.slice(0, SCREENS._obsLimit||50);
-  const moreBtn=sorted.length>recent.length
-    ? `<div class="sp"></div><button class="btn" onclick="obsMore()">さらに50件表示（残り${sorted.length-recent.length}件）</button>` : '';
-  const obsInner = o=>`
-    <div class="grow">
-      <div style="font-weight:700;">${esc(o.species_name_snapshot||'（未同定）')}
-        ${conservBadges(o.species_name_snapshot)}
-        ${o.needs_review?'<span class="badge warn">要確認</span>':''}
-        ${o.identification_status&&o.identification_status!=='確定'?`<span class="badge">${esc(o.identification_status)}</span>`:''}
-      </div>
-      <div class="small muted">${fmtTime(o.observed_at)} ・ ${esc(indCount(o.count))}個体 ・ ${esc(o.detection_method||'')}${o.habitat?' ・ '+esc(o.habitat):''}${o.age_class&&ageNorm(o.age_class)!=='不明'?' ・ '+esc(ageNorm(o.age_class)):''}${o.sex&&o.sex!=='不明'?' ・ '+esc(o.sex):''}</div>
     </div>
-    <span class="tiny muted">${(o.audio&&o.audio.length)?'🎤':''}${(o.media&&o.media.length)?'📷':''}${(o.individual_key&&DB.flightsOf(u).some(f=>f.individual_key===o.individual_key))?'🛩':''}${o.latitude?'📍':''}</span>`;
-  const obsCard = o=> selMode
-    ? `<div class="card tap selcard ${SCREENS._sel.set.has(o.uuid)?'selected':''}" onclick="toggleSel('${o.uuid}',this)">
-        <div class="row"><span class="selcb">${SCREENS._sel.set.has(o.uuid)?'☑':'☐'}</span>${obsInner(o)}</div></div>`
-    : `<div class="card tap" onclick="nav('obsEdit', JSON.stringify({sv:'${u}',id:'${o.uuid}'}))">
-        <div class="row">${obsInner(o)}</div></div>`;
-  const obsList = recent.length ? recent.map(it=>it.kind==='fl'?flightCard(u,it.rec):obsCard(it.rec)).join('')
-    : `<div class="empty small">${SCREENS._obsReviewOnly?'要確認の記録はありません。':'まだ記録がありません。'}</div>`;
+    <details class="fold" id="foldMoreActions" ${SCREENS._actOpen?'open':''} ontoggle="SCREENS._actOpen=this.open">
+      <summary><span class="lab" style="display:inline; margin:0;">その他の操作</span>
+        <span class="small muted">音声・経路まとめ・ルート・メモ・仮説・集計・調査情報・終了</span></summary>
+      <div class="actions" style="margin:0;">
+        <button type="button" class="act sm" onclick="nav('voiceObs','${u}')"><span class="ic">🎙</span>音声で追加</button>
+        <button type="button" class="act sm" onclick="nav('flightList','${u}')"><span class="ic">🛩</span>経路まとめ</button>
+        <button type="button" class="act sm" onclick="nav('routeEdit','${u}')"><span class="ic">🧭</span>調査ルート</button>
+        <button type="button" class="act sm" onclick="nav('noteEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">📝</span>メモ</button>
+        <button type="button" class="act sm" onclick="nav('hypotheses','${u}')"><span class="ic">💡</span>仮説</button>
+        <button type="button" class="act sm" onclick="nav('summary','${u}')"><span class="ic">📊</span>集計</button>
+        <button type="button" class="act sm" onclick="nav('surveyEdit','${u}')"><span class="ic">✎</span>調査情報</button>
+        <button type="button" class="act sm wide" onclick="nav('surveyEnd','${u}')"><span class="ic">⏹</span>調査を終了</button>
+      </div>
+    </details>` : '';
+
+  // 一覧の表示件数と「要確認のみ」絞り込み（別の調査に移ったらリセット）
+  if(SCREENS._obsListSv!==u){ SCREENS._obsListSv=u; SCREENS._obsLimit=50; SCREENS._obsReviewOnly=false;
+    SCREENS._obsGroup=null; SCREENS._obsOpen=new Set(); SCREENS._obsGrpShown={}; }
+
+  const _ld = obsListData(u);
+  const selMode = _ld.selMode;
   const obsHeader = `<div class="row" style="align-items:center; flex-wrap:wrap; gap:6px;">
-      <h3 class="grow" style="margin:0;">観察記録 <span class="muted small">(${obs.length+flights.length})</span></h3>
-      ${(reviewCount||SCREENS._obsReviewOnly)? `<button class="btn ghost" style="width:auto; padding:6px 12px; ${SCREENS._obsReviewOnly?'border-color:var(--warn); color:var(--warn);':''}" onclick="obsReviewToggle()">⚠ 要確認のみ(${reviewCount})</button>`:''}
-      ${obs.length? (selMode
+      <h3 class="grow" style="margin:0;">観察記録 <span class="muted small">(${_ld.total})</span></h3>
+      ${(_ld.reviewCount||SCREENS._obsReviewOnly)? `<button class="btn ghost" style="width:auto; padding:6px 12px; ${SCREENS._obsReviewOnly?'border-color:var(--warn); color:var(--warn);':''}" onclick="obsReviewToggle()">⚠ 要確認のみ(${_ld.reviewCount})</button>`:''}
+      ${_ld.obs.length? (selMode
         ? `<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="endSelect()">キャンセル</button>`
         : roBtn(`<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="startSelect('obs','${u}')">☑ 選択して削除</button>`)):''}
-    </div>${(selMode && flights.length)?`<div class="tiny muted" style="margin:2px 2px 6px;">経路だけの記録（🛩）は選択中は表示していません。消すときは記録を開いてください</div>`:''}`;
+    </div>${(selMode && _ld.flights.length)?`<div class="tiny muted" style="margin:2px 2px 6px;">経路だけの記録（🛩）は選択中は表示していません。消すときは記録を開いてください</div>`:''}`;
   const selBar = selMode
     ? `<div class="sp"></div><button class="btn danger big" id="selDelBtn" ${SCREENS._sel.set.size?'':'disabled'} onclick="deleteSelected()">選択した${SCREENS._sel.set.size}件を削除</button>`
     : '';
-
   const notes = DB.notesOf(u);
 
   return {
@@ -1773,8 +1906,7 @@ SCREENS.survey = (u)=>{
       </div>`:''}
       <div class="divider"></div>
       ${obsHeader}
-      ${obsList}
-      ${moreBtn}
+      <div id="obsList">${obsListHtml(u)}</div>
       ${selBar}
       ${notes.length?`<div class="divider"></div><h3>調査メモ <span class="muted small">(${notes.length})</span></h3>
         ${notes.map(n=>`<div class="card tap" onclick="nav('noteEdit', JSON.stringify({sv:'${u}',id:'${n.uuid}'}))">
@@ -1790,8 +1922,10 @@ SCREENS.survey = (u)=>{
 let AUDIO_PENDING=0;
 function recBusy(){ return !!REC || _recStarting || AUDIO_PENDING>0; }   // 録音中＋マイク許可待ち＋保存待ち
 function obsMore(){ if(recBusy()){ toast('録音を停止してから操作してください'); return; }
-  SCREENS._obsLimit=(SCREENS._obsLimit||50)+50; render(); }
-function obsReviewToggle(){ if(recBusy()){ toast('録音を停止してから操作してください'); return; }
+  SCREENS._obsLimit=(SCREENS._obsLimit||50)+50;
+  obsListPaint(); }   // 画面を丸ごと描き直さない＝押した位置のまま増える（録音・GPS・地図も切れない）
+function obsReviewToggle(){
+  SCREENS._obsGrpShown={}; if(recBusy()){ toast('録音を停止してから操作してください'); return; }
   SCREENS._sel=null;   // 絞り込みで見えなくなった記録が選択されたまま削除されるのを防ぐ（選択は解除）
   SCREENS._obsReviewOnly=!SCREENS._obsReviewOnly; SCREENS._obsLimit=50; render(); }
 /* ---------- すぐ録音（調査中画面からワンタップ・種名は後付け） ----------
