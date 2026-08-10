@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v198（2026-08-10 監査10巡目の対応）';
+const APP_VERSION = 'v200（2026-08-10 地図の線にL番号を表示）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2898,7 +2898,8 @@ SCREENS.obsEdit = (argStr)=>{
         <input type="hidden" id="otLat" value="${esc(o.target_latitude||'')}">
         <input type="hidden" id="otLon" value="${esc(o.target_longitude||'')}">
       </form>
-      ${(!editing && BIRDS.length<=1)?`<div class="sp"></div><button class="btn" onclick="saveObs('${o.uuid}','${svUuid}',${editing},true)">＋ 保存して続けて次の記録へ</button>`:''}
+      <!-- 「＋ 保存して続けて次の記録へ」ボタンは現場でほぼ使われないため非表示（v199）。
+           saveObs の next=true と位置引き継ぎ（keep）の仕組み自体は残している -->
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteObs('${o.uuid}')">この記録を削除</button>`:''}
       <div class="sp"></div>
       <div class="note">地図の <b>P</b> で鳥がいた場所、<b>F</b> で飛んだ経路を記録します。落とした内容に応じて記録が作られ、時刻と距離帯は自動で入ります。</div>
@@ -4401,8 +4402,11 @@ function pfRedraw(){
   if(PF_NEST){
     L.marker(PF_NEST,{icon:badge('巣','#8a6fd0',26)}).addTo(pfLayer);
   }
-  let np=0, nf=0;
-  PF_SEGS.forEach(seg=>{
+  let np=0;
+  // 線の番号はチップと同じ segLabel() で振る（数え方を別に持つと、0点の壊れた経路が
+  // 混ざったときにチップと地図でずれる）。総数も segLabel と同じく非Pを全部数える
+  const nLines=PF_SEGS.filter(s=>s.t!=='P').length;
+  PF_SEGS.forEach((seg,segIdx)=>{
     if(seg.t==='P'){
       np++;
       // いま「止まっていたもの」を入力している P は、大きく・白い縁を太くして見分けられるようにする
@@ -4411,10 +4415,11 @@ function pfRedraw(){
         iconSize:[cur?34:26,cur?34:26], iconAnchor:[cur?17:13,cur?17:13]});
       L.marker(seg.pt,{icon:ic}).addTo(pfLayer);
     } else if(seg.pts.length){
-      nf++;
       const selL=(PF_SEGS.indexOf(seg)===PF_SEL);
       if(seg.pts.length>1) L.polyline(seg.pts,{color:selL?'#ffd479':'#e0a030',weight:selL?7:4,opacity:.95}).addTo(pfLayer);
-      L.marker(seg.pts[0],{icon:badge('始','#3fb984',22)}).addTo(pfLayer);
+      // 線が2本以上あるときは、始点に L1・L2… を出して「直す」チップのL番号と地図の線を見比べられるようにする
+      //（Pの番号表示と同じ流儀。1本だけなら従来どおり「始」）
+      L.marker(seg.pts[0],{icon:badge(nLines>1?segLabel(segIdx):'始','#3fb984',22)}).addTo(pfLayer);
       seg.pts.forEach((pt,i)=>{ if(i>0&&i<seg.pts.length-1) L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(pfLayer); });
       if(seg.pts.length>1) L.marker(seg.pts[seg.pts.length-1],{icon:badge('終','#d05555',22)}).addTo(pfLayer);
     }
