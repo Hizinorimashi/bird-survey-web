@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v195（2026-08-10 画面の整理：保存ボタン・メディアの並び・ホームの折りたたみ）';
+const APP_VERSION = 'v196（2026-08-10 調査一覧を月ごとにまとめる）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1407,6 +1407,35 @@ SCREENS.home = ()=>{
   const selBar = selMode
     ? `<div class="sp"></div><button class="btn danger big" id="selDelBtn" ${SCREENS._sel.set.size?'':'disabled'} onclick="deleteSelected()">選択した${SCREENS._sel.set.size}件を削除</button>`
     : '';
+  // 調査が増えると一覧が延々と長くなるので、終わった調査は年月ごとに畳む。
+  // 継続中の調査は常に上に出したまま（現場でいちばん使うため畳まない）
+  if(SCREENS._svGrpOpen===undefined) SCREENS._svGrpOpen=new Set();
+  const svMonthOf = sv=>{
+    const d=String(sv.survey_date||'');
+    const m=d.match(/^(\d{4})-(\d{2})/);
+    return m ? (m[1]+'年'+String(Number(m[2]))+'月') : '日付なし';
+  };
+  // 一定数を超えたら自動で畳む。押して切り替えたら、その選び方に従う
+  const svGroupOn = ()=> (SCREENS._svGroup==null ? others.length>=10 : !!SCREENS._svGroup);
+  const svGrouped = svGroupOn() && !selMode;
+  const svListHtml = ()=>{
+    if(!svGrouped) return others.map(svCard).join('');
+    const map=new Map();
+    others.forEach(sv=>{ const k=svMonthOf(sv);
+      if(!map.has(k)) map.set(k, []); map.get(k).push(sv); });
+    return Array.from(map.entries()).map(([k, list])=>{
+      const open=SCREENS._svGrpOpen.has(k);
+      return `<details class="fold grp" data-mon="${esc(k)}" ${open?'open':''} ontoggle="svFoldToggle(this)">
+        <summary><span class="grow">${esc(k)}</span>
+          <span class="small muted">${list.length}件</span></summary>
+        <div class="gbody">${open?list.map(svCard).join(''):''}</div>
+      </details>`;
+    }).join('');
+  };
+  const svChips = others.length ? `<div class="chips" style="margin:0 0 8px;">
+      <span class="c ${svGrouped?'on':''}" onclick="svGroupToggle()">月ごとにまとめる</span>
+      ${(svGrouped && SCREENS._svGrpOpen.size)?`<span class="c" onclick="svFoldAll()">すべて閉じる</span>`:''}
+    </div>` : '';
   const listHeader = `<div class="row" style="align-items:center; margin-top:14px;">
       <h3 class="muted small grow" style="margin:0;">調査一覧</h3>
       ${surveys.length? (selMode
@@ -1438,7 +1467,7 @@ SCREENS.home = ()=>{
       <div class="sp"></div>
       ${active.length?`<h3 class="muted small">継続中の調査</h3>${active.map(svCard).join('')}`:''}
       ${listHeader}
-      ${(active.length||others.length)? others.map(svCard).join('') : '<div class="empty">まだ調査がありません。<br>「新しい調査を作成」から始めましょう。</div>'}
+      ${(active.length||others.length)? (svChips + svListHtml()) : '<div class="empty">まだ調査がありません。<br>「新しい調査を作成」から始めましょう。</div>'}
       ${selBar}
       <div class="divider"></div>
       <details class="fold" id="foldHomeTools" ${SCREENS._homeToolsOpen?'open':''} ontoggle="SCREENS._homeToolsOpen=this.open">
@@ -1675,6 +1704,23 @@ function deleteSelected(){
 /* ============================================================
    調査 詳細 / 調査中
    ============================================================ */
+// 調査一覧を月ごとに畳む／開く。開いた月だけ中身を作る（記録一覧と同じ作り）
+function svGroupToggle(){
+  if(typeof recBusy==='function' && recBusy()){ toast('録音を停止してから操作してください'); return; }
+  const others=DB.surveys().filter(s=>s.status!=='調査中');
+  SCREENS._svGroup = !(SCREENS._svGroup==null ? others.length>=10 : !!SCREENS._svGroup);
+  render();
+}
+function svFoldAll(){ SCREENS._svGrpOpen=new Set(); render(); }
+function svFoldToggle(el){
+  const k=el.getAttribute('data-mon')||'';
+  if(!(SCREENS._svGrpOpen instanceof Set)) SCREENS._svGrpOpen=new Set();
+  if(el.open){
+    SCREENS._svGrpOpen.add(k);
+    const body=el.querySelector('.gbody');
+    if(body && !body.innerHTML.trim()) render();   // 中身は開いたときに作る
+  } else SCREENS._svGrpOpen.delete(k);
+}
 /* ---------- 調査画面の記録一覧 ----------
    画面ぜんぶを描き直さずに一覧だけ差し替えたいので、SCREENS.survey の外に出して
    単体で呼べるようにしている（obsListPaint から使う）。
