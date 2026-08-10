@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v197（2026-08-10 保存ボタンの並びを現場向けに変更）';
+const APP_VERSION = 'v198（2026-08-10 監査10巡目の対応）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1411,9 +1411,14 @@ SCREENS.home = ()=>{
   // 継続中の調査は常に上に出したまま（現場でいちばん使うため畳まない）
   if(SCREENS._svGrpOpen===undefined) SCREENS._svGrpOpen=new Set();
   const svMonthOf = sv=>{
+    // 取込データに不正な日付が混ざることがあるので、形式全体と月日の範囲まで確かめる
     const d=String(sv.survey_date||'');
-    const m=d.match(/^(\d{4})-(\d{2})/);
-    return m ? (m[1]+'年'+String(Number(m[2]))+'月') : '日付なし';
+    const m=d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const yr=m?Number(m[1]):0, mo=m?Number(m[2]):0, dy=m?Number(m[3]):0;
+    // 2月31日のような実在しない日付は、Dateに入れると月がずれるので往復照合で弾く
+    const dt=m?new Date(yr, mo-1, dy):null;
+    const real=!!dt && dt.getFullYear()===yr && dt.getMonth()===mo-1 && dt.getDate()===dy;
+    return real ? (yr+'年'+mo+'月') : '日付なし';
   };
   // 一定数を超えたら自動で畳む。押して切り替えたら、その選び方に従う
   const svGroupOn = ()=> (SCREENS._svGroup==null ? others.length>=10 : !!SCREENS._svGroup);
@@ -1432,9 +1437,12 @@ SCREENS.home = ()=>{
       </details>`;
     }).join('');
   };
-  const svChips = others.length ? `<div class="chips" style="margin:0 0 8px;">
+  // 選択削除中は月まとめを解除しているので、切替チップも出さない（押しても見た目が変わらず紛らわしい）
+  // 「すべて閉じる」は、いま画面にある月のどれかが開いているときだけ出す（消えた月の残り記録では出さない）
+  const svOpenNow = svGrouped && others.some(sv=>SCREENS._svGrpOpen.has(svMonthOf(sv)));
+  const svChips = (others.length && !selMode) ? `<div class="chips" style="margin:0 0 8px;">
       <span class="c ${svGrouped?'on':''}" onclick="svGroupToggle()">月ごとにまとめる</span>
-      ${(svGrouped && SCREENS._svGrpOpen.size)?`<span class="c" onclick="svFoldAll()">すべて閉じる</span>`:''}
+      ${svOpenNow?`<span class="c" onclick="svFoldAll()">すべて閉じる</span>`:''}
     </div>` : '';
   const listHeader = `<div class="row" style="align-items:center; margin-top:14px;">
       <h3 class="muted small grow" style="margin:0;">調査一覧</h3>
@@ -5825,7 +5833,10 @@ function saveObs(u, svUuid, editing, cont){
     if(indLabel){
       if(cp.individual_key!==indKey){ cp.individual_key=indKey; diff=true; }
       if(String(cp.species_name_snapshot||'')!==String(name||'')){
-        cp.species_name_snapshot=name; cp.species_id=rec.species_id||''; diff=true; }
+        cp.species_name_snapshot=name; diff=true; }
+      // 種名が同じでも種IDだけ空・古いことがある（取込や旧版の記録）。IDは別に比べてそろえる
+      if(String(cp.species_id||'')!==String(rec.species_id||'')){
+        cp.species_id=rec.species_id||''; diff=true; }
       if(String(cp.count??'')!==String(rec.count??'')){ cp.count=rec.count; diff=true; }
       if(SCREENS._ageTouched && String(cp.age_class||'')!==String(rec.age_class||'')){
         cp.age_class=rec.age_class; diff=true; }
