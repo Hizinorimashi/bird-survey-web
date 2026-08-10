@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v192（2026-08-10 監査7巡目：写しの一元化を完了・一覧の見出しに内訳）';
+const APP_VERSION = 'v193（2026-08-10 監査8巡目：個体名を触っていない保存の保護・写しの照合・共有項目の全体そろえ）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1811,6 +1811,7 @@ function indLabelPick(el){
   const inp=document.getElementById('indLabel'); if(!inp) return;
   const v=el.getAttribute('data-lab')||'';
   inp.value=(inp.value.trim()===v)?'':v;   // もう一度押したら外す
+  SCREENS._indLabelTouched=true;
   SCREENS._dirty=true;
   indLabelChips();
   try{ if(typeof birdListSync==='function' && BIRDS.length>1) birdListSync(); }catch(e){}
@@ -2010,7 +2011,7 @@ SCREENS.survey = (u)=>{
   const _ld = obsListData(u);
   const selMode = _ld.selMode;
   const obsHeader = `<div class="row" style="align-items:center; flex-wrap:wrap; gap:6px;">
-      <h3 class="grow" style="margin:0;">記録 <span class="muted small">(${_ld.total}${_ld.flights.length?`：観察${_ld.obs.length}・経路${_ld.flights.length}`:''})</span></h3>
+      <h3 class="grow" style="margin:0;">記録 <span class="muted small">(${_ld.total}：観察${_ld.obs.length}・経路${_ld.flights.length})</span></h3>
       ${(_ld.reviewCount||SCREENS._obsReviewOnly)? `<button class="btn ghost" style="width:auto; padding:6px 12px; ${SCREENS._obsReviewOnly?'border-color:var(--warn); color:var(--warn);':''}" onclick="obsReviewToggle()">⚠ 要確認のみ(${_ld.reviewCount})</button>`:''}
       ${_ld.obs.length? (selMode
         ? `<button class="btn ghost" style="width:auto; padding:6px 12px;" onclick="endSelect()">キャンセル</button>`
@@ -2720,7 +2721,7 @@ SCREENS.obsEdit = (argStr)=>{
           </label>
           <label class="field"><span class="lab">個体名（任意・同じ鳥を追うとき）</span>
             <input id="indLabel" autocomplete="off" value="${esc(o.individual_label||'')}"
-              placeholder="例：クマタカA／左翼損傷" oninput="indLabelChips()">
+              placeholder="例：クマタカA／左翼損傷" oninput="SCREENS._indLabelTouched=true; indLabelChips()">
             <div class="chips" id="indLabelChips"></div>
             <div class="tiny muted">同じ名前を付けた記録は、集計で1羽として数えます</div>
           </label>
@@ -2983,6 +2984,9 @@ SCREENS.obsEdit = (argStr)=>{
       // 精度の扱い: null=保存時に既存値を維持 / ''=不明（手入力座標） / 数値=確定値。初期値は画面に表示している精度と一致させる
       SCREENS._acc=(o.gps_accuracy===''||o.gps_accuracy==null)?null:o.gps_accuracy;
       // 距離帯・日時・齢・個体数・巣などの変更監視は共通関数で登録する（個体切替後の組み直しでも使う）
+      // 個体名を触ったか。触っていないのに空欄というだけで、同じまとまりの記録から
+      // 名前を消してしまわないため（名前なしの記録を開いて保存しただけ、という場面がある）
+      SCREENS._indLabelTouched=false;
       SCREENS._obsAtTouched=false;   // 観察日時を触ったか。触った指定を、Pを落とした時刻で上書きしないため
       SCREENS._ageTouched=false;     // 齢を触ったか。触っていない保存では既存の飛翔の齢（空含む）を残す
       obsBindFormWatch();
@@ -4464,7 +4468,9 @@ function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsRev
       // 既存の記録では、空は空のまま残す（触っていない項目を「不明」に化けさせない）。
       // 齢は画面で触ったときだけそろえる（触っていないのに観察の齢で埋めない）
       age_class:(SCREENS._ageTouched ? ageCls : (cur.age_class||'')), count:count, individual_key:indKey||'',
-      individual_label:String(indLabel||''),   // 同じ鳥の呼び名は観察と飛翔でそろえる
+      // 同じ鳥の呼び名は観察と飛翔でそろえる。ただし個体名の欄を触っていない空欄では
+      // 元の名前を保つ（開いて保存しただけで経路の名前が消えるのを防ぐ）
+      individual_label:(indLabel===undefined ? (cur.individual_label||'') : String(indLabel||'')),
       height_class: heightRaw,
       behavior: behaviorNew,
     });
@@ -4474,7 +4480,7 @@ function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsRev
     species_name_snapshot:name,
     path:seg.pts.slice(), start_time:st, end_time:en,
     height_class:heightRaw||'不明',
-    age_class:ageCls||'不明', individual_label:String(indLabel||''),
+    age_class:ageCls||'不明', individual_label:String(indLabel===undefined?'':indLabel||''),
     behavior:behaviorNew,
     count:count, memo:String(memo||'').trim(), needs_review:!!needsReview,
     individual_key:indKey||'',
@@ -5123,8 +5129,9 @@ function saveObs(u, svUuid, editing, cont){
   let indR = indLabel
     ? indResolve(svUuid, name, indLabel, _curKey0, u, _snap)
     // 名前を外したときも、同じまとまりの記録から名前を消す
-    //（消さないと、ごみ箱に残った旧名がのちの保存で復活して勝手に統合される）
-    : (_curKey0 ? indUnnameResolve(svUuid, _curKey0, u, _snap) : null);
+    //（消さないと、ごみ箱に残った旧名がのちの保存で復活して勝手に統合される）。
+    // 触っていないのに空欄というだけでは消さない（開いて保存しただけで消えてしまうため）
+    : ((_curKey0 && SCREENS._indLabelTouched) ? indUnnameResolve(svUuid, _curKey0, u, _snap) : null);
   if(indR && indR.merge){
     const n=indR.fixObs.length+indR.fixFl.length;
     if(!confirm('「'+indLabel+'」として記録されている'+n+'件と、この記録を同じ1羽としてまとめます。\n'
@@ -5142,7 +5149,8 @@ function saveObs(u, svUuid, editing, cont){
       if(!b2){ toast('この記録は別の端末・タブで削除されています。保存できません', 8000); return; }
       base=b2;
     }
-    const re=indResolve(svUuid, name, indLabel, _curKey0, u, _snap);
+    const curKey2=(base&&base.individual_key)||_curKey0;   // 確認の間に目印が変わっていることがある
+    const re=indResolve(svUuid, name, indLabel, curKey2, u, _snap);
     if(re.key!==indR.key || re.fixObs.length!==indR.fixObs.length || re.fixFl.length!==indR.fixFl.length){
       toast('まとめる相手の記録が別の端末・タブで変わりました。画面を開き直してから保存してください', 8000); return; }
     indR=re;
@@ -5320,7 +5328,9 @@ function saveObs(u, svUuid, editing, cont){
   // 飛翔をまとめて組み立てる（1本でも検査に落ちたら何も保存しない）
   const flRecs=[];
   for(const seg of paths){
-    const fr=buildFlightRec(seg, svUuid, name, rec.count, rec.age_class, indKey, g('note'), flReview, seg.ov||null, paths.length===1, indLabel, snapFl);
+    // 個体名を触っていない空欄なら undefined を渡す＝既存の経路の名前はそのまま
+    const _flLbl=(indLabel || SCREENS._indLabelTouched) ? indLabel : undefined;
+    const fr=buildFlightRec(seg, svUuid, name, rec.count, rec.age_class, indKey, g('note'), flReview, seg.ov||null, paths.length===1, _flLbl, snapFl);
     if(!fr) return;
     flRecs.push(fr);
   }
@@ -5478,10 +5488,22 @@ function saveObs(u, svUuid, editing, cont){
   // 配列全体を控えて丸ごと戻すと、その間に別のタブで保存された記録まで消してしまう
   const undoLog=[];   // {key, uuid, prev（書く前の記録。無ければnull）, wrote（書いた直後のupdated_at）}
   let txJournal=null;   // 第1段ジャーナル（書き込みの進み具合を逐次控える）
+  // 写し（スナップショット）を基に組み立てた記録は、置き換える直前に
+  // 「写しを取った時点と同じか」を確かめる。違えば別のタブが書き換えたということなので、
+  // 古い内容で上書きしない（key|uuid → 写し時点の全文）
+  const baseSnapJson=new Map();
+  const snapMark=(key, rec0)=>{ if(rec0 && rec0.uuid) baseSnapJson.set(key+'|'+rec0.uuid, JSON.stringify(rec0)); };
   const writeOne=(key, rec, upsert, expect)=>{
     const arr0=loadStrict(key);
     if(!arr0) return false;   // 読めない状態で書くと全記録を失う
     const cur=arr0.find(x=>x&&x.uuid===rec.uuid);
+    const mk=baseSnapJson.get(key+'|'+rec.uuid);
+    if(mk!==undefined){
+      if(JSON.stringify(cur||null)!==mk) return false;   // 写しの時点から変わっている
+      // 1回の保存で同じ記録を続けて書く経路（共有項目をそろえてから位置を外す等）があるため、
+      // 確かめるのは最初の1回だけにする（2回目は自分が書いた値になっている）
+      baseSnapJson.delete(key+'|'+rec.uuid);
+    }
     const prev=cur?JSON.parse(JSON.stringify(cur)):null;
     if(!expect){
       // 予定値（時刻印含む）を先に確定して控える。書いた後では
@@ -5673,6 +5695,33 @@ function saveObs(u, svUuid, editing, cont){
       sibs.push(cp);
     });
   }
+  // 個体名でまとめたときは、同じ目印の記録すべてに共有項目をそろえる（新規からの保存でも）。
+  // そろえないと、同じ1羽なのに個体数・齢などが記録ごとに食い違う
+  if(indLabel && indKey){
+    const mineL=new Set(obRecs.map(r=>r.uuid).concat(sibs.map(r=>r.uuid)));
+    snapObsLive.forEach(o2=>{
+      if(mineL.has(o2.uuid) || o2.individual_key!==indKey) return;
+      const cp=Object.assign({}, o2);
+      let diff=false;
+      if(String(cp.individual_label||'')!==indLabel){ cp.individual_label=indLabel; diff=true; }
+      OBS_SHARED_F.forEach(k=>{ if(String(cp[k]??'')!==String(rec[k]??'')){ cp[k]=rec[k]; diff=true; } });
+      if(diff) sibs.push(cp);
+    });
+    // 同じ目印の飛翔にも、種名・個体数・齢・個体名をそろえる
+    _snap.flLive.forEach(f2=>{
+      if(f2.individual_key!==indKey) return;
+      if(flRecs.some(r=>r.uuid===f2.uuid) || indFixFl.some(r=>r.uuid===f2.uuid)) return;
+      const cp=Object.assign({}, f2);
+      let diff=false;
+      if(String(cp.individual_label||'')!==indLabel){ cp.individual_label=indLabel; diff=true; }
+      if(String(cp.species_name_snapshot||'')!==String(name||'')){
+        cp.species_name_snapshot=name; cp.species_id=rec.species_id||''; diff=true; }
+      if(String(cp.count??'')!==String(rec.count??'')){ cp.count=rec.count; diff=true; }
+      if(SCREENS._ageTouched && String(cp.age_class||'')!==String(rec.age_class||'')){
+        cp.age_class=rec.age_class; diff=true; }
+      if(diff) indFixFl.push(cp);
+    });
+  }
   // 巣の照合に入らなかった「生きている兄弟」（位置なしで画面に載らない記録など）にも共有項目をそろえる
   if(editing && indKey){
     const mine=new Set(obRecs.map(r=>r.uuid).concat(sibs.map(r=>r.uuid)));
@@ -5741,6 +5790,12 @@ function saveObs(u, svUuid, editing, cont){
         : Object.assign({}, f, { individual_key:indKey, individual_label:indLabel }));
     });
   }
+  // 写しから作ったものに印を付ける（writeOne が置き換える直前に照合する）
+  if(base) snapMark(DB.key.ob, base);
+  sibs.forEach(sb=>{ const o0=snapObs.find(x=>x&&x.uuid===sb.uuid); if(o0) snapMark(DB.key.ob, o0); });
+  flRecs.forEach(fr=>{ const f0=snapFl.find(x=>x&&x.uuid===fr.uuid); if(f0) snapMark(DB.key.fl, f0); });
+  indFixFl.forEach(fr=>{ const f0=snapFl.find(x=>x&&x.uuid===fr.uuid); if(f0) snapMark(DB.key.fl, f0); });
+  obRecs.forEach(r2=>{ const o0=snapObs.find(x=>x&&x.uuid===r2.uuid); if(o0) snapMark(DB.key.ob, o0); });
   // 書き込みを始める前に、写しを取った時点から相手が変わっていないかを確かめる。
   // 組み立て直さず「変わっていたら中止」だけを行う（古い姿で上書きしないため）
   if(indR && (indR.fixObs.length || indR.fixFl.length)){
@@ -5820,7 +5875,8 @@ function saveObs(u, svUuid, editing, cont){
       return;
     }
   }
-  for(const fr of flRecs){ if(!writeOne(DB.key.fl, fr, r=>DB.upsertFlight(r))){ saveCancel(); return; } }
+  for(const fr of flRecs){ if(!writeOne(DB.key.fl, fr, r=>DB.upsertFlight(r))){
+    saveCancel('別の端末・タブで記録が変わっていたため、この保存を取り消しました。画面を開き直してください'); return; } }
   for(const fr of indFixFl){ if(!writeOne(DB.key.fl, fr, r=>DB.upsertFlight(r))){ saveCancel(); return; } }
   for(const r2 of obRecs){ if(!writeOne(DB.key.ob, r2, r=>DB.upsertObs(r))){ saveCancel(); return; } }
   for(const sb of sibs){ if(!writeOne(DB.key.ob, sb, r=>DB.upsertObs(r))){ saveCancel(); return; } }
