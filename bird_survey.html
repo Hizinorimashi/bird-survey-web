@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v196（2026-08-10 調査一覧を月ごとにまとめる）';
+const APP_VERSION = 'v197（2026-08-10 保存ボタンの並びを現場向けに変更）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2894,9 +2894,15 @@ SCREENS.obsEdit = (argStr)=>{
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteObs('${o.uuid}')">この記録を削除</button>`:''}
       <div class="sp"></div>
       <div class="note">地図の <b>P</b> で鳥がいた場所、<b>F</b> で飛んだ経路を記録します。落とした内容に応じて記録が作られ、時刻と距離帯は自動で入ります。</div>
-      <div class="savebar"><button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing},false)">保存する</button></div>
+      <!-- 現場でいちばん押すのは「保存して次の個体へ」なので、こちらを常に見える位置に置く。
+           記録を直しているとき（editing）は次の個体に進む場面ではないので「保存する」を前に出す -->
+      <div class="savebar">${editing
+        ? `<button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing},false)">保存する</button>`
+        : `<button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing},'addBird')">💾 保存して次の個体へ</button>`}</div>
       <div style="display:flex; gap:8px; margin-top:8px;">
-        <button type="button" class="btn" style="flex:1;" onclick="saveObs('${o.uuid}','${svUuid}',${editing},'addBird')">💾 保存して次の個体へ</button>
+        ${editing
+          ? `<button type="button" class="btn" style="flex:1;" onclick="saveObs('${o.uuid}','${svUuid}',${editing},'addBird')">💾 保存して次の個体へ</button>`
+          : `<button type="button" class="btn" style="flex:1;" onclick="saveObs('${o.uuid}','${svUuid}',${editing},false)">保存する</button>`}
         ${BIRDS.length>1?`<button type="button" class="btn danger" style="flex:1;" onclick="birdDrop()">この個体を消す</button>`:''}
       </div>
       ${(!editing && BIRDS.length<=1)?`<div class="sp"></div>
