@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v200（2026-08-10 地図の線にL番号を表示）';
+const APP_VERSION = 'v201（2026-08-11 鳥類データベースへ直接送れるように）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -9995,6 +9995,122 @@ function saveCloudCfg(){ const url=(($('#cloudUrl')&&$('#cloudUrl').value)||'').
   const token=(($('#cloudToken')&&$('#cloudToken').value)||'').trim();
   if(url && !/^https:\/\/script\.google\.com\//.test(url)){ if(!confirm('URLがGoogle Apps Scriptの形式ではありません。このまま保存しますか？')) return; }
   cloudSaveCfg({url, token}); toast(url?'クラウド保存先を設定しました':'クラウド保存先を解除しました'); render(); }
+
+/* ---------- 鳥類データベースへ送る（押したときだけ・受領証つき） ---------- */
+// 上の「URLで送る」との違い:
+//  ・応答をきちんと読む。相手は自宅PCの受け口で、このアプリからの通信を許可してあるため
+//    no-cors にする必要がなく、「届いたか」を受領証で確かめられる（従来方式は確認できない）
+//  ・自動では送らない。現場で意図せず通信しないよう、ボタンを押したときだけ動く
+// 同じ記録を何度送っても増えない（受け口側が記録ごとのIDで見分ける）ので、迷ったら送ってよい
+function dbSendCfg(){ try{ return JSON.parse(localStorage.getItem('bs_dbsend')||'{}'); }catch(e){ return {}; } }
+function dbSendSaveCfg(c){ localStorage.setItem('bs_dbsend', JSON.stringify(c||{})); }
+function dbSendLast(){ try{ return JSON.parse(localStorage.getItem('bs_dbsend_last')||'{}'); }catch(e){ return {}; } }
+// 宛先の確かめ方。ここを緩くすると、打ち間違いや誘導で「よそのサイト」へ
+// 調査記録と位置情報と合言葉をまとめて送ってしまう
+function dbSendCheckUrl(raw){
+  let u;
+  try{ u=new URL(raw); }catch(e){ return {ok:false, why:'アドレスの形になっていません'}; }
+  if(u.protocol!=='https:') return {ok:false, why:'https:// で始まるアドレスにしてください'};
+  if(u.username||u.password) return {ok:false, why:'アドレスに利用者名・合言葉は入れられません'};
+  if(u.search||u.hash) return {ok:false, why:'アドレスに ? や # は付けられません'};
+  if(u.pathname!=='/'&&u.pathname!=='') return {ok:false, why:'アドレスの末尾に余計な文字が付いています'};
+  // 自分のPC（Tailscale）宛てだけを既定で許す。それ以外は明示的に確かめる
+  const home=/\.ts\.net$/i.test(u.hostname);
+  return {ok:true, origin:u.origin, home};
+}
+function saveDbSendCfg(){
+  const raw=(($('#dbSendUrl')&&$('#dbSendUrl').value)||'').trim();
+  const token=(($('#dbSendToken')&&$('#dbSendToken').value)||'').trim();
+  const keep=dbSendCfg();
+  if(!raw){ dbSendSaveCfg({}); toast('データベースの宛先を解除しました'); render(); return; }
+  const r=dbSendCheckUrl(raw);
+  if(!r.ok){ toast(r.why, 5000); return; }
+  if(!r.home && !confirm('「'+r.origin+'」は自分のPCのアドレス（.ts.net）ではありません。\n'
+    +'ここへ調査記録と位置情報をすべて送ります。本当にこの宛先でよいですか？')) return;
+  // 合言葉は半角の英数字・記号だけ。日本語が混じると通信の決まりに反して送れない
+  if(token && /[^\x20-\x7E]/.test(token)){
+    toast('合言葉は半角の英数字で入れてください（日本語は使えません）', 5000); return; }
+  // 空欄のままなら、前に入れた合言葉を消さない（画面には出していないため）
+  dbSendSaveCfg({url:r.origin, token: token || keep.token || ''});
+  toast('データベースの宛先を設定しました'); render(); }
+// つながるかだけ試す（記録は送らない）。合言葉が違っても、ここは通る
+function dbSendTest(){
+  const c=dbSendCfg(); if(!c.url){ toast('先に宛先を設定してください'); return; }
+  toast('つながるか試しています…');
+  fetch(c.url+'/ping', {method:'GET', cache:'no-store'})
+    .then(res=>res.ok?res.json():Promise.reject(new Error('HTTP '+res.status)))
+    .then(j=>toast(j&&j.ok?'つながりました。データベースは受け取れる状態です':'返事の中身が想定と違います', 3500))
+    .catch(e=>toast('つながりません（PCが起動しているか確認してください）: '+String(e&&e.message||e).slice(0,50), 5000));
+}
+function dbSendNow(){
+  const c=dbSendCfg(); if(!c.url){ toast('先に宛先を設定してください'); return; }
+  // 保存の取引中・停止中は送らない（途中の姿を送らないため）
+  if(backupBlocked()){ toast('いま記録を保存しています。少し待ってからもう一度押してください', 4000); return; }
+  toast('データベースへ送っています…');
+  backupRun(()=>dbSendRecords()).then(()=>render()).catch(()=>{});
+}
+function dbSendRecords(){
+  const c=dbSendCfg(); if(!c.url) return Promise.resolve(null);
+  // 日本語の合言葉は通信の決まりで送れない。ここで止めないと、意味の分からない
+  // 英語のエラーになって原因が分からなくなる
+  if(/[^\x20-\x7E]/.test(c.token||'')){
+    const e=new Error('合言葉に日本語が入っています。半角の英数字で入れ直してください');
+    toast(e.message, 6000); return Promise.reject(e); }
+  const gen0=BACKUP_GEN;
+  let data;
+  try{ data=buildRecordsBackup({onlyValid:true}); }
+  catch(e){ toast('記録を用意できませんでした。ホームの「データ点検・修復」で直してください', 5000);
+    return Promise.reject(e); }
+  // 壊れていて送らなかった件数。黙って減らさず、必ず画面に出す。
+  // 数えられなかったときは 0 と言わない（欠けているのに「全部送った」と
+  // 思わせるのが一番まずい）
+  let dropped=null;
+  try{ const raw=coreCollectionsRaw();
+    dropped=0;
+    for(const k of ['surveys','observations','flights']){
+      dropped += (Array.isArray(raw[k])?raw[k].length:0) - data[k].length; }
+    if(dropped<0) dropped=0;
+  }catch(e){ dropped=null; }
+  // 送る直前にも確認（用意している間に記録が変わっていたら送らない）
+  if(gen0!==BACKUP_GEN || backupBlocked()){
+    toast('記録が変わりました。もう一度押してください', 4000); return Promise.resolve(null); }
+  return fetch(c.url+'/ingest', {
+    method:'POST', cache:'no-store',
+    headers:{'Content-Type':'application/json',
+             'Authorization':'Bearer '+(c.token||''),
+             'X-Device-Id':deviceId()},
+    body: JSON.stringify(data)
+  }).then(async res=>{
+    let body=null; try{ body=await res.json(); }catch(e){}
+    if(!res.ok || !body || body.ok!==true){
+      const why=(body&&body.error) ? body.error
+        : (res.status===401 ? '合言葉が違います。設定を確かめてください'
+        : res.status===413 ? '送るものが大きすぎます'
+        : res.status===503 ? 'データベースが取り込み中です。少し待ってください'
+        : 'データベースが受け取れませんでした（'+res.status+'）');
+      throw new Error(why);
+    }
+    // 送っている間に記録が変わった＝この受領証は古い。届いた事実だけ伝えて再送を促す
+    if(gen0!==BACKUP_GEN){ _backupPending=true;
+      toast('送りましたが、その間に記録が変わりました。もう一度押してください', 5000);
+      return body; }
+    localStorage.setItem('bs_dbsend_sent', nowISO());
+    localStorage.setItem('bs_dbsend_last', JSON.stringify({
+      at:nowISO(), receipt:String(body.receipt||''),
+      surveys:body.surveys|0, observations:body.observations|0, flights:body.flights|0,
+      unmatched:body.unmatched|0, dropped:(dropped===null?-1:dropped) }));
+    let msg='データベースに届きました（受領証 '+(body.receipt||'—')+'）';
+    if(dropped===null) msg+=' ／ ⚠ 送れなかった記録があるか確かめられませんでした。ホームの「データ点検・修復」を見てください';
+    else if(dropped>0) msg+=' ／ ⚠ 壊れていて送れなかった記録が'+dropped+'件あります';
+    else if(body.unmatched>0) msg+=' ／ 名前が見つからない種が'+body.unmatched+'件';
+    toast(msg, 6000);
+    return body;
+  }).catch(e=>{
+    toast('送れませんでした: '+String(e&&e.message||e).slice(0,80), 6000);
+    throw e;
+  });
+}
+
 /* ---------- Googleドライブに直接保存（OAuth / drive.file・iPhone/会社アカウント対応） ---------- */
 // サインインしたアカウントのマイドライブに保存する。受け皿方式と違い、保存先＝サインインしたアカウント。
 const GDRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
@@ -10821,8 +10937,36 @@ SCREENS.cloud = ()=>{
     ? `✅ サインイン中：<b>${esc(GUSER||'アカウント')}</b> ／ 前回保存: ${gAgo!=null?gAgo+'分前':'—'}`
     : (GUSER ? `前回：${esc(GUSER)}（保存するには再サインイン） ／ 前回保存: ${gAgo!=null?gAgo+'分前':'—'}`
              : '未サインイン');
+  const d=dbSendCfg(); const dLast=dbSendLast();
+  const dAgo=dLast.at?Math.max(0,Math.round((Date.now()-new Date(dLast.at))/60000)):null;
+  const dStatus = !d.url ? '未設定'
+    : (dAgo==null ? '✅ 設定済み ／ まだ送っていません'
+      : `✅ 設定済み ／ 前回送信: ${dAgo}分前（受領証 ${esc(dLast.receipt||'—')}）`
+        + ` 調査${dLast.surveys|0}・観察${dLast.observations|0}・飛翔${dLast.flights|0}件`
+        + ((dLast.dropped|0)<0?' ／ ⚠ 送れなかった記録の有無を確かめられませんでした'
+          :((dLast.dropped|0)>0?` ／ ⚠ 壊れていて送れなかった記録 ${dLast.dropped|0}件`:''))
+        + ((dLast.unmatched|0)>0?` ／ 名前が見つからない種 ${dLast.unmatched|0}件`:''));
   return { title:'自動バックアップ',
     html:`
+      <div class="card">
+        <div class="row"><div class="grow"><b>🗄 鳥類データベースへ送る</b><div class="tiny muted">事務所のデータベースへ記録を移します。押したときだけ送ります</div></div></div>
+        <div class="sp"></div>
+        <div class="small">${dStatus}</div>
+        <div class="sp"></div>
+        <label class="field"><span class="lab">データベースのアドレス</span>
+          <input id="dbSendUrl" autocomplete="off" inputmode="url" placeholder="https://（PCの名前）.ts.net:10000" value="${esc(d.url||'')}"></label>
+        <label class="field"><span class="lab">合言葉（データベース側で作られたもの）</span>
+          <input id="dbSendToken" type="password" autocomplete="off" inputmode="text"
+            placeholder="${d.token?'設定済み（変えるときだけ入力）':'あいことば'}"></label>
+        <button class="btn primary" onclick="saveDbSendCfg()">保存</button>
+        ${d.url?`<div class="sp"></div><div class="btn-grid">
+          <button class="btn primary" onclick="dbSendNow()">🗄 いま送る</button>
+          <button class="btn" onclick="dbSendTest()">つながるか試す</button>
+        </div>`:''}
+        <div class="sp"></div>
+        <div class="note">これは控え（バックアップ）ではなく、<b>データベースへの受け渡し</b>です。送るのは記録だけで、<b>写真・録音・動画は送りません</b>（重すぎるため。それらはGoogleドライブに任せます）。<br><b>何度送っても記録は二重になりません。</b>データベース側が記録を1件ずつ見分けて、同じものは上書きするだけです。直したら送り直し、消したら送り直せば、その通りに反映されます。<br>送れたときは<b>受領証の番号</b>が出ます。番号が出れば確実に届いています。</div>
+      </div>
+      <div class="divider"></div>
       <div class="card">
         <div class="row"><div class="grow"><b>☁ Googleドライブに直接保存（iPhone・会社アカウント対応）<span class="badge status-調査中" style="margin-left:6px;">おすすめ</span></b><div class="tiny muted">サインインしたアカウントのマイドライブに保存されます</div></div></div>
         <div class="sp"></div>
