@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v201（2026-08-11 鳥類データベースへ直接送れるように）';
+const APP_VERSION = 'v202（2026-08-11 変わらなかった記録を知らせる）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -10098,12 +10098,16 @@ function dbSendRecords(){
     localStorage.setItem('bs_dbsend_last', JSON.stringify({
       at:nowISO(), receipt:String(body.receipt||''),
       surveys:body.surveys|0, observations:body.observations|0, flights:body.flights|0,
-      unmatched:body.unmatched|0, dropped:(dropped===null?-1:dropped) }));
+      unmatched:body.unmatched|0, unchanged:body.unchanged|0,
+      dropped:(dropped===null?-1:dropped) }));
     let msg='データベースに届きました（受領証 '+(body.receipt||'—')+'）';
     if(dropped===null) msg+=' ／ ⚠ 送れなかった記録があるか確かめられませんでした。ホームの「データ点検・修復」を見てください';
     else if(dropped>0) msg+=' ／ ⚠ 壊れていて送れなかった記録が'+dropped+'件あります';
-    else if(body.unmatched>0) msg+=' ／ 名前が見つからない種が'+body.unmatched+'件';
-    toast(msg, 6000);
+    // 届いたのに「変わらなかった」記録がある＝直したつもりが反映されていない。
+    // 黙っていると、送った本人が気付けないまま報告書に古い内容が出る
+    if((body.unchanged|0)>0) msg+=' ／ ⚠ '+(body.unchanged|0)+'件は変わりませんでした（端末の時計がずれていないか確かめてください）';
+    else if(dropped===0 && body.unmatched>0) msg+=' ／ 名前が見つからない種が'+body.unmatched+'件';
+    toast(msg, 7000);
     return body;
   }).catch(e=>{
     toast('送れませんでした: '+String(e&&e.message||e).slice(0,80), 6000);
@@ -10945,6 +10949,7 @@ SCREENS.cloud = ()=>{
         + ` 調査${dLast.surveys|0}・観察${dLast.observations|0}・飛翔${dLast.flights|0}件`
         + ((dLast.dropped|0)<0?' ／ ⚠ 送れなかった記録の有無を確かめられませんでした'
           :((dLast.dropped|0)>0?` ／ ⚠ 壊れていて送れなかった記録 ${dLast.dropped|0}件`:''))
+        + ((dLast.unchanged|0)>0?` ／ ⚠ 変わらなかった記録 ${dLast.unchanged|0}件`:'')
         + ((dLast.unmatched|0)>0?` ／ 名前が見つからない種 ${dLast.unmatched|0}件`:''));
   return { title:'自動バックアップ',
     html:`
