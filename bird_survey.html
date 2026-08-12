@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v207（2026-08-12 地図のボタンを縦に戻した）';
+const APP_VERSION = 'v208（2026-08-12 旋回上昇の◎・急降下の↠・攻撃と歩行）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -652,7 +652,10 @@ const OPT = {
   flightShape:[SHAPE_LINE, SHAPE_AREA],
   areaType:AREA_TYPES,
   flightHeight:['低（樹冠以下）','中（樹冠〜数十m）','高（上空）','不明'],
-  flightBehavior:['旋回','直線飛行','帆翔（ソアリング）','はばたき','急降下','ディスプレイ','狩り','その他'],
+  // 「攻撃」「歩行」は報告書の結果図に凡例がある（→×→ ／ 実線の→）。
+  // 選べないと図が作れないので、飛翔の行動にも置く（2026-08-12 追加）
+  flightBehavior:['旋回','直線飛行','帆翔（ソアリング）','はばたき','急降下','ディスプレイ',
+    '狩り','攻撃','歩行','その他'],
   flightAge:['成鳥','亜成鳥','幼鳥','幼綿羽','不明'],
   // 止まっていたもの。種類で下の項目が変わる（木＝サイズ/樹種/樹高、人工物＝電柱など、その他＝メモ）
   perchType:['木','人工物','その他'],
@@ -4565,12 +4568,13 @@ function pfRedraw(){
         // **始点・終点の印は出さない**（どこが始まりでも同じ）。
         // 旋回上昇は ◎（内側にもう1本の輪）
         if(seg.pts.length>2){
-          L.polygon(seg.pts,{color:selL?'#ffd479':'#9b59b6',weight:selL?4:2.5,
-            opacity:.95,fill:false}).addTo(pfLayer);
-          if(((seg.fl&&seg.fl.area_type)||'')==='旋回上昇'){
-            const inner=innerRing(seg.pts);
-            if(inner.length>2) L.polygon(inner,{color:selL?'#ffd479':'#9b59b6',
-              weight:2,opacity:.95,fill:false,interactive:false}).addTo(pfLayer);
+          const col=selL?'#ffd479':'#9b59b6';
+          // 旋回上昇は ◎（きれいな二重丸）。それ以外は囲った形のまま輪郭だけ
+          if(((seg.fl&&seg.fl.area_type)||'')==='旋回上昇' && drawSoar(pfLayer, seg.pts, {color:col, weight:selL?3.5:2.5})){
+            // 囲った形も薄く残す（どこを囲ったかが分かるように）
+            L.polygon(seg.pts,{color:col,weight:1,opacity:.35,fill:false,dashArray:'4,4',interactive:false}).addTo(pfLayer);
+          } else {
+            L.polygon(seg.pts,{color:col,weight:selL?4:2.5,opacity:.95,fill:false}).addTo(pfLayer);
           }
         }
         else if(seg.pts.length>1)
@@ -7941,10 +7945,11 @@ function redrawFlight(){
       // 面は閉じて描く。**塗らない**（報告書の結果図に合わせる）。
       // **始点・終点は出さない**（どこが始まりでも同じ図になる）
       if(flightPath.length>2){
-        L.polygon(flightPath,{color:'#9b59b6',weight:2.5,opacity:.95,fill:false}).addTo(flightLayer);
-        if(segVal('area_type')==='旋回上昇'){   // ◎（旋回上昇）
-          const inner=innerRing(flightPath);
-          if(inner.length>2) L.polygon(inner,{color:'#9b59b6',weight:2,opacity:.95,fill:false,interactive:false}).addTo(flightLayer);
+        // 旋回上昇は ◎（きれいな二重丸）。囲った形は薄く残す
+        if(segVal('area_type')==='旋回上昇' && drawSoar(flightLayer, flightPath, {color:'#9b59b6'})){
+          L.polygon(flightPath,{color:'#9b59b6',weight:1,opacity:.35,fill:false,dashArray:'4,4'}).addTo(flightLayer);
+        } else {
+          L.polygon(flightPath,{color:'#9b59b6',weight:2.5,opacity:.95,fill:false}).addTo(flightLayer);
         }
       }
       else if(flightPath.length>1) L.polyline(flightPath,{color:'#9b59b6',weight:3,opacity:.6,dashArray:'5,4'}).addTo(flightLayer);
@@ -8720,6 +8725,8 @@ function drawMap(obs,notes,flights,targets,route,nests){
   const legend={};   // 凡例用：値→色
   // 表示切り替え: トレースが混んできたら始終マーカーを消して線だけにできる。向きは等間隔の細い矢印で補える
   const endsOn=flightEndsOn(), arrowsOn=flightArrowsOn();
+  // 歩行の線が1本でもあるか。あるときだけ、飛翔を点線にして歩行と分ける
+  const hasWalk=(flights||[]).some(x=>lineKind(x)===LINE_WALK);
   (flights||[]).forEach(f=>{ const path=(f.path||[]).filter(validPathPt);
     const area=isArea(f);
     if(path.length < minPointsFor(shapeOf(f))) return;
@@ -8730,24 +8737,36 @@ function drawMap(obs,notes,flights,targets,route,nests){
       // 面は閉じて描く。**塗らない・滑らかにしない・始終の印と矢印は出さない**。
       // 報告書の結果図に合わせる（面は輪郭だけ・色は種ごと。2026-08-12 に6業務の図で確認）。
       // 旋回上昇だけは ◎（内側にもう1本の輪）にする——凡例で他と区別されている記号
-      const pg=L.polygon(path,{color:col,weight:2.5,opacity:.95,fill:false}).addTo(mapObj);
-      pg.bindPopup(`${head}<br>${esc(f.area_type||'面')} ・ 面積 約${m.text}<br>${esc(indCount(f.count))}個体<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
-      if(isSoaring(f)){
-        const inner=innerRing(path);
-        if(inner.length>2) L.polygon(inner,{color:col,weight:2,opacity:.95,fill:false,interactive:false}).addTo(mapObj);
-      }
+      // 旋回上昇は ◎（きれいな二重丸）。それ以外は囲った形のまま輪郭だけ
+      const pg = isSoaring(f)
+        ? drawSoar(mapObj, path, {color:col, interactive:true})
+        : L.polygon(path,{color:col,weight:2.5,opacity:.95,fill:false}).addTo(mapObj);
+      if(pg) pg.bindPopup(`${head}<br>${esc(f.area_type||'面')} ・ 面積 約${m.text}<br>${esc(indCount(f.count))}個体<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
     } else {
       const disp=smoothPath(path);   // 線・矢印とも表示用の滑らか経路に載せる（ズレると矢印が線から浮く）
-      const pl=L.polyline(disp,{color:col,weight:4,opacity:.85}).addTo(mapObj);
+      const kind=lineKind(f);
+      // 同じ図に歩行があるときだけ、飛翔を点線にして分ける（タンチョウの図の流儀）。
+      // 常に点線にすると、猛禽だけの図（飛翔が実線）と食い違う
+      const dashed = hasWalk && kind!==LINE_WALK;
+      const pl=L.polyline(disp,{color:col,weight:4,opacity:.85,
+        dashArray: dashed?'7,5':null}).addTo(mapObj);
       pl.bindPopup(`${head}<br>${esc(indCount(f.count))}個体 ・ ${esc(f.height_class||'')}<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
+      // 攻撃は →×→（線の中ほどに ×）
+      if(kind===LINE_ATTACK && disp.length>1)
+        L.marker(disp[Math.floor(disp.length/2)],{icon:attackIcon(col), interactive:false}).addTo(mapObj);
       if(endsOn){
         const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
         L.marker(path[0],{icon:badge('始','#3fb984')}).addTo(mapObj);
         L.marker(path[path.length-1],{icon:badge('終','#d05555')}).addTo(mapObj);
       }
-      if(arrowsOn){ const dive=isDive(f); flightArrowPts(disp).forEach(a=>
+      // 急降下（ハンティング）の ↠ は**終わりに1つだけ**。報告書の凡例と同じ
+      //（途中に何度も出すと、飛翔経路の矢印と見分けがつかない）
+      if(arrowsOn && isDive(f) && disp.length>1){
+        const end=disp[disp.length-1], b=bearingDeg(disp[disp.length-2], end);
+        L.marker(end,{icon:flightArrowIcon(b,col,true), interactive:false, rotateWithView:true}).addTo(mapObj);
+      } else if(arrowsOn){ flightArrowPts(disp).forEach(a=>
         // rotateWithView: 地図を回転させたとき矢印も地面に追随させる（leaflet-rotate。未対応環境では無視される）
-        L.marker(a.p,{icon:flightArrowIcon(a.b,col,dive), interactive:false, rotateWithView:true}).addTo(mapObj)); }
+        L.marker(a.p,{icon:flightArrowIcon(a.b,col), interactive:false, rotateWithView:true}).addTo(mapObj)); }
     }
     path.forEach(p=>group.push(p));
   });
@@ -8805,21 +8824,57 @@ function flightArrowIcon(bearing, col, triple){
       </g>
     </svg>`});
 }
-// 急降下（ハンティング）の記録か。報告書では「↠」で描き分ける
-const DIVE_BEHAVIORS=['急降下','Ht(狩り)'];
-function isDive(f){
+/* ---------- 線の描き分け（報告書の結果図の凡例に合わせる） ----------
+   →    飛翔経路（ふつう）
+   ↠    急降下（ハンティング）… 終わりに1つだけ
+   →×→  攻撃 … 線の中ほどに ×
+   →    歩行経路 … 実線。**同じ図に歩行があるときは、飛翔を点線にして分ける**
+        （タンチョウの図の流儀。猛禽だけの図では飛翔が実線なので、常に点線にはしない）
+
+   **飛翔の行動は「狩り」**（観察側の「Ht(狩り)」とは別の言い方。どちらも「狩り」を
+   含むので、これで両方に当たる）。2026-08-12、Ht(狩り) だけを見ていて当たらなかった。
+   1本の線に複数の行動が付くことがあるので、**強い順に1つだけ**選ぶ。 */
+const DIVE_BEHAVIORS=['急降下','狩り'];
+const LINE_DIVE='急降下', LINE_ATTACK='攻撃', LINE_WALK='歩行';
+function lineKind(f){
   const b=String((f&&f.behavior)||'');
-  return DIVE_BEHAVIORS.some(x=>b.includes(x));
+  if(DIVE_BEHAVIORS.some(x=>b.includes(x))) return LINE_DIVE;
+  if(b.includes(LINE_ATTACK)) return LINE_ATTACK;
+  if(b.includes(LINE_WALK)) return LINE_WALK;
+  return '';
 }
-// ◎（旋回上昇）の内側の輪。囲った輪を重心へ向けて縮めるだけなので、
-// 手で描いた形のままでも二重丸に見える
+function isDive(f){ return lineKind(f)===LINE_DIVE; }
+// 攻撃の × の印（線の中ほどに置く）
+function attackIcon(col){
+  return L.divIcon({className:'', iconSize:[16,16], iconAnchor:[8,8],
+    html:`<svg width="16" height="16" viewBox="0 0 16 16" style="display:block;">
+      <path d="M3 3 L13 13 M13 3 L3 13" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+      <path d="M3 3 L13 13 M13 3 L3 13" fill="none" stroke="${col}" stroke-width="2" stroke-linecap="round"/>
+    </svg>`});
+}
+// ◎（旋回上昇）の内側の輪の割合
 const SOAR_INNER=0.45;
-function innerRing(path, ratio){
+/* ◎ は**きれいな円**で描く。報告書の記号がそうなっているため。
+   囲った形をそのまま二重にすると、いびつな二重丸になって記号に見えない。
+   中心は囲った形の重心、大きさは**囲った面積と同じ円の半径**にするので、
+   描いた広がりの情報は失わない（記録そのものは囲った形のまま持っている）。 */
+function soarCircle(path){
   const p=(path||[]).filter(validPathPt);
-  if(p.length<3) return [];
+  if(p.length<3) return null;
   const cy=p.reduce((s,q)=>s+q[0],0)/p.length, cx=p.reduce((s,q)=>s+q[1],0)/p.length;
-  const r=(ratio==null?SOAR_INNER:ratio);
-  return p.map(q=>[cy+(q[0]-cy)*r, cx+(q[1]-cx)*r]);
+  const a=pathArea(p);
+  if(!(a>0)) return null;
+  return { c:[cy,cx], r:Math.sqrt(a/Math.PI) };
+}
+// 地図に ◎ を描く（外側と内側の2本）。描けたら true
+function drawSoar(layer, path, opt){
+  const s=soarCircle(path); if(!s) return false;
+  const o=opt||{};
+  const base={color:o.color||'#9b59b6', weight:o.weight||2.5, opacity:o.opacity==null?.95:o.opacity,
+    fill:false, interactive:!!o.interactive};
+  const outer=L.circle(s.c,Object.assign({radius:s.r},base)).addTo(layer);
+  L.circle(s.c,Object.assign({radius:s.r*SOAR_INNER},base,{weight:(o.weight||2.5)*0.8,interactive:false})).addTo(layer);
+  return outer;
 }
 // 旋回上昇か（◎で描く）
 function isSoaring(f){ return isArea(f) && String((f&&f.area_type)||'')==='旋回上昇'; }
