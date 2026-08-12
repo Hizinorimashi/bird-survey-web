@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v203（2026-08-12 範囲（面）を記録できるようにした）';
+const APP_VERSION = 'v204（2026-08-12 範囲は地図の ⬠ ボタンから描く）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2758,6 +2758,26 @@ SCREENS.obsEdit = (argStr)=>{
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapUndo()" title="1つ戻す">↶</button>
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapClear()" title="全部消す">🗑</button>
         </div>
+        <!-- トレースの形と、面の種類。**地図のすぐ下に置く**（折りたたみの中だと、
+             描いてから開き直すことになり、現場で手と目が行ったり来たりする）。
+             線＝飛んだ道すじ、面＝範囲を囲む（旋回上昇・行動範囲・営巣範囲） -->
+        <div id="flShapeWrap" style="display:none; margin-top:6px;">
+          <div class="row" style="gap:8px; align-items:center;">
+            <span class="tiny muted" style="min-width:2.5em;">形</span>
+            <div class="seg grow" data-seg="fl_shape">
+              <button type="button" class="on" onclick="pickObs(this,'fl_shape'); flShapePick()">線</button>
+              <button type="button" onclick="pickObs(this,'fl_shape'); flShapePick()">面</button>
+            </div>
+          </div>
+          <div id="flAreaTypeWrap" style="display:none; margin-top:4px;">
+            <div class="row" style="gap:8px; align-items:flex-start;">
+              <span class="tiny muted" style="min-width:2.5em; padding-top:6px;">種類</span>
+              <div class="seg grow" data-seg="fl_area_type" style="flex-wrap:wrap;">
+                ${AREA_TYPES.map(x=>`<button type="button" onclick="pickObs(this,'fl_area_type'); flAreaTypePick()">${esc(x)}</button>`).join('')}
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="note" id="obsOnlyNote" style="display:none;">飛翔経路だけの記録です。観察にしか残せない項目（性別・確認方法・生息環境・巣など）は入力できません。止まった場所を記録するなら <b>P</b> を落としてください。
           <div class="sp"></div><button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsOnlyReset()">観察の項目を最初の状態に戻す</button></div>
         <div class="note" id="legacyPosNote" style="display:none;">この記録の位置は、以前の画面では「止まり木・巣など」の位置でした。巣の位置なら下のボタンで移せます。
@@ -2814,20 +2834,6 @@ SCREENS.obsEdit = (argStr)=>{
           <div class="two obs-only">
             <label class="field"><span class="lab">確認方法</span>${segSelect('detection_method',OPT.detection)}</label>
             <label class="field"><span class="lab">確認方向（任意）</span>${segSelect('direction',OPT.direction,true)}</label>
-          </div>
-          <!-- トレースの形。線＝飛んだ道すじ、面＝範囲を囲む（旋回上昇・行動範囲・営巣範囲）。
-               既定は線（今までどおり）。面のときだけ「面の種類」を出し、意味の無い飛翔高度は隠す -->
-          <div class="two" id="flShapeWrap" style="display:none;">
-            <label class="field"><span class="lab">形</span>
-              <select data-seg="fl_shape" onchange="flShapePick()">
-                <option value="${esc(SHAPE_LINE)}">線（飛んだ道すじ）</option>
-                <option value="${esc(SHAPE_AREA)}">面（範囲を囲む）</option>
-              </select></label>
-            <label class="field" id="flAreaTypeWrap" style="display:none;"><span class="lab">面の種類</span>
-              <select data-seg="fl_area_type" onchange="flAreaTypePick()">
-                <option value="">未選択</option>
-                ${AREA_TYPES.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}
-              </select></label>
           </div>
           <label class="field" id="flHeightWrap" style="display:none;"><span class="lab">飛翔高度</span>${segSelect('fl_height',OPT.flightHeight)}</label>
           <label class="field obs-only"><span class="lab">信頼度</span>${segSelect('confidence',OPT.confidence)}</label>
@@ -3155,7 +3161,9 @@ function openMultiTrace(svUuid){
 function pickObs(btn,field,val){
   const before=btn.classList.contains('on');   // 同じ値を押し直しただけなら未保存扱いにしない（無用な離脱確認を出さない）
   btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on')); btn.classList.add('on'); syncOther(field);
-  if(!before) SCREENS._dirty=true;
+  // 経路の読み込みで押した分は「書きかけ」にしない（toggleMulti と同じ扱い）。
+  // しないと、トレースを選び直しただけで離脱確認が出る
+  if(!before && !SCREENS._flLoading) SCREENS._dirty=true;
   if(field==='identification_status') updateIdHint(); }
 function segVal(field){ const root=document.querySelector(`[data-seg="${field}"]`); if(!root) return '';
   if(root.tagName==='SELECT') return root.value;   // プルダウン版（「なし」は value="" なのでそのまま空）
@@ -3951,7 +3959,7 @@ function pfSet(mode){
   PF_MODE=mode;
   PF_SEL=-1;   // モードを選び直したら「新しく落とす」に戻す
   if(typeof segChips==='function') segChips();
-  ['P','F','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', mode===m); });
+  ['P','F','A','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', mode===m); });
   pfInfo(); pfSyncFlightFields();
 }
 function pfPoints(){ return PF_SEGS.filter(x=>x.t==='P'); }
@@ -4327,7 +4335,11 @@ function flLoadFrom(seg){
     // 形が先。**未指定は線**（今までの記録・古い版と同じ扱い）
     const shape=(fl.shape===SHAPE_AREA)?SHAPE_AREA:SHAPE_LINE;
     segSet('fl_shape', shape);
-    segSet('fl_area_type', (shape===SHAPE_AREA)?(fl.area_type||''):'');
+    // 種類はボタン群。空にするときは「なし」のボタンが無いので、押されている印を自分で外す
+    //（外さないと、前のトレースの種類が次のトレースに残って見える）
+    const atEl=document.querySelector('[data-seg="fl_area_type"]');
+    if(atEl) [...atEl.querySelectorAll('button.on')].forEach(b=>b.classList.remove('on'));
+    if(shape===SHAPE_AREA && (fl.area_type||'')) segSet('fl_area_type', fl.area_type);
     segSet('fl_height', fl.height||'');
     const segEl=document.querySelector('[data-seg="fl_behavior"]');
     if(segEl){
@@ -4357,7 +4369,9 @@ function pfSyncFlightFields(){
   // 画面に置いたままにすると、経路を消したり足したりしたとき別の経路に値が化ける
   // 編集対象は「一覧で選んでいる経路」。選んでいなければ、経路が1本のときだけその経路
   const selSeg=(PF_SEL>=0)?PF_SEGS[PF_SEL]:null;
-  const fls=pfSaveableFls();
+  // 点が足りないうちも対象にする。**1点目から形と種類を選べる**ようにするため
+  //（保存できる点数まで待たせると、描いてから欄を探すことになる）
+  const fls=PF_SEGS.filter(sg=>sg.t==='F');
   const one=(selSeg && selSeg.t==='F') ? selSeg : ((fls.length===1)?fls[0]:null);
   const prev=SCREENS._flSeg||null;
   if(prev && prev!==one && PF_SEGS.includes(prev)) flStoreInto(prev);   // 隠す前に、いままでの経路へ控える
@@ -4385,7 +4399,9 @@ function flTimeEdit(which){
 function pfInfo(){
   const el=$('#mapInfo'); if(!el) return;
   const np=pfPoints().length, nf=pfPaths().length;
-  const parts=[PF_MODE==='P'?'P：タップで止まっていた場所':(PF_MODE==='F'?'F：タップで飛翔経路':'N：タップで巣の位置')];
+  const parts=[PF_MODE==='P'?'P：タップで止まっていた場所'
+    :(PF_MODE==='F'?'F：タップで飛翔経路'
+    :(PF_MODE==='A'?'⬠：タップで範囲を囲む（3点以上）':'N：タップで巣の位置'))];
   if(np) parts.push('止まり '+np+'か所');
   if(nf) parts.push('経路 '+nf+'本');
   if(PF_NEST) parts.push('巣あり');
@@ -4428,10 +4444,11 @@ function pfDrop(lat,lon){
     perchTabs(); perchLoad();
   } else {
     const last=PF_SEGS[PF_SEGS.length-1];
-    // 新しいトレースは必ず線から始める（形は描いたあとに欄で変える）。
-    // 直前のトレースの形を引き継ぐと、線のつもりで描いたものが面になる
+    // 形は**押したボタンで決まる**（F＝線 / ⬠＝面）。描き始める前に決められるので、
+    // 描いてから欄を探す必要がない。前のトレースの形は引き継がない
+    const newShape=(PF_MODE==='A')?SHAPE_AREA:SHAPE_LINE;
     if(PF_NEWLINE || !last || last.t!=='F'){ PF_SEGS.push({t:'F', id:pfId(), pts:[[lat,lon]], times:[now],
-      fl:{height:'',behavior:'',shape:SHAPE_LINE,area_type:''}}); PF_NEWLINE=false; }
+      fl:{height:'',behavior:'',shape:newShape,area_type:''}}); PF_NEWLINE=false; }
     else { last.pts.push([lat,lon]); last.times.push(now); last.edited=true; }
   }
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips();
@@ -4582,12 +4599,15 @@ function addPfControl(m){
     box.style.cssText='display:flex; flex-direction:column; gap:6px;';
     const mk=(id,txt,mode)=>{ const b=L.DomUtil.create('button','locate-btn pf-btn',box);
       b.type='button'; b.id=id; b.textContent=txt;
-      b.title=(mode==='P')?'止まっていた場所を落とす':(mode==='F'?'飛翔経路を描く':'巣の位置を指定する');
+      b.title=(mode==='P')?'止まっていた場所を落とす':(mode==='F'?'飛翔経路を描く'
+        :(mode==='A'?'範囲を囲む（旋回上昇・行動範囲・営巣範囲）':'巣の位置を指定する'));
       if(PF_MODE===mode) b.classList.add('on');
       L.DomEvent.disableClickPropagation(b);
       L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>pfSet(mode));
       return b; };
-    mk('pfP','P','P'); mk('pfF','F','F'); mk('pfN','N','N');
+    // ⬠＝面（範囲）。F と別のボタンにする。**描く前に決められる**ようにしないと、
+    // 描いてから欄を探すことになり、現場で手が止まる（2026-08-12 実機で指摘）
+    mk('pfP','P','P'); mk('pfF','F','F'); mk('pfA','⬠','A'); mk('pfN','N','N');
     return box; }});
   new C({position:'topleft'}).addTo(m);
 }
@@ -8192,7 +8212,7 @@ SCREENS.flightList = (u)=>{
         <h3 class="grow" style="margin:0;">経路一覧 <span class="muted small">(${flights.length})</span></h3>
       </div>
       ${flights.length? flights.map(f=>flightCard(u,f)).join('')
-        : '<div class="empty small">まだ飛翔経路がありません。記録は「🐦 観察を追加」の画面で、地図の <b>F</b> を押して描きます。</div>'}
+        : '<div class="empty small">まだ飛翔経路がありません。記録は「🐦 観察を追加」の画面で、地図の <b>F</b>（飛んだ道すじ）または <b>⬠</b>（範囲を囲む）を押して描きます。</div>'}
     `,
     onMount:()=>{ if(drawable.length) _mapTimer=setTimeout(()=>drawMap([],[],drawable),50); }
   };
