@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v205（2026-08-12 地図のボタンの重なりを直した）';
+const APP_VERSION = 'v206（2026-08-12 囲むと面・記号を報告書に合わせた）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2758,25 +2758,29 @@ SCREENS.obsEdit = (argStr)=>{
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapUndo()" title="1つ戻す">↶</button>
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapClear()" title="全部消す">🗑</button>
         </div>
-        <!-- トレースの形と、面の種類。**地図のすぐ下に置く**（折りたたみの中だと、
-             描いてから開き直すことになり、現場で手と目が行ったり来たりする）。
-             線＝飛んだ道すじ、面＝範囲を囲む（旋回上昇・行動範囲・営巣範囲） -->
-        <div id="flShapeWrap" style="display:none; margin-top:6px;">
-          <div class="row" style="gap:8px; align-items:center;">
-            <span class="tiny muted" style="min-width:2.5em;">形</span>
-            <div class="seg grow" data-seg="fl_shape">
+        <!-- **いま選んでいるトレース（L）の属性を、地図のすぐ下に1行でまとめる。**
+             報告書の記号（◎旋回上昇・↠急降下）は L ごとの属性で決まるので、
+             線でも面でも同じ場所で選べないと図が作れない。
+             折りたたみの中だと、描いてから開き直すことになり現場で手が止まる -->
+        <div id="flAttrRow" style="display:none; margin-top:6px;">
+          <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap;">
+            <span class="tiny muted" id="flAttrLabel" style="font-weight:700;">L1</span>
+            <div class="seg" data-seg="fl_shape">
               <button type="button" class="on" onclick="pickObs(this,'fl_shape'); flShapePick()">線</button>
               <button type="button" onclick="pickObs(this,'fl_shape'); flShapePick()">面</button>
             </div>
+            <label id="flAreaTypeWrap" style="display:none; margin:0;">
+              <select data-seg="fl_area_type" onchange="flAreaTypePick()" style="width:auto;">
+                <option value="">種類を選ぶ</option>
+                ${AREA_TYPES.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}
+              </select></label>
+            <label id="flHeightWrap" style="display:none; margin:0;">
+              <select data-seg="fl_height" onchange="flHeightPick()" style="width:auto;">
+                <option value="">高度を選ぶ</option>
+                ${OPT.flightHeight.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}
+              </select></label>
           </div>
-          <div id="flAreaTypeWrap" style="display:none; margin-top:4px;">
-            <div class="row" style="gap:8px; align-items:flex-start;">
-              <span class="tiny muted" style="min-width:2.5em; padding-top:6px;">種類</span>
-              <div class="seg grow" data-seg="fl_area_type" style="flex-wrap:wrap;">
-                ${AREA_TYPES.map(x=>`<button type="button" onclick="pickObs(this,'fl_area_type'); flAreaTypePick()">${esc(x)}</button>`).join('')}
-              </div>
-            </div>
-          </div>
+          <div id="flBehWrap">${segFold('fl_behavior','行動（複数選択可）',OPT.flightBehavior)}</div>
         </div>
         <div class="note" id="obsOnlyNote" style="display:none;">飛翔経路だけの記録です。観察にしか残せない項目（性別・確認方法・生息環境・巣など）は入力できません。止まった場所を記録するなら <b>P</b> を落としてください。
           <div class="sp"></div><button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsOnlyReset()">観察の項目を最初の状態に戻す</button></div>
@@ -2829,13 +2833,13 @@ SCREENS.obsEdit = (argStr)=>{
           </div>
           <div id="idHint" class="note" style="display:none; margin:2px 0 10px;"></div>
           <div class="obs-only">${segFold('behavior','行動（複数選択可）',OPT.behavior)}</div>
-          <div id="flBehWrap" style="display:none;">${segFold('fl_behavior','飛翔の行動（複数選択可）',OPT.flightBehavior)}</div>
+          <!-- 飛翔の行動・高度は**地図のすぐ下（#flAttrRow）**に移した。
+               L ごとの属性なので、地図で L を選んだその場で入れられる方がよい -->
           <div id="breedHint" class="note" style="display:none; margin:2px 0 10px;"></div>
           <div class="two obs-only">
             <label class="field"><span class="lab">確認方法</span>${segSelect('detection_method',OPT.detection)}</label>
             <label class="field"><span class="lab">確認方向（任意）</span>${segSelect('direction',OPT.direction,true)}</label>
           </div>
-          <label class="field" id="flHeightWrap" style="display:none;"><span class="lab">飛翔高度</span>${segSelect('fl_height',OPT.flightHeight)}</label>
           <label class="field obs-only"><span class="lab">信頼度</span>${segSelect('confidence',OPT.confidence)}</label>
           <label class="field row" style="gap:12px; align-items:center;">
             <input type="checkbox" id="needsReview" style="width:auto;" ${o.needs_review?'checked':''}>
@@ -3959,7 +3963,7 @@ function pfSet(mode){
   PF_MODE=mode;
   PF_SEL=-1;   // モードを選び直したら「新しく落とす」に戻す
   if(typeof segChips==='function') segChips();
-  ['P','F','A','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', mode===m); });
+  ['P','F','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', mode===m); });
   pfInfo(); pfSyncFlightFields();
 }
 function pfPoints(){ return PF_SEGS.filter(x=>x.t==='P'); }
@@ -4315,15 +4319,25 @@ function flAreaTypePick(){
   if(SCREENS._flLoading) return;
   SCREENS._dirty=true;
   const seg=SCREENS._flSeg;
+  if(seg && seg.t==='F'){ flStoreInto(seg); pfRedraw(); }   // ◎（旋回上昇）は種類で決まるので描き直す
+}
+function flHeightPick(){
+  if(SCREENS._flLoading) return;
+  SCREENS._dirty=true;
+  const seg=SCREENS._flSeg;
   if(seg && seg.t==='F') flStoreInto(seg);
 }
-// 形にあわせた欄の出し入れ。**1か所にまとめる**（散らすと画面ごとに出方がずれる）
+// 形にあわせた欄の出し入れ。**1か所にまとめる**（散らすと画面ごとに出方がずれる）。
+// 行動は線でも面でも要る（報告書の記号が行動で決まる）ので、出し入れしない
 function flShapeSyncUI(){
-  const on=!!SCREENS._flSeg;
+  const one=SCREENS._flSeg, on=!!one;
   const area=on && segVal('fl_shape')===SHAPE_AREA;
-  const w=$('#flShapeWrap'); if(w) w.style.display=on?'':'none';
+  const w=$('#flAttrRow'); if(w) w.style.display=on?'':'none';
   const a=$('#flAreaTypeWrap'); if(a) a.style.display=area?'':'none';
-  const h=$('#flHeightWrap'); if(h) h.style.display=(on&&!area)?'':'none';
+  const h=$('#flHeightWrap'); if(h) h.style.display=(on&&!area)?'':'none';   // 面に飛翔高度の意味は無い
+  const lab=$('#flAttrLabel');
+  if(lab && on){ const i=PF_SEGS.indexOf(one);
+    lab.textContent=(i>=0?segLabel(i):'L')+(area?'（面）':'（線）'); }
 }
 // 経路の高度・行動を画面へ読み込む。
 // 「その他（記入内容）」は標準の「その他」ボタン＋記入欄に分解して出す。
@@ -4335,11 +4349,7 @@ function flLoadFrom(seg){
     // 形が先。**未指定は線**（今までの記録・古い版と同じ扱い）
     const shape=(fl.shape===SHAPE_AREA)?SHAPE_AREA:SHAPE_LINE;
     segSet('fl_shape', shape);
-    // 種類はボタン群。空にするときは「なし」のボタンが無いので、押されている印を自分で外す
-    //（外さないと、前のトレースの種類が次のトレースに残って見える）
-    const atEl=document.querySelector('[data-seg="fl_area_type"]');
-    if(atEl) [...atEl.querySelectorAll('button.on')].forEach(b=>b.classList.remove('on'));
-    if(shape===SHAPE_AREA && (fl.area_type||'')) segSet('fl_area_type', fl.area_type);
+    segSet('fl_area_type', (shape===SHAPE_AREA)?(fl.area_type||''):'');
     segSet('fl_height', fl.height||'');
     const segEl=document.querySelector('[data-seg="fl_behavior"]');
     if(segEl){
@@ -4378,8 +4388,9 @@ function pfSyncFlightFields(){
   if(one!==prev && one) flLoadFrom(one);
   SCREENS._flSeg=one;
   const on=!!one;
-  flShapeSyncUI();   // 形・面の種類・飛翔高度の出し入れは1か所（flShapeSyncUI）に任せる
-  const b=$('#flBehWrap'); if(b) b.style.display=on?'':'none';
+  // 形・面の種類・飛翔高度・L番号の出し入れは1か所（flShapeSyncUI）に任せる。
+  // 行動は線でも面でも同じ場所（#flAttrRow の中）にあるので、別に出し入れしない
+  flShapeSyncUI();
   if(typeof syncDisabledStates==='function') syncDisabledStates();
   if(typeof legacyPosNoteSync==='function') legacyPosNoteSync();
   const t=$('#flTimeWrap');
@@ -4400,12 +4411,35 @@ function pfInfo(){
   const el=$('#mapInfo'); if(!el) return;
   const np=pfPoints().length, nf=pfPaths().length;
   const parts=[PF_MODE==='P'?'P：タップで止まっていた場所'
-    :(PF_MODE==='F'?'F：タップで飛翔経路'
-    :(PF_MODE==='A'?'⬠：タップで範囲を囲む（3点以上）':'N：タップで巣の位置'))];
+    :(PF_MODE==='F'?'L：タップで線。始点をもう一度タップすると囲み（面）':'N：タップで巣の位置')];
   if(np) parts.push('止まり '+np+'か所');
   if(nf) parts.push('経路 '+nf+'本');
   if(PF_NEST) parts.push('巣あり');
   el.textContent=parts.join(' ・ ');
+}
+/* 線を描いている途中で**始点をもう一度タップしたら、閉じて面にする**。
+   面にするための専用ボタンは置かない（地図が狭くなり、画面もうるさくなる）。
+   閉じたと判定するのは「始点の印を押したとき」だけ。近くを通っただけで面にすると、
+   元の場所へ戻ってきた飛翔経路が勝手に範囲扱いになる */
+const PF_CLOSE_PX = 28;   // 始点の印（22px）より少し広め
+function pfTryClose(sg,lat,lon){
+  if(!sg || sg.t!=='F' || segShape(sg)===SHAPE_AREA) return false;
+  const pts=(sg.pts||[]).filter(validPathPt);
+  if(pts.length<3 || !mapObj) return false;   // 3点以上でないと囲めない
+  let a,b;
+  try{ a=mapObj.latLngToContainerPoint(pts[0]); b=mapObj.latLngToContainerPoint([lat,lon]); }
+  catch(e){ return false; }
+  if(Math.hypot(a.x-b.x, a.y-b.y) > PF_CLOSE_PX) return false;
+  // 囲めない形（一直線・線が交差など）なら、線のままにして理由を知らせる
+  const pb=areaProblem(pts);
+  if(pb){ toast(`囲みにできません（${pb}）`, 5000); return true; }
+  sg.fl=sg.fl||{}; sg.fl.shape=SHAPE_AREA; sg.edited=true;
+  SCREENS._dirty=true;
+  // 画面がこのトレースを写しているなら、欄も面に切り替える
+  //（対象が変わったときしか読み込まないので、ここで読み直さないと線のままに見える）
+  if(SCREENS._flSeg===sg) flLoadFrom(sg);
+  toast('囲み（面）にしました。下の欄で種類を選んでください', 4500);
+  return true;
 }
 function pfDrop(lat,lon){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;   // 保存の後処理中は地図も触らせない
@@ -4426,7 +4460,9 @@ function pfDrop(lat,lon){
         // 古い記録の案内は「開いたときに読み込んだその位置」だけが対象。動かしたら終わりにする
         if(sg.id===PF_LEGACY_ID){ PF_LEGACY_ID=null; }
       }
-      else { sg.pts.push([lat,lon]); sg.times.push(now); sg.edited=true; }
+      else {
+        if(pfTryClose(sg,lat,lon)){ pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); return; }
+        sg.pts.push([lat,lon]); sg.times.push(now); sg.edited=true; }
       SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); return;
     }
   }
@@ -4444,11 +4480,11 @@ function pfDrop(lat,lon){
     perchTabs(); perchLoad();
   } else {
     const last=PF_SEGS[PF_SEGS.length-1];
-    // 形は**押したボタンで決まる**（F＝線 / ⬠＝面）。描き始める前に決められるので、
-    // 描いてから欄を探す必要がない。前のトレースの形は引き継がない
-    const newShape=(PF_MODE==='A')?SHAPE_AREA:SHAPE_LINE;
+    // トレースは**必ず線から始まる**。面にするのは「始点をもう一度タップして閉じる」操作。
+    // 前のトレースの形は引き継がない（線のつもりが面になるのを防ぐ）
     if(PF_NEWLINE || !last || last.t!=='F'){ PF_SEGS.push({t:'F', id:pfId(), pts:[[lat,lon]], times:[now],
-      fl:{height:'',behavior:'',shape:newShape,area_type:''}}); PF_NEWLINE=false; }
+      fl:{height:'',behavior:'',shape:SHAPE_LINE,area_type:''}}); PF_NEWLINE=false; }
+    else if(pfTryClose(last,lat,lon)){ /* 閉じた（点は足さない） */ }
     else { last.pts.push([lat,lon]); last.times.push(now); last.edited=true; }
   }
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips();
@@ -4525,12 +4561,20 @@ function pfRedraw(){
       const selL=(PF_SEGS.indexOf(seg)===PF_SEL);
       const area=(seg.fl&&seg.fl.shape)===SHAPE_AREA;
       if(area){
-        // 面は閉じて塗る。**始点・終点の印は出さない**（どこが始まりでも同じ）
-        if(seg.pts.length>2)
-          L.polygon(seg.pts,{color:selL?'#ffd479':'#e0a030',weight:selL?5:3,
-            opacity:.95,fillColor:'#e0a030',fillOpacity:selL?.3:.18}).addTo(pfLayer);
+        // 面は閉じて描く。**塗らない**（報告書の結果図に合わせる）。
+        // **始点・終点の印は出さない**（どこが始まりでも同じ）。
+        // 旋回上昇は ◎（内側にもう1本の輪）
+        if(seg.pts.length>2){
+          L.polygon(seg.pts,{color:selL?'#ffd479':'#9b59b6',weight:selL?4:2.5,
+            opacity:.95,fill:false}).addTo(pfLayer);
+          if(((seg.fl&&seg.fl.area_type)||'')==='旋回上昇'){
+            const inner=innerRing(seg.pts);
+            if(inner.length>2) L.polygon(inner,{color:selL?'#ffd479':'#9b59b6',
+              weight:2,opacity:.95,fill:false,interactive:false}).addTo(pfLayer);
+          }
+        }
         else if(seg.pts.length>1)
-          L.polyline(seg.pts,{color:'#e0a030',weight:3,opacity:.6,dashArray:'5,4'}).addTo(pfLayer);
+          L.polyline(seg.pts,{color:'#9b59b6',weight:3,opacity:.6,dashArray:'5,4'}).addTo(pfLayer);
         // 面がどれか分かるよう、1点目に番号（または「面」）だけ置く
         L.marker(seg.pts[0],{icon:badge(nLines>1?segLabel(segIdx):'面','#9b59b6',22)}).addTo(pfLayer);
         seg.pts.forEach(pt=>L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#9b59b6',fillOpacity:1}).addTo(pfLayer));
@@ -4601,15 +4645,15 @@ function addPfControl(m){
     box.style.cssText='display:flex; flex-direction:row; gap:6px;';
     const mk=(id,txt,mode)=>{ const b=L.DomUtil.create('button','locate-btn pf-btn',box);
       b.type='button'; b.id=id; b.textContent=txt;
-      b.title=(mode==='P')?'止まっていた場所を落とす':(mode==='F'?'飛翔経路を描く'
-        :(mode==='A'?'範囲を囲む（旋回上昇・行動範囲・営巣範囲）':'巣の位置を指定する'));
+      b.title=(mode==='P')?'止まっていた場所を落とす'
+        :(mode==='F'?'線を描く（始点をもう一度タップすると囲みになる）':'巣の位置を指定する');
       if(PF_MODE===mode) b.classList.add('on');
       L.DomEvent.disableClickPropagation(b);
       L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>pfSet(mode));
       return b; };
-    // ⬠＝面（範囲）。F と別のボタンにする。**描く前に決められる**ようにしないと、
-    // 描いてから欄を探すことになり、現場で手が止まる（2026-08-12 実機で指摘）
-    mk('pfP','P','P'); mk('pfF','F','F'); mk('pfA','⬠','A'); mk('pfN','N','N');
+    // ボタンは3つに保つ。面は**始点をもう一度タップして閉じる**ことで作る
+    //（ボタンを増やすと画面がうるさく、地図も狭くなる。2026-08-12 実機で指摘）
+    mk('pfP','P','P'); mk('pfF','L','F'); mk('pfN','N','N');
     return box; }});
   new C({position:'topleft'}).addTo(m);
 }
@@ -7864,9 +7908,9 @@ function initFlightMap(){
     // 描けるかどうかの判定は traceDrawable に一本化する。ここだけ点数で見ると、
     // 全体図では出ない面がこの画面にだけ出る（2026-08-12 監査4巡目）
     if(!traceDrawable(of)) return;
-    // 面は閉じて塗る。開いた線で薄描きすると、保存済みの面が編集中だけ線に見える
+    // 面は閉じて描く（塗らない）。開いた線で薄描きすると、保存済みの面が編集中だけ線に見える
     if(isArea(of)) L.polygon(p,{color:'#9b59b6',weight:2,opacity:.35,
-      fillColor:'#9b59b6',fillOpacity:.1,interactive:false}).addTo(mapObj);
+      fill:false,interactive:false}).addTo(mapObj);
     else L.polyline(smoothPath(p),{color:'#e0a030',weight:3,opacity:.3,dashArray:'4,4'}).addTo(mapObj);
   }); }
   redrawFlight();
@@ -7885,7 +7929,7 @@ function redrawFlight(){
       const p=(tr.path||[]).filter(validPathPt);
       // トラックごとに形が違う。面を線で描くと、切り替えたときだけ開いた線に見える
       const trArea=shapeOf(tr.fields||{})===SHAPE_AREA;
-      if(trArea && p.length>2) L.polygon(p,{color:col,weight:3,opacity:.8,fillColor:col,fillOpacity:.15}).addTo(flightLayer);
+      if(trArea && p.length>2) L.polygon(p,{color:col,weight:2.5,opacity:.8,fill:false}).addTo(flightLayer);
       else if(p.length>1) L.polyline(p,{color:col,weight:3,opacity:.8}).addTo(flightLayer);
       if(p.length && !trArea) L.circleMarker(p[p.length-1],{radius:5,color:'#fff',weight:1,fillColor:col,fillOpacity:1}).addTo(flightLayer);
     });
@@ -7893,8 +7937,15 @@ function redrawFlight(){
   if(flightPath.length){
     const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[24,24],iconAnchor:[12,12]});
     if(flightIsArea()){
-      // 面は閉じて塗る。**始点・終点は出さない**（どこが始まりでも同じ図になる）
-      if(flightPath.length>2) L.polygon(flightPath,{color:'#9b59b6',weight:3,opacity:.95,fillColor:'#9b59b6',fillOpacity:.2}).addTo(flightLayer);
+      // 面は閉じて描く。**塗らない**（報告書の結果図に合わせる）。
+      // **始点・終点は出さない**（どこが始まりでも同じ図になる）
+      if(flightPath.length>2){
+        L.polygon(flightPath,{color:'#9b59b6',weight:2.5,opacity:.95,fill:false}).addTo(flightLayer);
+        if(segVal('area_type')==='旋回上昇'){   // ◎（旋回上昇）
+          const inner=innerRing(flightPath);
+          if(inner.length>2) L.polygon(inner,{color:'#9b59b6',weight:2,opacity:.95,fill:false,interactive:false}).addTo(flightLayer);
+        }
+      }
       else if(flightPath.length>1) L.polyline(flightPath,{color:'#9b59b6',weight:3,opacity:.6,dashArray:'5,4'}).addTo(flightLayer);
       flightPath.forEach(p=>L.circleMarker(p,{radius:4,color:'#fff',weight:1,fillColor:'#9b59b6',fillOpacity:1}).addTo(flightLayer));
       L.marker(flightPath[0],{icon:badge('面','#9b59b6')}).addTo(flightLayer);
@@ -8675,10 +8726,15 @@ function drawMap(obs,notes,flights,targets,route,nests){
     const m=traceMetric(f);
     const head=`<b>${area?'⬠':'🛩'} ${esc(f.species_name_snapshot||'（未同定）')}</b>${f.age_class&&ageNorm(f.age_class)!=='不明'?' ・ '+esc(ageNorm(f.age_class)):''}${f.individual_label?' ・ '+esc(f.individual_label):''}`;
     if(area){
-      // 面は閉じて塗る。**滑らかにしない・始終の印と矢印は出さない**
-      //（どこが始まりでも同じ図。丸めると囲った範囲が変わってしまう）
-      const pg=L.polygon(path,{color:col,weight:3,opacity:.9,fillColor:col,fillOpacity:.18}).addTo(mapObj);
+      // 面は閉じて描く。**塗らない・滑らかにしない・始終の印と矢印は出さない**。
+      // 報告書の結果図に合わせる（面は輪郭だけ・色は種ごと。2026-08-12 に6業務の図で確認）。
+      // 旋回上昇だけは ◎（内側にもう1本の輪）にする——凡例で他と区別されている記号
+      const pg=L.polygon(path,{color:col,weight:2.5,opacity:.95,fill:false}).addTo(mapObj);
       pg.bindPopup(`${head}<br>${esc(f.area_type||'面')} ・ 面積 約${m.text}<br>${esc(indCount(f.count))}個体<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
+      if(isSoaring(f)){
+        const inner=innerRing(path);
+        if(inner.length>2) L.polygon(inner,{color:col,weight:2,opacity:.95,fill:false,interactive:false}).addTo(mapObj);
+      }
     } else {
       const disp=smoothPath(path);   // 線・矢印とも表示用の滑らか経路に載せる（ズレると矢印が線から浮く）
       const pl=L.polyline(disp,{color:col,weight:4,opacity:.85}).addTo(mapObj);
@@ -8688,9 +8744,9 @@ function drawMap(obs,notes,flights,targets,route,nests){
         L.marker(path[0],{icon:badge('始','#3fb984')}).addTo(mapObj);
         L.marker(path[path.length-1],{icon:badge('終','#d05555')}).addTo(mapObj);
       }
-      if(arrowsOn){ flightArrowPts(disp).forEach(a=>
+      if(arrowsOn){ const dive=isDive(f); flightArrowPts(disp).forEach(a=>
         // rotateWithView: 地図を回転させたとき矢印も地面に追随させる（leaflet-rotate。未対応環境では無視される）
-        L.marker(a.p,{icon:flightArrowIcon(a.b,col), interactive:false, rotateWithView:true}).addTo(mapObj)); }
+        L.marker(a.p,{icon:flightArrowIcon(a.b,col,dive), interactive:false, rotateWithView:true}).addTo(mapObj)); }
     }
     path.forEach(p=>group.push(p));
   });
@@ -8734,15 +8790,38 @@ function flightArrowPts(path){
 // 細い線のV字矢印（白フチ付き・線の色に合わせる。位置指定の十字と同じ描法）。
 // 回転はCSSでなくSVG内部の rotate(角度 中心x 中心y) で行う——iOS SafariはSVG要素へのCSS回転の
 // 基準点が左上になることがあり、中心で回らず「線の横にずれた変な向きの矢印」になるため
-function flightArrowIcon(bearing, col){
+function flightArrowIcon(bearing, col, triple){
+  // 急降下（ハンティング）は**三重の矢じり**にする。報告書の凡例の「↠」に合わせる
+  //（→＝飛翔経路 / ↠＝急降下。同じ矢印だと図で見分けられない）
+  const one='M4 12 L9 5 L14 12';
+  const d=triple ? ['M4 15 L9 8 L14 15','M4 11 L9 4 L14 11','M4 7 L9 0 L14 7'] : [one];
+  const line=(w,c)=>d.map(p=>`<path d="${p}" fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`).join('');
   return L.divIcon({className:'', iconSize:[18,18], iconAnchor:[9,9],
     html:`<svg width="18" height="18" viewBox="0 0 18 18" style="display:block;">
       <g transform="rotate(${Math.round(bearing*10)/10} 9 9)">
-        <path d="M4 12 L9 5 L14 12" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M4 12 L9 5 L14 12" fill="none" stroke="${col}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        ${line(3.6,'#fff')}
+        ${line(1.6,col)}
       </g>
     </svg>`});
 }
+// 急降下（ハンティング）の記録か。報告書では「↠」で描き分ける
+const DIVE_BEHAVIORS=['急降下','Ht(狩り)'];
+function isDive(f){
+  const b=String((f&&f.behavior)||'');
+  return DIVE_BEHAVIORS.some(x=>b.includes(x));
+}
+// ◎（旋回上昇）の内側の輪。囲った輪を重心へ向けて縮めるだけなので、
+// 手で描いた形のままでも二重丸に見える
+const SOAR_INNER=0.45;
+function innerRing(path, ratio){
+  const p=(path||[]).filter(validPathPt);
+  if(p.length<3) return [];
+  const cy=p.reduce((s,q)=>s+q[0],0)/p.length, cx=p.reduce((s,q)=>s+q[1],0)/p.length;
+  const r=(ratio==null?SOAR_INNER:ratio);
+  return p.map(q=>[cy+(q[0]-cy)*r, cx+(q[1]-cx)*r]);
+}
+// 旋回上昇か（◎で描く）
+function isSoaring(f){ return isArea(f) && String((f&&f.area_type)||'')==='旋回上昇'; }
 // 飛翔経路の凡例＋色モード切替（種→齢→個体）を地図左下に置く
 function cycleFlightColorMode(){ const order=['種','齢','個体']; const cur=flightColorMode();
   const next=order[(order.indexOf(cur)+1)%order.length]; localStorage.setItem('bs_flightcolor',next); render(); }
