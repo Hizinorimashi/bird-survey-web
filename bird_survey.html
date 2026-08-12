@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v202（2026-08-11 変わらなかった記録を知らせる）';
+const APP_VERSION = 'v203（2026-08-12 範囲（面）を記録できるようにした）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -611,13 +611,26 @@ function countUpToDateCalls(){
 }
 function callsTotalBytes(){ let t=0; for(const jp in CALLS) t+=(CALLS[jp].sz||0); return t; }
 
+/* ---------- トレースの形（線 / 面）の決まり ----------
+   飛翔経路と同じ入れ物で、面（旋回上昇の円・行動範囲・推定営巣範囲）も扱う。
+   面は**閉じた線**なので、保存・同期・削除・まとめは今までの仕組みがそのまま効く。 */
+const SHAPE_LINE='線', SHAPE_AREA='面';
+// 面の種類。実務の結果図の凡例に合わせた（藻琴・斜里・陸志別・福島で共通）
+const AREA_TYPES=['旋回上昇','大まかな確認範囲','概略行動範囲','推定営巣範囲','その他'];
+// 面のうち、個体数として数えないもの。
+// 「推定営巣範囲」を羽数に足すと、確認個体数が実態より増える
+const AREA_TYPES_NOT_COUNTED=['概略行動範囲','推定営巣範囲','大まかな確認範囲'];
+
 /* ---------- 選択肢マスタ（指示書準拠） ---------- */
 const OPT = {
   method:['ラインセンサス','定点調査','任意観察','その他'],
   weather:['快晴','晴','曇','雨','雪','霧'],
   wind:['無風','弱い','やや強い','強い'],
   detection:['目視','鳴き声','目視および鳴き声','飛翔','痕跡','不明'],
-  behavior:['さえずり','地鳴き','採餌','飛翔','休息','警戒','繁殖行動','巣材運搬','巣立ち雛',
+  // 「声」「歩行」はツル類の記録で要る（鳴いた場所を残す／歩いて移動する）。
+  // 業務で使う「探餌」「移動」は既存の「採餌」「飛翔」と同じ意味なので**足さない**。
+  // 報告書へ出すときに業務の言い方へ直す（鳥類DB `data/vocab_behavior.csv`）
+  behavior:['さえずり','地鳴き','声','採餌','飛翔','歩行','休息','警戒','繁殖行動','巣材運搬','巣立ち雛',
     '餌運び','餌渡し','威嚇','給餌','P(止まり)','dF(ディスプレイ飛翔)','Ht(狩り)','fe(羽繕い)','その他'],
   habitat:['河畔林','森林','草地','農耕地','開放地','水域','市街地','その他'],
   // 齢は観察・飛翔で語彙をそろえる（2026-08-05）。以前の観察は 成/若/幼 で保存されているが、
@@ -635,6 +648,9 @@ const OPT = {
   noteCat:['調査条件','生息環境','調査結果','特記事項','考察メモ','報告書用メモ','次回課題','その他'],
   hypStatus:['未検証','検証中','検証済み','保留'],
   judgment:['支持','一部支持','支持されない','判断不能'],
+  // トレースの形。既定は線（今までどおり）。面は旋回上昇や行動範囲を囲むとき
+  flightShape:[SHAPE_LINE, SHAPE_AREA],
+  areaType:AREA_TYPES,
   flightHeight:['低（樹冠以下）','中（樹冠〜数十m）','高（上空）','不明'],
   flightBehavior:['旋回','直線飛行','帆翔（ソアリング）','はばたき','急降下','ディスプレイ','狩り','その他'],
   flightAge:['成鳥','亜成鳥','幼鳥','幼綿羽','不明'],
@@ -2799,6 +2815,20 @@ SCREENS.obsEdit = (argStr)=>{
             <label class="field"><span class="lab">確認方法</span>${segSelect('detection_method',OPT.detection)}</label>
             <label class="field"><span class="lab">確認方向（任意）</span>${segSelect('direction',OPT.direction,true)}</label>
           </div>
+          <!-- トレースの形。線＝飛んだ道すじ、面＝範囲を囲む（旋回上昇・行動範囲・営巣範囲）。
+               既定は線（今までどおり）。面のときだけ「面の種類」を出し、意味の無い飛翔高度は隠す -->
+          <div class="two" id="flShapeWrap" style="display:none;">
+            <label class="field"><span class="lab">形</span>
+              <select data-seg="fl_shape" onchange="flShapePick()">
+                <option value="${esc(SHAPE_LINE)}">線（飛んだ道すじ）</option>
+                <option value="${esc(SHAPE_AREA)}">面（範囲を囲む）</option>
+              </select></label>
+            <label class="field" id="flAreaTypeWrap" style="display:none;"><span class="lab">面の種類</span>
+              <select data-seg="fl_area_type" onchange="flAreaTypePick()">
+                <option value="">未選択</option>
+                ${AREA_TYPES.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}
+              </select></label>
+          </div>
           <label class="field" id="flHeightWrap" style="display:none;"><span class="lab">飛翔高度</span>${segSelect('fl_height',OPT.flightHeight)}</label>
           <label class="field obs-only"><span class="lab">信頼度</span>${segSelect('confidence',OPT.confidence)}</label>
           <label class="field row" style="gap:12px; align-items:center;">
@@ -2995,7 +3025,12 @@ SCREENS.obsEdit = (argStr)=>{
             SCREENS._loadedFl.push(f.uuid);
             PF_SEGS.push({t:'F', id:pfId(), fromExisting:true, srcUuid:f.uuid,
               pts:path.map(pt=>pt.slice()), times:path.map(()=>''),
-              fl:{height:f.height_class||'', behavior:f.behavior||''},
+              fl:{height:f.height_class||'', behavior:f.behavior||'',
+                  // 形も引き継ぐ。引き継がないと、開いて保存し直すだけで面が線に戻る
+                  shape:shapeOf(f), area_type:f.area_type||''},
+              // 開いたときの形を控える。**形を変えたら「触った」扱いにする**ため
+              //（控えないと、2点の線を面に変えても検査を素通りする）
+              shape0:shapeOf(f),
               ov:{start:f.start_time||'', end:f.end_time||''}});
           });
       }
@@ -3020,7 +3055,12 @@ SCREENS.obsEdit = (argStr)=>{
             SCREENS._loadedFl.push(f.uuid);
             PF_SEGS.push({t:'F', id:pfId(), fromExisting:true, srcUuid:f.uuid,
               pts:path.map(pt=>pt.slice()), times:path.map(()=>''),
-              fl:{height:f.height_class||'', behavior:f.behavior||''},
+              fl:{height:f.height_class||'', behavior:f.behavior||'',
+                  // 形も引き継ぐ。引き継がないと、開いて保存し直すだけで面が線に戻る
+                  shape:shapeOf(f), area_type:f.area_type||''},
+              // 開いたときの形を控える。**形を変えたら「触った」扱いにする**ため
+              //（控えないと、2点の線を面に変えても検査を素通りする）
+              shape0:shapeOf(f),
               ov:{start:f.start_time||'', end:f.end_time||''}});
           });
       }
@@ -3882,7 +3922,9 @@ function birdAfterSave(u2, add, flU){
     const pushP=o2=>{ if(validLatLon(coordStr(o2.target_latitude), coordStr(o2.target_longitude)))
       segs.push({t:'P', id:0, pt:[parseFloat(o2.target_latitude), parseFloat(o2.target_longitude)], time:'', perch:perchNew()}); };
     const pushF=f2=>{ const pth=(f2.path||[]).filter(validPathPt);
-      if(pth.length>1) segs.push({t:'F', id:0, pts:pth, times:[], fl:{height:'',behavior:''}}); };
+      // 形も写す。写さないと、他の個体の面が薄い「開いた線」として出る
+      if(pth.length>1) segs.push({t:'F', id:0, pts:pth, times:[],
+        fl:{height:'',behavior:'',shape:shapeOf(f2),area_type:f2.area_type||''}}); };
     const baseRec=obsLive||flLive;
     if(baseRec){
       const sv2=baseRec.survey_uuid, key2=baseRec.individual_key||'';
@@ -3974,7 +4016,18 @@ function nestFilled(){
 }
 // 観察の記録を作るかどうか。編集中は必ず作る（Pを消しても記録そのものは残すため）
 function willSaveObs(){ return !!SCREENS._obsEditing || pfPoints().length>0 || nestFilled(); }
-function pfSaveableFls(){ return PF_SEGS.filter(sg=>sg.t==='F' && (sg.pts.length>=2 || (sg.srcUuid && !sg.edited))); }
+// 統合画面のトレース1本が保存できる形になっているか。
+// **点数の決まりを1か所に集める**（線は2点・面は3点）
+function segShape(sg){ return (sg && sg.fl && sg.fl.shape===SHAPE_AREA) ? SHAPE_AREA : SHAPE_LINE; }
+function segEnough(sg){ return (sg.pts||[]).length >= minPointsFor(segShape(sg)); }
+// 開いたときから形を変えたか。**変えたら「触った」扱い**にして検査を通す
+//（既存レコードは「触っていなければそのまま書き戻す」ので、形だけ変えると素通りする）
+function segShapeChanged(sg){
+  return !!(sg && sg.srcUuid && sg.shape0 && segShape(sg)!==sg.shape0);
+}
+// 検査を免除してよい既存の記録か（形も経路も触っていないもの）
+function segUntouched(sg){ return !!(sg && sg.srcUuid && !sg.edited && !segShapeChanged(sg)); }
+function pfSaveableFls(){ return PF_SEGS.filter(sg=>sg.t==='F' && (segEnough(sg) || segUntouched(sg))); }
 function isFlightOnly(){ return pfSaveableFls().length>0 && !willSaveObs(); }
 function syncDisabledStates(){
   const ps=pfPoints();
@@ -4230,11 +4283,39 @@ function perchTabs(){
   if(which) which.textContent='P'+(PERCH_IDX+1)+'（'+ps.length+'か所のうち）について入力しています';
 }
 
-function pfPaths(){ return PF_SEGS.filter(x=>x.t==='F' && x.pts.length>=2); }
-// 画面の高度・行動を、いま画面が指している経路（seg.fl）へ控える
+function pfPaths(){ return PF_SEGS.filter(x=>x.t==='F' && segEnough(x)); }
+// 画面の形・面の種類・高度・行動を、いま画面が指している経路（seg.fl）へ控える
 function flStoreInto(seg){
   if(!seg || seg.t!=='F') return;
-  seg.fl={ height:segVal('fl_height')||'', behavior:otherMerge(segVals('fl_behavior'),'fl_behavior')||'' };
+  const shape=(segVal('fl_shape')===SHAPE_AREA)?SHAPE_AREA:SHAPE_LINE;
+  seg.fl={
+    // 面に飛翔高度の意味は無いので持たせない。線に戻したら面の種類を空にする
+    //（残ると書き出しで面として扱われる）
+    height:(shape===SHAPE_AREA)?'':(segVal('fl_height')||''),
+    behavior:otherMerge(segVals('fl_behavior'),'fl_behavior')||'',
+    shape, area_type:(shape===SHAPE_AREA)?(segVal('fl_area_type')||''):'' };
+}
+// 形の欄を触ったとき。控え→地図の描き直し→欄の出し入れ、の順で合わせる
+function flShapePick(){
+  if(SCREENS._flLoading) return;   // 読み込みで入れた値は「書きかけ」にしない
+  SCREENS._dirty=true;
+  const seg=SCREENS._flSeg;
+  if(seg && seg.t==='F'){ flStoreInto(seg); pfRedraw(); pfInfo(); }
+  flShapeSyncUI();
+}
+function flAreaTypePick(){
+  if(SCREENS._flLoading) return;
+  SCREENS._dirty=true;
+  const seg=SCREENS._flSeg;
+  if(seg && seg.t==='F') flStoreInto(seg);
+}
+// 形にあわせた欄の出し入れ。**1か所にまとめる**（散らすと画面ごとに出方がずれる）
+function flShapeSyncUI(){
+  const on=!!SCREENS._flSeg;
+  const area=on && segVal('fl_shape')===SHAPE_AREA;
+  const w=$('#flShapeWrap'); if(w) w.style.display=on?'':'none';
+  const a=$('#flAreaTypeWrap'); if(a) a.style.display=area?'':'none';
+  const h=$('#flHeightWrap'); if(h) h.style.display=(on&&!area)?'':'none';
 }
 // 経路の高度・行動を画面へ読み込む。
 // 「その他（記入内容）」は標準の「その他」ボタン＋記入欄に分解して出す。
@@ -4243,6 +4324,10 @@ function flLoadFrom(seg){
   SCREENS._flLoading=true;
   try{
     const fl=(seg&&seg.fl)||{height:'',behavior:''};
+    // 形が先。**未指定は線**（今までの記録・古い版と同じ扱い）
+    const shape=(fl.shape===SHAPE_AREA)?SHAPE_AREA:SHAPE_LINE;
+    segSet('fl_shape', shape);
+    segSet('fl_area_type', (shape===SHAPE_AREA)?(fl.area_type||''):'');
     segSet('fl_height', fl.height||'');
     const segEl=document.querySelector('[data-seg="fl_behavior"]');
     if(segEl){
@@ -4279,7 +4364,7 @@ function pfSyncFlightFields(){
   if(one!==prev && one) flLoadFrom(one);
   SCREENS._flSeg=one;
   const on=!!one;
-  const h=$('#flHeightWrap'); if(h) h.style.display=on?'':'none';
+  flShapeSyncUI();   // 形・面の種類・飛翔高度の出し入れは1か所（flShapeSyncUI）に任せる
   const b=$('#flBehWrap'); if(b) b.style.display=on?'':'none';
   if(typeof syncDisabledStates==='function') syncDisabledStates();
   if(typeof legacyPosNoteSync==='function') legacyPosNoteSync();
@@ -4343,7 +4428,10 @@ function pfDrop(lat,lon){
     perchTabs(); perchLoad();
   } else {
     const last=PF_SEGS[PF_SEGS.length-1];
-    if(PF_NEWLINE || !last || last.t!=='F'){ PF_SEGS.push({t:'F', id:pfId(), pts:[[lat,lon]], times:[now], fl:{height:'',behavior:''}}); PF_NEWLINE=false; }
+    // 新しいトレースは必ず線から始める（形は描いたあとに欄で変える）。
+    // 直前のトレースの形を引き継ぐと、線のつもりで描いたものが面になる
+    if(PF_NEWLINE || !last || last.t!=='F'){ PF_SEGS.push({t:'F', id:pfId(), pts:[[lat,lon]], times:[now],
+      fl:{height:'',behavior:'',shape:SHAPE_LINE,area_type:''}}); PF_NEWLINE=false; }
     else { last.pts.push([lat,lon]); last.times.push(now); last.edited=true; }
   }
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips();
@@ -4391,7 +4479,9 @@ function pfRedraw(){
     (b.map.segs||[]).forEach(function(sg){
       try{
         if(sg.t==='F' && sg.pts && sg.pts.length>1)
-          L.polyline(sg.pts,{color:'#8a8a8a',weight:3,opacity:.35,interactive:false}).addTo(pfLayer);
+          (segShape(sg)===SHAPE_AREA && sg.pts.length>2
+            ? L.polygon(sg.pts,{color:'#8a8a8a',weight:2,opacity:.35,fillColor:'#8a8a8a',fillOpacity:.12,interactive:false})
+            : L.polyline(sg.pts,{color:'#8a8a8a',weight:3,opacity:.35,interactive:false})).addTo(pfLayer);
         if(sg.t==='P' && sg.pt)
           L.circleMarker(sg.pt,{radius:6,color:'#fff',weight:1,fillColor:'#8a8a8a',fillOpacity:.45,interactive:false}).addTo(pfLayer);
       }catch(e){}
@@ -4416,12 +4506,25 @@ function pfRedraw(){
       L.marker(seg.pt,{icon:ic}).addTo(pfLayer);
     } else if(seg.pts.length){
       const selL=(PF_SEGS.indexOf(seg)===PF_SEL);
-      if(seg.pts.length>1) L.polyline(seg.pts,{color:selL?'#ffd479':'#e0a030',weight:selL?7:4,opacity:.95}).addTo(pfLayer);
-      // 線が2本以上あるときは、始点に L1・L2… を出して「直す」チップのL番号と地図の線を見比べられるようにする
-      //（Pの番号表示と同じ流儀。1本だけなら従来どおり「始」）
-      L.marker(seg.pts[0],{icon:badge(nLines>1?segLabel(segIdx):'始','#3fb984',22)}).addTo(pfLayer);
-      seg.pts.forEach((pt,i)=>{ if(i>0&&i<seg.pts.length-1) L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(pfLayer); });
-      if(seg.pts.length>1) L.marker(seg.pts[seg.pts.length-1],{icon:badge('終','#d05555',22)}).addTo(pfLayer);
+      const area=(seg.fl&&seg.fl.shape)===SHAPE_AREA;
+      if(area){
+        // 面は閉じて塗る。**始点・終点の印は出さない**（どこが始まりでも同じ）
+        if(seg.pts.length>2)
+          L.polygon(seg.pts,{color:selL?'#ffd479':'#e0a030',weight:selL?5:3,
+            opacity:.95,fillColor:'#e0a030',fillOpacity:selL?.3:.18}).addTo(pfLayer);
+        else if(seg.pts.length>1)
+          L.polyline(seg.pts,{color:'#e0a030',weight:3,opacity:.6,dashArray:'5,4'}).addTo(pfLayer);
+        // 面がどれか分かるよう、1点目に番号（または「面」）だけ置く
+        L.marker(seg.pts[0],{icon:badge(nLines>1?segLabel(segIdx):'面','#9b59b6',22)}).addTo(pfLayer);
+        seg.pts.forEach(pt=>L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#9b59b6',fillOpacity:1}).addTo(pfLayer));
+      } else {
+        if(seg.pts.length>1) L.polyline(seg.pts,{color:selL?'#ffd479':'#e0a030',weight:selL?7:4,opacity:.95}).addTo(pfLayer);
+        // 線が2本以上あるときは、始点に L1・L2… を出して「直す」チップのL番号と地図の線を見比べられるようにする
+        //（Pの番号表示と同じ流儀。1本だけなら従来どおり「始」）
+        L.marker(seg.pts[0],{icon:badge(nLines>1?segLabel(segIdx):'始','#3fb984',22)}).addTo(pfLayer);
+        seg.pts.forEach((pt,i)=>{ if(i>0&&i<seg.pts.length-1) L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(pfLayer); });
+        if(seg.pts.length>1) L.marker(seg.pts[seg.pts.length-1],{icon:badge('終','#d05555',22)}).addTo(pfLayer);
+      }
     }
   });
 }
@@ -4506,7 +4609,7 @@ function setObsPos(lat,lon){
 // 経路1本から飛翔レコードを作る。検査に落ちたら null を返す（保存は始めない）
 function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsReview, override, useForm, indLabel, snapFlArr){
   // 2点未満は原則保存しないが、既存で触っていない経路は元のままの姿で書き戻す（共有項目だけそろえる）
-  if(!seg || (seg.pts.length<2 && !(seg.srcUuid && !seg.edited))) return null;
+  if(!seg || (!segEnough(seg) && !segUntouched(seg))) return null;
   const ov=override||{};
   // 手で空にしたのも「空という指定」として扱う（||で判定すると自動の時刻に戻ってしまう）
   const st=('start' in ov) ? ov.start : (seg.times[0] || localDatetimeValue());
@@ -4519,6 +4622,10 @@ function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsRev
   // 高度・行動は経路そのもの（seg.fl）から。画面の欄は写しにすぎない
   const heightRaw = (seg.fl&&seg.fl.height)||'';
   const behaviorNew = (seg.fl&&seg.fl.behavior)||'';
+  // 形（線／面）と面の種類。**線のときは面の種類を空にする**
+  //（形を線へ戻したのに種類が残ると、書き出しで面として扱われる）
+  const shapeNew = segShape(seg);
+  const areaTypeNew = shapeNew===SHAPE_AREA ? ((seg.fl&&seg.fl.area_type)||'') : '';
   // まとめ読みした既存の経路（srcUuid）は、その記録を基底にして、
   // 共有の項目（種名・個体数・齢・結び付け）と経路・時刻だけを上書きする。
   // 高度・行動は、経路が1本だけで画面に出ているとき（＝開いたとき読み込んである）だけ画面の値。
@@ -4540,13 +4647,17 @@ function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsRev
       individual_label:(indLabel===undefined ? (cur.individual_label||'') : String(indLabel||'')),
       height_class: heightRaw,
       behavior: behaviorNew,
+      shape: shapeNew,
+      area_type: areaTypeNew,
     });
   }
   return { uuid:uuid(), survey_uuid:svUuid,
     species_id:spId,
     species_name_snapshot:name,
     path:seg.pts.slice(), start_time:st, end_time:en,
-    height_class:heightRaw||'不明',
+    shape:shapeNew, area_type:areaTypeNew,
+    // 面には飛翔高度の意味がないので、既定の「不明」も入れない
+    height_class:heightRaw||(shapeNew===SHAPE_AREA?'':'不明'),
     age_class:ageCls||'不明', individual_label:String(indLabel===undefined?'':indLabel||''),
     behavior:behaviorNew,
     count:count, memo:String(memo||'').trim(), needs_review:!!needsReview,
@@ -5352,8 +5463,24 @@ function saveObs(u, svUuid, editing, cont){
   const paths = pfSaveableFls();
   const anchorFlId=SCREENS._flAnchorUuid||'';   // 経路のカードから開いたときの、軸の経路の番号
   // 点が1つだけの経路は保存できない。黙って捨てず、直せるように知らせる
-  if(PF_SEGS.some(sg=>sg.t==='F' && sg.pts.length<2 && (!sg.srcUuid || sg.edited))){
-    toast('点が1つだけの経路があります。2点目を足すか、下の一覧から選んで消してください', 6000); return; }
+  const tooFew=PF_SEGS.find(sg=>sg.t==='F' && !segEnough(sg) && !segUntouched(sg));
+  if(tooFew){
+    const need=minPointsFor(segShape(tooFew));
+    toast(`点が足りないトレースがあります（${segShape(tooFew)}は${need}点以上）。`
+      +'点を足すか、下の一覧から選んで消してください', 6000); return; }
+  // 面は「囲めていること」と「種類が選んであること」が要る。
+  // 黙って保存すると、囲めていない面が図に出たり、種類で決まる数え方が定まらない
+  for(const sg of paths){
+    if(segShape(sg)!==SHAPE_AREA) continue;
+    // 形も経路も触っていない既存の面はそのまま（種類が入っているものに限る）
+    if(segUntouched(sg) && ((sg.fl&&sg.fl.area_type)||'')) continue;
+    const pb=areaProblem(sg.pts);
+    if(pb){ toast(`面になっていないトレースがあります（${pb}）。`
+      +'点を足すか、下の一覧から選んで消してください', 6000); return; }
+    if(!((sg.fl&&sg.fl.area_type)||'')){
+      toast('面の種類を選んでください（旋回上昇・概略行動範囲など）。'
+        +'種類によって個体数に数えるかどうかが変わります', 6000); return; }
+  }
   // 経路が無いのに飛翔専用の入力（高度・飛翔の行動）が残っているときは、黙って捨てない
   if(!paths.length && (segVal('fl_height') || segVals('fl_behavior'))){
     if(!confirm('飛翔高度・飛翔の行動が入力されていますが、経路（F）がありません。\n'
@@ -7050,6 +7177,21 @@ function newSurveyFromRoute(u){ if(!writeAllowed()) return; const s=DB.survey(u)
    飛翔経路（地図に線を描いて記録）
    ============================================================ */
 let flightPath=[], flightLayer=null;
+// この画面で描いているものの形（線 / 面）。既定は線
+let flightShape=SHAPE_LINE;
+function flightIsArea(){ return flightShape===SHAPE_AREA; }
+// 形の欄を触ったとき。描き方（閉じて塗る／矢印を出さない）と欄の出し入れを合わせる
+function flightShapePick(){
+  flightShape=(segVal('shape')===SHAPE_AREA)?SHAPE_AREA:SHAPE_LINE;
+  SCREENS._dirty=true;
+  flightShapeSyncUI(); redrawFlight();
+}
+// 面のときは「面の種類」を出し、意味の無い飛翔高度を隠す。**この判断は1か所だけ**
+function flightShapeSyncUI(){
+  const area=flightIsArea();
+  const a=$('#flAreaTypeRow'); if(a) a.style.display=area?'':'none';
+  const h=$('#flHeightRow'); if(h) h.style.display=area?'none':'';
+}
 SCREENS.flightEdit = (argStr)=>{
   const arg=JSON.parse(argStr||'{}'); const svUuid=arg.sv||currentSurveyUuid; const editing=!!arg.id;
   // 統合画面から「この経路の添付・メモ」で来たとき。共有項目（種名・個体数・齢・個体名）は
@@ -7108,7 +7250,7 @@ SCREENS.flightEdit = (argStr)=>{
   return {
     title: editing?'飛翔経路を編集':'飛翔経路を記録',
     html:`
-      <div class="note"><span id="fHelpHow"></span>鳥が飛んだ順に点がつながります（緑「始」→赤「終」で向き）。間違えたら「↶ 1つ戻す」。<br>薄い線は同じ調査の他の経路です。${editing?'':'同時に複数の鳥を追うときは「＋ 個体を追加」でトラックを増やし、タブで切り替えながら描けます（線ごとに種名・齢なども別に入力できます）。'}見失った鳥をまた見つけたときは、同じ線に足さず「保存して<b>同じ鳥</b>の続きを描く」で別の線として描いてください（前後は開始時刻で分かります。同じ鳥として結び付くので、集計で二重に数えられません）。</div>
+      <div class="note"><span id="fHelpHow"></span>鳥が飛んだ順に点がつながります（緑「始」→赤「終」で向き）。間違えたら「↶ 1つ戻す」。<br>旋回上昇の円や行動範囲・営巣範囲のように<b>範囲を囲む</b>ときは、下の「形」を<b>面</b>にしてください（3点以上で閉じます）。<br>薄い線は同じ調査の他の経路です。${editing?'':'同時に複数の鳥を追うときは「＋ 個体を追加」でトラックを増やし、タブで切り替えながら描けます（線ごとに種名・齢なども別に入力できます）。'}見失った鳥をまた見つけたときは、同じ線に足さず「保存して<b>同じ鳥</b>の続きを描く」で別の線として描いてください（前後は開始時刻で分かります。同じ鳥として結び付くので、集計で二重に数えられません）。</div>
       ${multiN?`<div class="chips" id="ftChips" style="margin-bottom:8px;">${SCREENS._ftracks.map((tr,i)=>{
         const col=FLIGHT_PALETTE[i%FLIGHT_PALETTE.length];
         const active=i===SCREENS._ftIdx;
@@ -7143,7 +7285,22 @@ SCREENS.flightEdit = (argStr)=>{
           <label class="field"><span class="lab">終了時刻</span>
             <input type="datetime-local" name="end_time" value="${esc(dtLocalVal(f.end_time))}"></label>
         </div>
-        <label class="field"><span class="lab">飛翔高度</span>${segH('height_class',OPT.flightHeight)}</label>
+        <!-- トレースの形。線＝飛んだ道すじ、面＝範囲を囲む（旋回上昇・行動範囲・営巣範囲）。
+             既定は線。面のときだけ「面の種類」を出し、意味の無い飛翔高度は隠す -->
+        <div class="two">
+          <label class="field"><span class="lab">形</span>
+            <select data-seg="shape" onchange="flightShapePick()">
+              <option value="${esc(SHAPE_LINE)}" ${shapeOf(f)===SHAPE_LINE?'selected':''}>線（飛んだ道すじ）</option>
+              <option value="${esc(SHAPE_AREA)}" ${shapeOf(f)===SHAPE_AREA?'selected':''}>面（範囲を囲む）</option>
+            </select></label>
+          <label class="field" id="flAreaTypeRow" style="display:none;"><span class="lab">面の種類</span>
+            <select data-seg="area_type" onchange="SCREENS._dirty=true;">
+              <option value="">未選択</option>
+              ${AREA_TYPES.concat((f.area_type && !AREA_TYPES.includes(f.area_type))?[f.area_type]:[])
+                .map(x=>`<option value="${esc(x)}" ${f.area_type===x?'selected':''}>${esc(x)}</option>`).join('')}
+            </select></label>
+        </div>
+        <label class="field" id="flHeightRow"><span class="lab">飛翔高度</span>${segH('height_class',OPT.flightHeight)}</label>
         <label class="field"><span class="lab">行動（複数可）</span>${segB}</label>
         ${localOnly?`<input type="hidden" name="count" value="${esc(f.count==null||f.count===''?1:f.count)}">`:`<label class="field"><span class="lab">個体数</span>
           <input type="number" name="count" min="0" value="${esc(f.count==null||f.count===''?1:f.count)}"></label>`}
@@ -7165,6 +7322,7 @@ SCREENS.flightEdit = (argStr)=>{
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteFlight('${f.uuid}')">この飛翔経路を削除</button>`:''}
     `,
     onMount:()=>{ SCREENS._chosenId=f.species_id||''; flightPath=(f.path||[]).slice();
+      flightShape=shapeOf(f); flightShapeSyncUI();   // 画面をまたいで残らないよう、開くたびに形を入れ直す
       SCREENS._audio=(f.audio||[]).slice(); SCREENS._media=(f.media||[]).slice();
       SCREENS._mediaCtx = multiN>1 ? null : {kind:'flight', uuid:f.uuid, sv:svUuid};   // 複数トレース中はメディアの持ち主を作らない
       SCREENS._flightSelf=f.uuid; SCREENS._flightSv=svUuid; SCREENS._flightEditing=editing;
@@ -7187,7 +7345,10 @@ function stashFlightTrack(){
     species_id: name ? (SCREENS._chosenId||'') : '', species_name_snapshot: name,
     age_class: segVal('age_class'), individual_label:(g('individual_label')||'').trim(),
     start_time: g('start_time')||'', end_time: g('end_time')||'',
-    height_class: segVal('height_class'),
+    // 形はトラックごとに持つ（切り替えても面が線に戻らない）。面に飛翔高度は持たせない
+    shape: flightIsArea()?SHAPE_AREA:SHAPE_LINE,
+    area_type: flightIsArea()?(segVal('area_type')||''):'',
+    height_class: flightIsArea()?'':segVal('height_class'),
     behavior: otherMerge(behSet.join('・'),'behavior'),
     count: g('count')||'', memo:(g('memo')||'').trim(),
     needs_review: $('#flReview')?$('#flReview').checked:false,
@@ -7233,12 +7394,20 @@ function saveFlightMulti(svUuid){
     const untouched = !pts.length && !(fl.species_name_snapshot||'').trim() && !(fl.memo||'').trim()
       && !(fl.individual_label||'').trim() && !(fl.end_time||'') && !(fl.behavior||'')
       && !fl.needs_review && (!fl.age_class||fl.age_class==='不明') && (!fl.height_class||fl.height_class==='不明')
+      && shapeOf(fl)===SHAPE_LINE && !(fl.area_type||'')   // 形を面に変えたら「操作あり」
       && (String(fl.count==null?'':fl.count).trim()===''||String(fl.count)==='1')
       && String(fl.start_time||'')===String(tr.st0||'')   // 開始時刻を初期値から変えたら「操作あり」
       && !((fl.audio&&fl.audio.length)||(fl.media&&fl.media.length));
     if(untouched) continue;   // 完全に手つかずのトラックだけ除外
     const label=(fl.species_name_snapshot||'').trim()||('個体'+(i+1));
-    if(pts.length<2){ toast(`${i+1}番目のトラック（${label}）の経路が2点未満です。地図で描くか、タブを切り替えて内容を消してください`, 4500); return; }
+    const need=minPointsFor(shapeOf(fl));   // 線2点・面3点。判定は1か所に任せる
+    if(pts.length<need){ toast(`${i+1}番目のトラック（${label}）の${shapeOf(fl)}が${need}点未満です。地図で描くか、タブを切り替えて内容を消してください`, 4500); return; }
+    if(shapeOf(fl)===SHAPE_AREA){
+      // 面は「囲めていること」と「種類が選んであること」が要る（他の保存経路と同じ決まり）
+      const pb=areaProblem(pts);
+      if(pb){ toast(`${i+1}番目のトラック（${label}）が面になっていません（${pb}）`, 5000); return; }
+      if(!(fl.area_type||'')){ toast(`${i+1}番目のトラック（${label}）の面の種類を選んでください`, 5000); return; }
+    }
     if(String(fl.count).trim()!==''){ const n=Number(fl.count);
       if(!Number.isInteger(n) || n<0){ toast(`${i+1}番目のトラック（${label}）の個体数は0以上の整数で入力してください`); return; } }
     act.push({i,tr});
@@ -7352,7 +7521,9 @@ function saveFlightMulti(svUuid){
       species_id: name?(fl.species_id||''):'', species_name_snapshot:name,
       path:(a.tr.path||[]).slice(),
       start_time:fl.start_time||'', end_time:fl.end_time||'',
-      height_class:fl.height_class||'不明', age_class:fl.age_class||'不明',
+      shape:shapeOf(fl), area_type:(shapeOf(fl)===SHAPE_AREA)?(fl.area_type||''):'',
+      // 面には飛翔高度の意味がないので、既定の「不明」も入れない
+      height_class:(shapeOf(fl)===SHAPE_AREA)?'':(fl.height_class||'不明'), age_class:fl.age_class||'不明',
       individual_label:(fl.individual_label||'').trim()||a.autoLabel||'', behavior:fl.behavior||'',
       count:fl.count||'', memo:(fl.memo||'').trim(),
       // 要確認は「揃え直しが残る組」のトラックにだけ付ける
@@ -7487,6 +7658,120 @@ function distMeters(a,b){
 function pathLength(path){ let d=0; const p=(path||[]).filter(x=>Array.isArray(x)&&x.length===2);
   for(let i=1;i<p.length;i++) d+=distMeters(p[i-1],p[i]); return d; }
 function fmtDist(d){ return d>=1000?(d/1000).toFixed(2)+'km':Math.round(d)+'m'; }
+
+/* ---------- トレースの「形」（線 / 面） ----------
+   飛翔経路と同じ入れ物で、面（旋回上昇の円・行動範囲・推定営巣範囲）も扱う。
+   面は**閉じた線**なので、保存・同期・削除・まとめは今までの仕組みがそのまま効く。
+
+   **読み方を1か所に集める。** 線は長さ、面は面積。混ぜると
+   「画面ごとに数字が違う」（2026-08-04 全体監査で潰した穴）が再発する。 */
+
+// 記録の形。**未指定は線**（今までの記録・古い版のアプリと同じ扱い）
+function shapeOf(f){ return (f && f.shape===SHAPE_AREA) ? SHAPE_AREA : SHAPE_LINE; }
+function isArea(f){ return shapeOf(f)===SHAPE_AREA; }
+// 面として保存できる最小の点数（3点で三角形）。線は2点
+function minPointsFor(shape){ return shape===SHAPE_AREA ? 3 : 2; }
+
+// 球面上の多角形の面積（m²）。始点と終点が違っても閉じたものとして計算する
+function pathArea(path){
+  const p=(path||[]).filter(validPathPt);
+  if(p.length<3) return 0;
+  const R=6378137, toR=Math.PI/180;
+  let s=0;
+  for(let i=0;i<p.length;i++){
+    const a=p[i], b=p[(i+1)%p.length];
+    s += (b[1]-a[1])*toR * (2 + Math.sin(a[0]*toR) + Math.sin(b[0]*toR));
+  }
+  return Math.abs(s*R*R/2);
+}
+/* 面が「囲めているか」の判定。**ここ1か所だけ**に置く。
+   点の数だけでは足りない——同じ場所ばかり・一直線・線が交差した輪は、
+   囲んだ範囲が定まらず、面積も打ち消し合って実際より小さく出る。
+   データベース側 `app/geometry.py` と**同じ決まり**にしてある。 */
+function ringDistinct(path){
+  const s=new Set((path||[]).filter(validPathPt).map(p=>p[0].toFixed(9)+','+p[1].toFixed(9)));
+  return s.size;
+}
+// 平面として見た囲み面積の2倍（符号つき）。0 なら一直線
+function ringShoelace(path){
+  const p=(path||[]).filter(validPathPt); let t=0;
+  for(let i=0;i<p.length;i++){ const a=p[i], b=p[(i+1)%p.length];
+    t += a[1]*b[0] - b[1]*a[0]; }
+  return t;
+}
+// 線分が交わるか。**端どうしが触れる場合・重なる場合も含む**
+//（隣り合わない線分が触れていれば、輪は自分自身に接していて範囲が定まらない）
+function segSide(p,q,r){ const v=(q[1]-p[1])*(r[0]-p[0])-(q[0]-p[0])*(r[1]-p[1]);
+  return v===0?0:(v>0?1:-1); }
+function segOn(a,b,p){
+  return Math.min(a[0],b[0])<=p[0] && p[0]<=Math.max(a[0],b[0])
+      && Math.min(a[1],b[1])<=p[1] && p[1]<=Math.max(a[1],b[1]); }
+function segCross(a,b,c,d){
+  const s1=segSide(a,b,c), s2=segSide(a,b,d), s3=segSide(c,d,a), s4=segSide(c,d,b);
+  if(s1!==s2 && s3!==s4) return true;
+  if(s1===0 && segOn(a,b,c)) return true;
+  if(s2===0 && segOn(a,b,d)) return true;
+  if(s3===0 && segOn(c,d,a)) return true;
+  if(s4===0 && segOn(c,d,b)) return true;
+  return false;
+}
+function ringSelfIntersects(path){
+  const p=(path||[]).filter(validPathPt); const n=p.length;
+  if(n<4) return false;
+  for(let i=0;i<n;i++){ const a=p[i], b=p[(i+1)%n];
+    for(let j=i+1;j<n;j++){
+      if(j===i || (j+1)%n===i || j===(i+1)%n) continue;   // 端を共有する線分は対象外
+      if(segCross(a,b,p[j],p[(j+1)%n])) return true;
+    } }
+  return false;
+}
+// 面として保存できない理由。保存できるなら空文字
+function areaProblem(path){
+  let p=(path||[]).filter(validPathPt);
+  // 閉じるための末尾の点だけは外して見る（外さないと「同じ点が2回」に引っかかる）
+  if(p.length>1 && p[0][0]===p[p.length-1][0] && p[0][1]===p[p.length-1][1]) p=p.slice(0,-1);
+  if(p.length<3) return `点が${p.length}つしかありません（面は3点以上）`;
+  if(ringDistinct(p)<3) return '同じ場所の点ばかりで囲めていません';
+  // 重なった点は長さ0の線を作り、輪が自分自身に接する
+  if(ringDistinct(p)!==p.length) return '同じ場所の点が2回使われています（1つ戻して置き直してください）';
+  // 交差の判定を先に。左右対称の蝶ネクタイ形は面積が打ち消し合って0になるため
+  if(ringSelfIntersects(p)) return '囲んだ線が交差しています（順に囲み直してください）';
+  if(Math.abs(ringShoelace(p))<1e-12) return '点が一直線に並んでいて囲めていません';
+  return '';
+}
+function fmtArea(m2){
+  if(m2>=1000000) return (m2/1000000).toFixed(2)+'km²';
+  if(m2>=10000) return (m2/10000).toFixed(2)+'ha';
+  return Math.round(m2)+'m²';
+}
+// 記録の大きさを、形に応じた1つの読み方で返す。
+// 表示・書き出し・集計はすべてこれを通す
+function traceMetric(f){
+  const path=(f&&f.path)||[];
+  return isArea(f)
+    ? { shape:SHAPE_AREA, area_m2:Math.round(pathArea(path)), length_m:0,
+        text:fmtArea(pathArea(path)) }
+    : { shape:SHAPE_LINE, area_m2:0, length_m:Math.round(pathLength(path)),
+        text:fmtDist(pathLength(path)) };
+}
+// 個体数として数えてよい記録か（面の一部は数えない）。
+// **種類が空の面も数えない**——保存時に種類を必須にしているので本来は無いが、
+// 種類が決まらないと数え方も決まらないため、多い側へ倒さない。
+// データベース側 `flight_counted_sql()` と同じ決まりにしてある
+function countsAsIndividuals(f){
+  if(!isArea(f)) return true;
+  const t=f.area_type||'';
+  return !!t && !AREA_TYPES_NOT_COUNTED.includes(t);
+}
+// 地図・書き出し・集計に載せられる記録か。
+// **判定を1か所に集める**（線は2点。面は「囲めていること」まで見る）。
+// 散らすと形ごとに扱いがずれ、さらに面ではデータベース側（geometry.area_problem）が
+// 弾く記録をアプリだけが描いてしまい、画面と報告書が食い違う
+function traceDrawable(f){
+  const path=((f&&f.path)||[]).filter(validPathPt);
+  if(isArea(f)) return areaProblem(path)==='';
+  return path.length >= minPointsFor(SHAPE_LINE);
+}
 // 飛翔経路の色分け（種／齢／個体）。値ごとに安定した色を割り当てる
 const FLIGHT_PALETTE=['#e0a030','#3fb984','#5a7de0','#d05555','#9b59b6','#16a3a3','#e07b39','#7a8b3f','#c94f7c','#4a6fa5'];
 function flightColorMode(){ const m=localStorage.getItem('bs_flightcolor'); return (m==='齢'||m==='個体')?m:'種'; }
@@ -7553,9 +7838,14 @@ function initFlightMap(){
   // 同じ調査の他の飛翔経路を薄く重ねる（1画面で何本も見えるように）
   if(SCREENS._flightSv){ DB.flightsOf(SCREENS._flightSv).forEach(of=>{
     if(of.uuid===SCREENS._flightSelf) return;
-    const p=(of.path||[]).filter(x=>Array.isArray(x)&&x.length===2);
-    if(p.length<2) return;
-    L.polyline(smoothPath(p),{color:'#e0a030',weight:3,opacity:.3,dashArray:'4,4'}).addTo(mapObj);
+    const p=(of.path||[]).filter(validPathPt);
+    // 描けるかどうかの判定は traceDrawable に一本化する。ここだけ点数で見ると、
+    // 全体図では出ない面がこの画面にだけ出る（2026-08-12 監査4巡目）
+    if(!traceDrawable(of)) return;
+    // 面は閉じて塗る。開いた線で薄描きすると、保存済みの面が編集中だけ線に見える
+    if(isArea(of)) L.polygon(p,{color:'#9b59b6',weight:2,opacity:.35,
+      fillColor:'#9b59b6',fillOpacity:.1,interactive:false}).addTo(mapObj);
+    else L.polyline(smoothPath(p),{color:'#e0a030',weight:3,opacity:.3,dashArray:'4,4'}).addTo(mapObj);
   }); }
   redrawFlight();
   if(flightPath.length>1){ try{ mapObj.fitBounds(flightPath,{padding:[40,40]}); }catch(e){} }
@@ -7571,22 +7861,41 @@ function redrawFlight(){
     SCREENS._ftracks.forEach((tr,i)=>{ if(i===SCREENS._ftIdx) return;
       const col=FLIGHT_PALETTE[i%FLIGHT_PALETTE.length];
       const p=(tr.path||[]).filter(validPathPt);
-      if(p.length>1) L.polyline(p,{color:col,weight:3,opacity:.8}).addTo(flightLayer);
-      if(p.length) L.circleMarker(p[p.length-1],{radius:5,color:'#fff',weight:1,fillColor:col,fillOpacity:1}).addTo(flightLayer);
+      // トラックごとに形が違う。面を線で描くと、切り替えたときだけ開いた線に見える
+      const trArea=shapeOf(tr.fields||{})===SHAPE_AREA;
+      if(trArea && p.length>2) L.polygon(p,{color:col,weight:3,opacity:.8,fillColor:col,fillOpacity:.15}).addTo(flightLayer);
+      else if(p.length>1) L.polyline(p,{color:col,weight:3,opacity:.8}).addTo(flightLayer);
+      if(p.length && !trArea) L.circleMarker(p[p.length-1],{radius:5,color:'#fff',weight:1,fillColor:col,fillOpacity:1}).addTo(flightLayer);
     });
   }
   if(flightPath.length){
-    if(flightPath.length>1) L.polyline(flightPath,{color:'#e0a030',weight:4,opacity:.9}).addTo(flightLayer);
     const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[24,24],iconAnchor:[12,12]});
-    L.marker(flightPath[0],{icon:badge('始','#3fb984')}).addTo(flightLayer);
-    flightPath.forEach((p,i)=>{ if(i>0 && i<flightPath.length-1) L.circleMarker(p,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(flightLayer); });
-    if(flightPath.length>1) L.marker(flightPath[flightPath.length-1],{icon:badge('終','#d05555')}).addTo(flightLayer);
+    if(flightIsArea()){
+      // 面は閉じて塗る。**始点・終点は出さない**（どこが始まりでも同じ図になる）
+      if(flightPath.length>2) L.polygon(flightPath,{color:'#9b59b6',weight:3,opacity:.95,fillColor:'#9b59b6',fillOpacity:.2}).addTo(flightLayer);
+      else if(flightPath.length>1) L.polyline(flightPath,{color:'#9b59b6',weight:3,opacity:.6,dashArray:'5,4'}).addTo(flightLayer);
+      flightPath.forEach(p=>L.circleMarker(p,{radius:4,color:'#fff',weight:1,fillColor:'#9b59b6',fillOpacity:1}).addTo(flightLayer));
+      L.marker(flightPath[0],{icon:badge('面','#9b59b6')}).addTo(flightLayer);
+    } else {
+      if(flightPath.length>1) L.polyline(flightPath,{color:'#e0a030',weight:4,opacity:.9}).addTo(flightLayer);
+      L.marker(flightPath[0],{icon:badge('始','#3fb984')}).addTo(flightLayer);
+      flightPath.forEach((p,i)=>{ if(i>0 && i<flightPath.length-1) L.circleMarker(p,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(flightLayer); });
+      if(flightPath.length>1) L.marker(flightPath[flightPath.length-1],{icon:badge('終','#d05555')}).addTo(flightLayer);
+    }
   }
   const info=$('#fInfo');
-  if(info){ let d=0; for(let i=1;i<flightPath.length;i++){ try{ d+=mapObj.distance(flightPath[i-1],flightPath[i]); }catch(e){} }
+  if(info){
     const multi=(SCREENS._ftracks&&SCREENS._ftracks.length>1)?`（全${SCREENS._ftracks.length}個体・表示中のタブに点が入ります）`:'';
-    info.textContent = flightPath.length? `${flightPath.length}点 ・ 全長 約${d>=1000?(d/1000).toFixed(2)+'km':Math.round(d)+'m'}${multi}`
-      : (flightCrossMode?'まだ点がありません。地図を動かして「点を追加」で描いてください。':'まだ点がありません。地図をタップして描いてください。')+multi; }
+    // 大きさの読み方は traceMetric に一本化する（線は長さ・面は面積）
+    const m=traceMetric({shape:flightShape, path:flightPath});
+    const need=minPointsFor(flightShape);
+    const size = flightIsArea()
+      ? (flightPath.length>=need ? `面積 約${m.text}` : `あと${need-flightPath.length}点で面になります`)
+      : `全長 約${m.text}`;
+    info.textContent = flightPath.length ? `${flightPath.length}点 ・ ${size}${multi}`
+      : (flightCrossMode
+          ? `まだ点がありません。地図を動かして「点を追加」で${flightIsArea()?'囲んで':'描いて'}ください。`
+          : `まだ点がありません。地図をタップして${flightIsArea()?'囲んで':'描いて'}ください。`)+multi; }
 }
 function flightUndo(){ if(!flightPath.length) return; flightPath.pop(); SCREENS._dirty=true; redrawFlight(); }
 function flightClear(){ if(!flightPath.length) return; if(!confirm('描いた線を全部消しますか？')) return; flightPath=[]; SCREENS._dirty=true; redrawFlight(); }
@@ -7597,10 +7906,25 @@ function saveFlight(u,svUuid,editing,cont){
   if(recBusy()){ toast('録音の処理中です。終わってから保存してください', 5000); return; }
   if(mediaBusy()){ toast('写真・動画の取り込み中です。終わってから保存してください', 5000); return; }
   if(!editing && SCREENS._ftracks && SCREENS._ftracks.length>1){ saveFlightMulti(svUuid); return; }   // 複数羽トレースは一括保存へ
-  // 添付・メモ専用（localOnly）で開いた既存の短い経路は、経路を触っていなければそのまま保存できる
+  // 添付・メモ専用（localOnly）で開いた既存の短い経路は、経路を触っていなければそのまま保存できる。
+  // **形を変えたときは免除しない**——免除すると、2点の線を面に変えて保存でき、
+  // 3点未満の面（囲えない図形）ができてしまう
+  const _flPrev = editing ? (DB.flight(u)||{}) : {};
   const _flPathSame = SCREENS._flLocalOnly && editing
-    && JSON.stringify(flightPath)===JSON.stringify(((DB.flight(u)||{}).path)||[]);
-  if(flightPath.length<2 && !_flPathSame){ toast('地図で2点以上の経路を描いてから保存してください'); return; }
+    && JSON.stringify(flightPath)===JSON.stringify(_flPrev.path||[])
+    && flightShape===shapeOf(_flPrev);
+  // 保存できる最小の点数は形で変わる（線2点・面3点）。判定は minPointsFor に任せる
+  const _flNeed=minPointsFor(flightShape);
+  if(flightPath.length<_flNeed && !_flPathSame){
+    toast(`地図で${_flNeed}点以上${flightIsArea()?'囲んで':'描いて'}から保存してください`); return; }
+  // 面は「囲めていること」と「種類が選んであること」が要る（統合画面と同じ決まり）
+  if(flightIsArea() && !_flPathSame){
+    const _pb=areaProblem(flightPath);
+    if(_pb){ toast(`面になっていません（${_pb}）`, 6000); return; }
+  }
+  if(flightIsArea() && !(segVal('area_type')||'')){
+    toast('面の種類を選んでください（旋回上昇・概略行動範囲など）。'
+      +'種類によって個体数に数えるかどうかが変わります', 6000); return; }
   const name=(($('#spInput')&&$('#spInput').value)||'').trim();
   const g=n=>{ const el=$(`#flForm [name="${n}"]`); return el?el.value:''; };
   // 個体数: 観察入力と同じ検査（従来は文字列のまま無検証で保存され、書き出しにそのまま出ていた）。
@@ -7618,6 +7942,11 @@ function saveFlight(u,svUuid,editing,cont){
   const behavior=otherMerge(behSet.join('・'),'behavior');
   const prev=editing?DB.flight(u):{uuid:u};
   let age=segVal('age_class'), individual=(g('individual_label')||'').trim(), height=segVal('height_class');
+  // 形と面の種類。**面に飛翔高度は持たせない／線に戻したら面の種類は空にする**
+  //（種類が残ると、線なのに書き出しで面として扱われる）
+  const shapeNew=flightIsArea()?SHAPE_AREA:SHAPE_LINE;
+  const areaTypeNew=(shapeNew===SHAPE_AREA)?(segVal('area_type')||''):'';
+  if(shapeNew===SHAPE_AREA) height='';
   // 時刻は、欄の値が「開いたとき表示した値のまま」なら元の文字列を保つ
   //（表示は分単位に丸めているため、無操作の保存で秒や時差の情報を失わないように）
   const t0=SCREENS._flTime0||{start:'',end:'',dispStart:'',dispEnd:''};
@@ -7640,6 +7969,7 @@ function saveFlight(u,svUuid,editing,cont){
     species_id: name ? (SCREENS._chosenId||'') : '', species_name_snapshot:name,   // 種名が空なら種IDも空（観察側と同じ保証）
     path:flightPath.slice(),
     start_time:stOut, end_time:enOut,
+    shape:shapeNew, area_type:areaTypeNew,
     height_class:height,
     age_class:age, individual_label:individual,
     behavior:behavior,
@@ -7823,14 +8153,24 @@ function openFlightUnified(u, flUuid){
   if(sib) nav('obsEdit', JSON.stringify({sv:u, id:sib.uuid}));
   else nav('obsEdit', JSON.stringify({sv:u, fl:flUuid}));
 }
-function flightCard(u,f){ return `<div class="card tap" onclick="openFlightUnified('${u}','${f.uuid}')">
+function flightCard(u,f){
+  // 面は線と別の見出し（⬠）と読み方（面積）にする。同じ「🛩・全長」で出すと取り違える
+  const _area=isArea(f), _m=traceMetric(f);
+  // 囲めていない面は地図・集計・書き出しから外れる。**理由をカードに出して気づけるようにする**
+  //（一覧から消すと、なぜ図に出ないのか分からないまま残る）
+  const _pb=_area?areaProblem((f.path||[]).filter(validPathPt)):'';
+  const _sub=_area ? (_pb ? `面になっていません（${esc(_pb)}）`
+      : `${esc(f.area_type||'面')}${traceDrawable(f)?' 約'+_m.text:''}`)
+    : esc(f.height_class||'');
+  return `<div class="card tap" onclick="openFlightUnified('${u}','${f.uuid}')">
     <div class="row"><div class="grow">
-      <div style="font-weight:700;">🛩 ${esc(f.species_name_snapshot||'（未同定）')}
+      <div style="font-weight:700;">${_area?'⬠':'🛩'} ${esc(f.species_name_snapshot||'（未同定）')}
         ${conservBadges(f.species_name_snapshot)}
         ${f.age_class&&ageNorm(f.age_class)!=='不明'?`<span class="pill">${esc(ageNorm(f.age_class))}</span>`:''}
         ${f.individual_label?`<span class="pill">${esc(f.individual_label)}</span>`:''}
-        ${f.needs_review?'<span class="badge warn">要確認</span>':''}</div>
-      <div class="small muted">${fmtTime(f.start_time)}${f.end_time?'→'+fmtTime(f.end_time):''} ・ ${esc((f.path||[]).length)}点 ・ ${esc(f.height_class||'')}${f.behavior?' ・ '+esc(f.behavior):''}
+        ${f.needs_review?'<span class="badge warn">要確認</span>':''}
+        ${_pb?'<span class="badge warn">要点検</span>':''}</div>
+      <div class="small muted">${fmtTime(f.start_time)}${f.end_time?'→'+fmtTime(f.end_time):''} ・ ${esc((f.path||[]).length)}点 ・ ${_sub}${f.behavior?' ・ '+esc(f.behavior):''}
         <span class="tiny muted">${(f.audio&&f.audio.length)?' 🎤':''}${(f.media&&f.media.length)?' 📷':''}</span></div>
     </div></div></div>`; }
 
@@ -7838,7 +8178,7 @@ function flightCard(u,f){ return `<div class="card tap" onclick="openFlightUnifi
 SCREENS.flightList = (u)=>{
   const s=DB.survey(u); if(!s) return SCREENS.home();
   const flights=DB.flightsOf(u).sort((a,b)=>(b.start_time||b.created_at||'').localeCompare(a.start_time||a.created_at||''));
-  const drawable=flights.filter(f=>(f.path||[]).filter(validPathPt).length>=2);
+  const drawable=flights.filter(traceDrawable);
   return {
     title:'飛翔経路まとめ',
     sub:[`<span class="pill">${esc(s.name||'調査')}</span>`, `<span class="pill">経路 ${flights.length}</span>`],
@@ -8064,12 +8404,17 @@ SCREENS.surveyEnd = (u)=>{
   const obs=DB.obsOf(u);
   // 飛翔経路も種数・個体数に含める。含めないと、飛翔だけを記録した調査で
   // 終了画面が「0種・0個体」、種別集計が「1種・2個体」と食い違う（2026-08-04 全体監査で実測）
-  const flightsAll=DB.flightsOf(u).filter(f=>(f.path||[]).filter(validPathPt).length>=2);
+  const flightsAll=DB.flightsOf(u).filter(traceDrawable);
+  // 面（範囲）のうち「概略行動範囲・推定営巣範囲・大まかな確認範囲」は羽数に数えない。
+  // 囲った範囲を個体数に足すと、確認個体数が実態より増える（数え方は countsAsIndividuals に一本化）
+  const flightsCount=flightsAll.filter(countsAsIndividuals);
+  const flightLines=flightsAll.filter(f=>!isArea(f));
+  const flightAreas=flightsAll.filter(isArea);
   const spCount=new Set([...obs, ...flightsAll].filter(x=>x.species_name_snapshot)
     .map(x=>x.species_name_snapshot)).size;
   const total=obs.reduce((a,o)=>a+indCount(o.count),0)
-    + flightsAll.reduce((a,f)=>a+indCount(f.count),0);
-  const totalUniq=dedupCount([...obs, ...flightsAll]);   // 同じ鳥として結び付けた組を1個体に数え直した値
+    + flightsCount.reduce((a,f)=>a+indCount(f.count),0);
+  const totalUniq=dedupCount([...obs, ...flightsCount]);   // 同じ鳥として結び付けた組を1個体に数え直した値
   // 未同定・要確認も飛翔を含める。種数と個体数だけ飛翔を数えると内訳が合わなくなる
   const undet=obs.filter(o=>o.identification_status==='未同定'||!o.species_name_snapshot).length
     + flightsAll.filter(f=>!f.species_name_snapshot).length;
@@ -8090,7 +8435,8 @@ SCREENS.surveyEnd = (u)=>{
           <tr><td>観察記録数</td><td class="num">${obs.length}</td><td>確認種数</td><td class="num">${spCount}</td></tr>
           <tr><td>総個体数（延べ）</td><td class="num">${total}</td><td>未同定件数</td><td class="num">${undet}</td></tr>
           ${totalUniq!==total?`<tr><td>総個体数（実数）</td><td class="num">${totalUniq}</td><td colspan="2" class="tiny muted">同じ鳥として結び付けた組を1個体に数え直した値</td></tr>`:''}
-          <tr><td>飛翔経路数</td><td class="num">${flightsAll.length}</td><td>要確認件数</td><td class="num">${review}</td></tr>
+          <tr><td>飛翔経路数</td><td class="num">${flightLines.length}</td><td>要確認件数</td><td class="num">${review}</td></tr>
+          ${flightAreas.length?`<tr><td>範囲（面）の数</td><td class="num">${flightAreas.length}</td><td colspan="2" class="tiny muted">旋回上昇・行動範囲・営巣範囲など。行動範囲・営巣範囲・大まかな確認範囲は個体数に数えていません</td></tr>`:''}
           <tr><td>メモ件数</td><td class="num">${DB.notesOf(u).length}</td><td></td><td class="num"></td></tr>
           <tr><td>仮説件数</td><td class="num">${hyps.length}</td><td>検証済み仮説</td><td class="num">${verified}</td></tr>
         </table></div>
@@ -8149,16 +8495,23 @@ SCREENS.summary = (u)=>{
     if(o.identification_status==='未同定'||!o.species_name_snapshot) m.undet++;
     touchTime(m,o.observed_at);
   });
-  // 飛翔経路も種別集計に合流（延べ個体に加算・確認方法に「飛翔」・経路数を計上）
-  let flightRoutes=0, flightInd=0, flightDist=0;
+  // 飛翔経路も種別集計に合流（延べ個体に加算・確認方法に「飛翔」・経路数を計上）。
+  // 面（範囲）は種としては数えるが、行動範囲・営巣範囲などは**羽数に数えない**
+  //（囲った範囲を個体数に足すと、確認個体数が実態より増える）
+  let flightRoutes=0, flightInd=0, flightDist=0, flightAreas=0;
   flights.forEach(f=>{ const path=(f.path||[]).filter(validPathPt);
-    if(path.length<2) return;
+    if(!traceDrawable(f)) return;   // 点数の判定は1か所（線2点・面3点）
     const m=ent(f.species_name_snapshot||'（未同定）');
     const c=indCount(f.count);
-    m.total+=c; m.routes++; m.methods.add('飛翔'); m.recs.push(f); claimKey(f,m.name);
+    const counts=countsAsIndividuals(f);
+    // 数えない面は recs にも入れない（実数の計算で拾われて羽数に戻ってしまうため）
+    if(counts){ m.total+=c; m.recs.push(f); claimKey(f,m.name); }
+    m.methods.add('飛翔');
+    if(isArea(f)){ m.areas=(m.areas||0)+1; flightAreas++; }
+    else { m.routes++; flightRoutes++; flightDist+=pathLength(path); }
+    if(counts) flightInd+=c;
     if(f.needs_review) m.review++;
     touchTime(m,f.start_time);
-    flightRoutes++; flightInd+=c; flightDist+=pathLength(path);
   });
   const rows=Object.values(map).sort((a,b)=>b.total-a.total);
   // 同一個体として結び付けた記録を1つに数えた個体数。
@@ -8203,7 +8556,7 @@ SCREENS.summary = (u)=>{
         <thead><tr><th>種名</th><th class="num">個体</th><th class="num">回数</th><th class="num">経路</th><th>初認</th><th>終認</th><th>確認</th></tr></thead>
         <tbody>${rows.map(r=>`<tr>
           <td>${esc(r.name)}${r.review?` <span class="badge warn tiny">要${r.review}</span>`:''}</td>
-          <td class="num">${r.total}${r.uniq!==r.total?`<br><span class="tiny muted">実${r.uniq}</span>`:''}</td><td class="num">${r.count}</td><td class="num">${r.routes||''}</td>
+          <td class="num">${r.total}${r.uniq!==r.total?`<br><span class="tiny muted">実${r.uniq}</span>`:''}</td><td class="num">${r.count}</td><td class="num">${r.routes||''}${r.areas?`<br><span class="tiny muted">面${r.areas}</span>`:''}</td>
           <td>${fmtTime(r.first)}</td><td>${fmtTime(r.last)}</td>
           <td class="tiny muted">${[...r.methods].join('/')}</td></tr>`).join('')}</tbody>
       </table></div>` : '<div class="empty">観察記録がありません。</div>'}
@@ -8211,13 +8564,15 @@ SCREENS.summary = (u)=>{
       <div class="note">合計個体数は延べ数です。同一個体の重複記録を含むため、生息個体数とは限りません。飛翔経路の個体数も延べに含みます。<br>
       「実数」は、観察と飛翔経路を行き来して<b>同じ鳥として記録した組</b>を1個体として数え直した値です（群れは最大の羽数）。結び付けていない記録は延べのままです。</div>
       ${densHtml}
-      ${flightRoutes?`<div class="sp"></div>
+      ${(flightRoutes||flightAreas)?`<div class="sp"></div>
       <h3 style="margin:0 0 6px;">飛翔経路のまとめ</h3>
       <div class="row" style="gap:8px;flex-wrap:wrap;">
         <span class="pill">経路数 ${flightRoutes}</span>
+        ${flightAreas?`<span class="pill">範囲（面） ${flightAreas}</span>`:''}
         <span class="pill">延べ ${flightInd}個体</span>
         <span class="pill">合計距離 約${fmtDist(flightDist)}</span>
-      </div>`:''}
+      </div>
+      ${flightAreas?'<div class="note">範囲（面）のうち、概略行動範囲・推定営巣範囲・大まかな確認範囲は個体数に数えていません。合計距離は線だけの合計です。</div>':''}`:''}
       <div class="sp"></div>
       <button class="btn" onclick="nav('exportSurvey','${u}')">⤓ この調査を書き出す（CSV/GeoJSON）</button>
     `
@@ -8230,7 +8585,7 @@ SCREENS.summary = (u)=>{
 SCREENS.map = (u)=>{
   const obs=DB.obsOf(u).filter(o=>validLatLon(o.latitude,o.longitude));
   const notes=DB.notesOf(u).filter(n=>validLatLon(n.latitude,n.longitude));
-  const flights=DB.flightsOf(u).filter(f=>(f.path||[]).filter(validPathPt).length>=2);
+  const flights=DB.flightsOf(u).filter(traceDrawable);
   const targets=DB.obsOf(u).filter(o=>validLatLon(o.target_latitude,o.target_longitude));
   const nests=uniqNests(DB.obsOf(u));           // 地図に描ける巣（位置あり）
   const nestAll=nestRecords(DB.obsOf(u));       // 位置が無くても巣の情報がある記録
@@ -8292,19 +8647,29 @@ function drawMap(obs,notes,flights,targets,route,nests){
   // 表示切り替え: トレースが混んできたら始終マーカーを消して線だけにできる。向きは等間隔の細い矢印で補える
   const endsOn=flightEndsOn(), arrowsOn=flightArrowsOn();
   (flights||[]).forEach(f=>{ const path=(f.path||[]).filter(validPathPt);
-    if(path.length<2) return;
+    const area=isArea(f);
+    if(path.length < minPointsFor(shapeOf(f))) return;
     const col=colorOf[flightColorKey(f,fMode)]; legend[flightColorKey(f,fMode)]=col;
-    const disp=smoothPath(path);   // 線・矢印とも表示用の滑らか経路に載せる（ズレると矢印が線から浮く）
-    const pl=L.polyline(disp,{color:col,weight:4,opacity:.85}).addTo(mapObj);
-    pl.bindPopup(`<b>🛩 ${esc(f.species_name_snapshot||'（未同定）')}</b>${f.age_class&&ageNorm(f.age_class)!=='不明'?' ・ '+esc(ageNorm(f.age_class)):''}${f.individual_label?' ・ '+esc(f.individual_label):''}<br>${esc(indCount(f.count))}個体 ・ ${esc(f.height_class||'')}<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
-    if(endsOn){
-      const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
-      L.marker(path[0],{icon:badge('始','#3fb984')}).addTo(mapObj);
-      L.marker(path[path.length-1],{icon:badge('終','#d05555')}).addTo(mapObj);
+    const m=traceMetric(f);
+    const head=`<b>${area?'⬠':'🛩'} ${esc(f.species_name_snapshot||'（未同定）')}</b>${f.age_class&&ageNorm(f.age_class)!=='不明'?' ・ '+esc(ageNorm(f.age_class)):''}${f.individual_label?' ・ '+esc(f.individual_label):''}`;
+    if(area){
+      // 面は閉じて塗る。**滑らかにしない・始終の印と矢印は出さない**
+      //（どこが始まりでも同じ図。丸めると囲った範囲が変わってしまう）
+      const pg=L.polygon(path,{color:col,weight:3,opacity:.9,fillColor:col,fillOpacity:.18}).addTo(mapObj);
+      pg.bindPopup(`${head}<br>${esc(f.area_type||'面')} ・ 面積 約${m.text}<br>${esc(indCount(f.count))}個体<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
+    } else {
+      const disp=smoothPath(path);   // 線・矢印とも表示用の滑らか経路に載せる（ズレると矢印が線から浮く）
+      const pl=L.polyline(disp,{color:col,weight:4,opacity:.85}).addTo(mapObj);
+      pl.bindPopup(`${head}<br>${esc(indCount(f.count))}個体 ・ ${esc(f.height_class||'')}<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
+      if(endsOn){
+        const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
+        L.marker(path[0],{icon:badge('始','#3fb984')}).addTo(mapObj);
+        L.marker(path[path.length-1],{icon:badge('終','#d05555')}).addTo(mapObj);
+      }
+      if(arrowsOn){ flightArrowPts(disp).forEach(a=>
+        // rotateWithView: 地図を回転させたとき矢印も地面に追随させる（leaflet-rotate。未対応環境では無視される）
+        L.marker(a.p,{icon:flightArrowIcon(a.b,col), interactive:false, rotateWithView:true}).addTo(mapObj)); }
     }
-    if(arrowsOn){ flightArrowPts(disp).forEach(a=>
-      // rotateWithView: 地図を回転させたとき矢印も地面に追随させる（leaflet-rotate。未対応環境では無視される）
-      L.marker(a.p,{icon:flightArrowIcon(a.b,col), interactive:false, rotateWithView:true}).addTo(mapObj)); }
     path.forEach(p=>group.push(p));
   });
   if(Object.keys(legend).length) addFlightLegend(legend, fMode);
@@ -9602,14 +9967,16 @@ function exportReport(surveys, base){
   // 種で分ける前に調査ごとにまとめる——同じ目印に別の種名が付いていても二重に数えないため
   // Map / 素性のないオブジェクトを使う（調査IDが __proto__ などでも壊れないように）
   const svRecs=new Map();
-  const addRec=(s,nm,rec,method,behavior,hasName)=>{
+  // counts=false の記録（行動範囲・営巣範囲などの面）は、確認種としては載せるが**羽数には数えない**
+  const addRec=(s,nm,rec,method,behavior,hasName,counts)=>{
     const key=nm||'（未同定）';
     const m=bySp[key]||(bySp[key]={name:key, total:0, totalRaw:0, records:0, methods:new Set(), rank:'', bySurvey:Object.create(null)});
     m.records++;
-    m.totalRaw+=indCount(rec.count);   // 延べ数（重複除外なし）も別に持つ
     if(method) m.methods.add(method);
     const r=breedingRank(behavior, hasName);
     if(BREED_ORDER[r]>BREED_ORDER[m.rank]) m.rank=r;
+    if(counts===false) return;
+    m.totalRaw+=indCount(rec.count);   // 延べ数（重複除外なし）も別に持つ
     if(!svRecs.has(s.uuid)) svRecs.set(s.uuid, []);
     svRecs.get(s.uuid).push({sp:key, key:String(rec.individual_key||'').trim(), c:indCount(rec.count)});
   };
@@ -9617,10 +9984,11 @@ function exportReport(surveys, base){
     DB.obsOf(s.uuid).forEach(o=>{
       addRec(s, o.species_name_snapshot, {individual_key:o.individual_key||'', count:o.count},
         o.detection_method, o.behavior, !!o.species_name_snapshot); });
-    // 飛翔経路も種一覧に合流（集計画面と同じく2点以上の経路のみ）
-    DB.flightsOf(s.uuid).forEach(f=>{ if((f.path||[]).filter(validPathPt).length<2) return;
+    // 飛翔経路も種一覧に合流（集計画面と同じ点数の判定＝線2点・面3点）。
+    // 面のうち行動範囲・営巣範囲などは、確認種には載せるが羽数には数えない
+    DB.flightsOf(s.uuid).forEach(f=>{ if(!traceDrawable(f)) return;
       addRec(s, f.species_name_snapshot, {individual_key:f.individual_key||'', count:f.count},
-        '飛翔', f.behavior, !!f.species_name_snapshot); });
+        '飛翔', f.behavior, !!f.species_name_snapshot, countsAsIndividuals(f)); });
   });
   const names=Object.keys(bySp);
   if(!names.length){ toast('書き出す観察記録がありません'); return; }
@@ -9727,33 +10095,57 @@ function exportGeoJSON(surveys, base){
   if(!n){ toast('位置付きの記録がありません'); return; }
   toast('GeoJSONを書き出しました（'+n+'ファイル）');
 }
-// 飛翔経路を線データ（LineString）でGeoJSON出力（QGISで使える）
-// 生データ版（タップ点そのまま）と曲線版（滑らかにした線）の2ファイルを書き出す
+// 飛翔経路をGeoJSON出力（QGISで使える）。
+// 線は LineString、面（旋回上昇・行動範囲・営巣範囲）は Polygon。
+// 線は生データ版（タップ点そのまま）と曲線版（滑らかにした線）の2ファイル、
+// 面は**滑らかにしない**ので1ファイル（丸めると囲った範囲が変わってしまう）
 function flightFeature(s,f,path){
+  const area=isArea(f);
+  // 面は始点で閉じた輪にする（GeoJSONのPolygonは最初と最後が同じ点である決まり）
+  const first=path[0], last=path[path.length-1];
+  const ring=(area && first && last && (first[0]!==last[0] || first[1]!==last[1]))
+    ? path.concat([first]) : path;
+  // 大きさの読み方は traceMetric に一本化する（線は長さ・面は面積）。
+  // 渡された経路（曲線版もある）で測る
+  const m=traceMetric({shape:shapeOf(f), path});
   return { type:'Feature',
-    geometry:{ type:'LineString', coordinates: path.map(p=>[p[1],p[0]]) },  // [lon,lat]
+    geometry: area
+      ? { type:'Polygon', coordinates:[ ring.map(p=>[p[1],p[0]]) ] }   // [lon,lat]
+      : { type:'LineString', coordinates: path.map(p=>[p[1],p[0]]) },
     properties:{ survey_id:s.uuid, survey_name:s.name, flight_id:f.uuid,
       species_name:f.species_name_snapshot||'', age_class:ageNorm(f.age_class), individual_label:f.individual_label||'',
       start_time:isoLocal(f.start_time), end_time:isoLocal(f.end_time),
       height_class:f.height_class||'', behavior:f.behavior||'', count:indCount(f.count),
       individual_key:f.individual_key||'',
-      length_m: Math.round(pathLength(path)),
+      // 形と面の種類。線のときは面の種類・面積を空にする（読む側が形で分けられるように）
+      shape:shapeOf(f), area_type:area?(f.area_type||''):'',
+      length_m: area?'':m.length_m,
+      area_m2: area?m.area_m2:'',
       audio_file:(f.audio||[]).map((a,i)=>flightAudioFilename(f,i,a)).join(';'),
-      media_file:(f.media||[]).map((m,i)=>flightMediaFilename(f,i,m)).join(';'),
+      media_file:(f.media||[]).map((m2,i)=>flightMediaFilename(f,i,m2)).join(';'),
       memo:f.memo||'' } };
 }
 function exportFlightsGeoJSON(surveys, base){
-  const raw=[], smooth=[];
+  const raw=[], smooth=[], areas=[];
   surveys.forEach(s=>{ DB.flightsOf(s.uuid).forEach(f=>{
     const path=(f.path||[]).filter(validPathPt);
-    if(path.length<2) return;
+    if(!traceDrawable(f)) return;   // 点数の判定は1か所（線2点・面3点）
+    if(isArea(f)){ areas.push(flightFeature(s,f,path)); return; }   // 面は滑らかにしない
     raw.push(flightFeature(s,f,path));
     smooth.push(flightFeature(s,f,smoothPath(path)));
   });});
-  if(!raw.length){ toast('書き出す飛翔経路がありません'); return; }
-  download(`${base}_flights.geojson`, JSON.stringify({type:'FeatureCollection', features:raw}, null, 1), 'application/geo+json');
-  download(`${base}_flights_smooth.geojson`, JSON.stringify({type:'FeatureCollection', features:smooth}, null, 1), 'application/geo+json');
-  toast('飛翔経路GeoJSON（生・曲線）を書き出しました');
+  if(!raw.length && !areas.length){ toast('書き出す飛翔経路がありません'); return; }
+  const done=[];
+  if(raw.length){
+    download(`${base}_flights.geojson`, JSON.stringify({type:'FeatureCollection', features:raw}, null, 1), 'application/geo+json');
+    download(`${base}_flights_smooth.geojson`, JSON.stringify({type:'FeatureCollection', features:smooth}, null, 1), 'application/geo+json');
+    done.push('経路（生・曲線）');
+  }
+  if(areas.length){
+    download(`${base}_areas.geojson`, JSON.stringify({type:'FeatureCollection', features:areas}, null, 1), 'application/geo+json');
+    done.push('範囲（面）');
+  }
+  toast('GeoJSONを書き出しました：'+done.join('・'));
 }
 const HYP_COLS=['survey_id','survey_name','hypothesis_id','title','hypothesis_text','expected_result',
   'rationale','required_data','target_species','target_location','status'];
@@ -11070,7 +11462,7 @@ SCREENS.exportHub = ()=>{
           <button class="btn primary" onclick="exportReport(DB.surveys(),'BirdSurvey_all')">📋 報告書用（種一覧・地点×種）</button>
           <button class="btn" onclick="exportCSV(DB.surveys(),'BirdSurvey_all')">観察CSV</button>
           <button class="btn" onclick="exportGeoJSON(DB.surveys(),'BirdSurvey_all')">位置GeoJSON（観察者・鳥・巣）</button>
-          <button class="btn" onclick="exportFlightsGeoJSON(DB.surveys(),'BirdSurvey_all')">🛩 飛翔経路GeoJSON</button>
+          <button class="btn" onclick="exportFlightsGeoJSON(DB.surveys(),'BirdSurvey_all')">🛩 飛翔経路・範囲GeoJSON</button>
           <button class="btn" onclick="exportHypCSV(DB.surveys(),'BirdSurvey_all')">仮説CSV</button>
           <button class="btn" onclick="exportMediaZip(DB.surveys(),'BirdSurvey_all')">🎤📷 録音・写真ZIP</button>
         </div>
@@ -11093,12 +11485,12 @@ SCREENS.exportSurvey = (u)=>{
         <button class="btn primary" onclick="exportReport([DB.survey('${u}')],'${base}')">📋 報告書用（種一覧・地点×種）</button>
         <button class="btn primary" onclick="exportCSV([DB.survey('${u}')],'${base}')">観察CSV</button>
         <button class="btn primary" onclick="exportGeoJSON([DB.survey('${u}')],'${base}')">位置GeoJSON（観察者・鳥・巣）</button>
-        <button class="btn" onclick="exportFlightsGeoJSON([DB.survey('${u}')],'${base}')">🛩 飛翔経路GeoJSON</button>
+        <button class="btn" onclick="exportFlightsGeoJSON([DB.survey('${u}')],'${base}')">🛩 飛翔経路・範囲GeoJSON</button>
         <button class="btn" onclick="exportHypCSV([DB.survey('${u}')],'${base}')">仮説CSV</button>
         <button class="btn" onclick="exportMediaZip([DB.survey('${u}')],'${base}')">🎤📷 録音・写真ZIP</button>
       </div>
       <div class="sp"></div>
-      <div class="note">観察 ${DB.obsOf(u).length}件（観察者の位置 ${DB.obsOf(u).filter(o=>validLatLon(o.latitude,o.longitude)).length}件・鳥がいた場所 ${DB.obsOf(u).filter(o=>validLatLon(o.target_latitude,o.target_longitude)).length}件・巣 ${nestRecords(DB.obsOf(u)).length}件（位置付き ${uniqNests(DB.obsOf(u)).length}件）・録音 ${DB.obsOf(u).reduce((n,o)=>n+((o.audio||[]).length),0)}件・写真動画 ${DB.obsOf(u).reduce((n,o)=>n+((o.media||[]).length),0)}件）・飛翔経路 ${DB.flightsOf(u).length}件（録音 ${DB.flightsOf(u).reduce((n,f)=>n+((f.audio||[]).length),0)}件・写真動画 ${DB.flightsOf(u).reduce((n,f)=>n+((f.media||[]).length),0)}件）・仮説 ${DB.hypOf(u).length}件を書き出します。飛翔GeoJSONは生データ版と曲線版の2ファイルを出します。</div>
+      <div class="note">観察 ${DB.obsOf(u).length}件（観察者の位置 ${DB.obsOf(u).filter(o=>validLatLon(o.latitude,o.longitude)).length}件・鳥がいた場所 ${DB.obsOf(u).filter(o=>validLatLon(o.target_latitude,o.target_longitude)).length}件・巣 ${nestRecords(DB.obsOf(u)).length}件（位置付き ${uniqNests(DB.obsOf(u)).length}件）・録音 ${DB.obsOf(u).reduce((n,o)=>n+((o.audio||[]).length),0)}件・写真動画 ${DB.obsOf(u).reduce((n,o)=>n+((o.media||[]).length),0)}件）・飛翔経路 ${DB.flightsOf(u).length}件（録音 ${DB.flightsOf(u).reduce((n,f)=>n+((f.audio||[]).length),0)}件・写真動画 ${DB.flightsOf(u).reduce((n,f)=>n+((f.media||[]).length),0)}件）・仮説 ${DB.hypOf(u).length}件を書き出します。飛翔GeoJSONは、線（経路）を生データ版と曲線版の2ファイル、面（範囲）を1ファイル（_areas）で出します。面は滑らかにしません（丸めると囲った範囲が変わるため）。</div>
     `};
 };
 
