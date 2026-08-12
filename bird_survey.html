@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v206（2026-08-12 囲むと面・記号を報告書に合わせた）';
+const APP_VERSION = 'v207（2026-08-12 地図のボタンを縦に戻した）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -4640,9 +4640,10 @@ function initObsPosMap(){
 function addPfControl(m){
   const C=L.Control.extend({ onAdd:function(){
     const box=L.DomUtil.create('div','');
-    // **横並びにする**。縦に積むと、4つ目（⬠）で地図の下端の「＋」ボタンに
-    // 届いて重なる（地図の高さは300px。42px×4＋隙間＋ズームの分で足りない）
-    box.style.cssText='display:flex; flex-direction:row; gap:6px;';
+    // **縦に並べる**。横並びだと地図の上を横切って邪魔になる。
+    // 3つ（42px×3＋隙間＝138px）なら、ズームの下・地図下端の「＋」ボタンの上に収まる。
+    // **4つ目を足すと「＋」に届いて重なる**ので、ボタンは3つまで（2026-08-12 実測）
+    box.style.cssText='display:flex; flex-direction:column; gap:6px;';
     const mk=(id,txt,mode)=>{ const b=L.DomUtil.create('button','locate-btn pf-btn',box);
       b.type='button'; b.id=id; b.textContent=txt;
       b.title=(mode==='P')?'止まっていた場所を落とす'
