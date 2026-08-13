@@ -263,7 +263,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v215（2026-08-13 全画面の欄が広がっても小さく・くるくるが押せる）';
+const APP_VERSION = 'v216（2026-08-13 新しいLが必ず続く・直後もくるくるを選べる）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2798,28 +2798,31 @@ SCREENS.obsEdit = (argStr)=>{
                 ${OPT.flightHeight.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}
               </select></label>
           </div>
-          <!-- くるくる（旋回）。報告書の結果図では、飛翔経路の線そのものに輪が入る。
-               1点ずつ輪を描くのは現場で無理なので、押しておくと1タップで輪が1つ入る。
-               ふだんは大きさ・周回数を隠して、画面をうるさくしない -->
-          <div class="row" id="flSpiralWrap" style="display:none; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px;">
-            <button type="button" class="btn ghost" id="flSpiralBtn" style="width:auto; padding:6px 10px;"
-              onclick="spiralToggle()">◠ くるくる（旋回）</button>
-            <span id="flSpiralOpts" style="display:none;">
-              <span class="row" style="gap:6px; align-items:center; flex-wrap:wrap;">
-                <div class="seg" data-seg="fl_spiral_size">
-                  ${SPIRAL_SIZES.map((s,i)=>`<button type="button" class="${i===1?'on':''}" onclick="pickObs(this,'fl_spiral_size'); spiralInfo()">${esc(s.name)}</button>`).join('')}
-                </div>
-                <div class="seg" data-seg="fl_spiral_side">
-                  ${['左','右'].map((n,i)=>`<button type="button" class="${i===0?'on':''}" onclick="pickObs(this,'fl_spiral_side'); spiralInfo()">${n}回り</button>`).join('')}
-                </div>
-                <div class="seg" data-seg="fl_spiral_move">
-                  ${['その場','進む'].map((n,i)=>`<button type="button" class="${i===0?'on':''}" onclick="pickObs(this,'fl_spiral_move'); spiralInfo()">${n}</button>`).join('')}
-                </div>
-              </span>
-            </span>
-          </div>
           <div id="flBehWrap">${segFold('fl_behavior','行動（複数選択可）',OPT.flightBehavior)}</div>
         </div>
+        <!-- くるくるは**線の属性ではなく描き方**なので、L の欄の外に置く。
+             中に置くと、線が2本以上あって選んでいないとき（＝新しいLを押した直後）に
+             欄ごと隠れて選べなくなる（2026-08-13 実機で指摘） -->
+            <!-- くるくる（旋回）。報告書の結果図では、飛翔経路の線そのものに輪が入る。
+                 1点ずつ輪を描くのは現場で無理なので、押しておくと1タップで輪が1つ入る。
+                 ふだんは大きさ・周回数を隠して、画面をうるさくしない -->
+            <div class="row" id="flSpiralWrap" style="display:none; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+              <button type="button" class="btn ghost" id="flSpiralBtn" style="width:auto; padding:6px 10px;"
+                onclick="spiralToggle()">◠ くるくる（旋回）</button>
+              <span id="flSpiralOpts" style="display:none;">
+                <span class="row" style="gap:6px; align-items:center; flex-wrap:wrap;">
+                  <div class="seg" data-seg="fl_spiral_size">
+                    ${SPIRAL_SIZES.map((s,i)=>`<button type="button" class="${i===1?'on':''}" onclick="pickObs(this,'fl_spiral_size'); spiralInfo()">${esc(s.name)}</button>`).join('')}
+                  </div>
+                  <div class="seg" data-seg="fl_spiral_side">
+                    ${['左','右'].map((n,i)=>`<button type="button" class="${i===0?'on':''}" onclick="pickObs(this,'fl_spiral_side'); spiralInfo()">${n}回り</button>`).join('')}
+                  </div>
+                  <div class="seg" data-seg="fl_spiral_move">
+                    ${['その場','進む'].map((n,i)=>`<button type="button" class="${i===0?'on':''}" onclick="pickObs(this,'fl_spiral_move'); spiralInfo()">${n}</button>`).join('')}
+                  </div>
+                </span>
+              </span>
+            </div>
         <div class="note" id="obsOnlyNote" style="display:none;">飛翔経路だけの記録です。観察にしか残せない項目（性別・確認方法・生息環境・巣など）は入力できません。止まった場所を記録するなら <b>P</b> を落としてください。
           <div class="sp"></div><button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsOnlyReset()">観察の項目を最初の状態に戻す</button></div>
         <div class="note" id="legacyPosNote" style="display:none;">この記録の位置は、以前の画面では「止まり木・巣など」の位置でした。巣の位置なら下のボタンで移せます。
@@ -3487,7 +3490,7 @@ function mapFullOff(now){
 /* 並べる順。**描くのに使うものを先**に置く（形・面の種類・高度・くるくる・行動）。
    種情報を先にすると、開いたときに背が高く、くるくるが下へ押し出されて
    欄の中を送らないと押せなくなる（2026-08-13 実機で指摘） */
-const MAPFULL_TOOL_IDS = ['flAttrRow', 'foldSpecies'];
+const MAPFULL_TOOL_IDS = ['flSpiralWrap', 'flAttrRow', 'foldSpecies'];
 function mapFullToolsOn(f){
   const box=document.createElement('div');
   box.className='map-full-tools';
@@ -4304,9 +4307,11 @@ function spiralInfo(){
   const w=$('#flSpiralWrap'), b=$('#flSpiralBtn'), o=$('#flSpiralOpts');
   if(!w||!b||!o) return;
   const one=SCREENS._flSeg;
-  // 線を描いているときだけ出す（面に「進む向き」は無い）
-  w.style.display=(PF_MODE==='F' || (one && one.t==='F' && segShape(one)!==SHAPE_AREA)) ? '' : 'none';
-  if(segShape(one)===SHAPE_AREA){ w.style.display='none'; PF_SPIRAL=false; }
+  // **経路（L）を描くときの道具**なので、L のときは常に出す。
+  // 面を選んでいるときだけ引っ込める（面に「進む向き」は無い）
+  const 面を選んでいる = !!one && one.t==='F' && segShape(one)===SHAPE_AREA;
+  w.style.display=(PF_MODE==='F' && !面を選んでいる) ? '' : 'none';
+  if(面を選んでいる) PF_SPIRAL=false;
   b.classList.toggle('primary', PF_SPIRAL);
   b.textContent=(PF_SPIRAL?'◠ くるくる 入れる中':'◠ くるくる（旋回）');
   o.style.display=PF_SPIRAL?'':'none';
@@ -4723,7 +4728,10 @@ function pfSyncFlightFields(){
   // 点が足りないうちも対象にする。**1点目から形と種類を選べる**ようにするため
   //（保存できる点数まで待たせると、描いてから欄を探すことになる）
   const fls=PF_SEGS.filter(sg=>sg.t==='F');
-  const one=(selSeg && selSeg.t==='F') ? selSeg : ((fls.length===1)?fls[0]:null);
+  // 線が2本以上でも、**いま描いている線**があればそれを対象にする。
+  // 対象なしにすると、2本目を描いている最中に形・行動・くるくるが消える（2026-08-13 指摘）
+  const drawing=(PF_MODE==='F' && !PF_NEWLINE) ? lastDrawnFl() : null;
+  const one=(selSeg && selSeg.t==='F') ? selSeg : ((fls.length===1)?fls[0]:drawing);
   const prev=SCREENS._flSeg||null;
   if(prev && prev!==one && PF_SEGS.includes(prev)) flStoreInto(prev);   // 隠す前に、いままでの経路へ控える
   if(one!==prev && one) flLoadFrom(one);
@@ -5102,6 +5110,9 @@ function pfNewLine(){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;
   if(PF_MODE!=='F'){ pfSet('F'); return; }   // 経路モードでなければ、まず切り替えるだけ
   PF_SEL=-1; PF_NEWLINE=true;                // 次のタップから新しい線
+  // **必ず前の終点から続ける**。L を押し直して「離す」にしていても、
+  // このボタンは「続ける」意味に固定する（離したいときは L を使う。2026-08-13 指摘）
+  PF_CONT=true;
   if(typeof segChips==='function') segChips();
   pfInfo(); pfSyncFlightFields();
   toast(PF_CONT ? '次のタップから新しいL（前の終点から続けます）'
