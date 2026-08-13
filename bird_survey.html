@@ -161,8 +161,12 @@
   .map-full-tools{position:absolute; left:0; right:0; bottom:0; z-index:1200;
     background:rgba(16,18,22,.94); border-top:1px solid var(--line);
     padding:8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
-    max-height:50%; overflow-y:auto; -webkit-overflow-scrolling:touch;}
+    /* 地図が見えなくならないよう、画面の45%まで。あふれる分は中で送る */
+    max-height:45%; overflow-y:auto; -webkit-overflow-scrolling:touch;}
   .map-full-tools .fold{margin:0 0 6px;}
+  /* 「小さく」は**いつでも押せる**ように、欄より手前に出す。
+     欄に埋もれて全画面から戻れなくなった（2026-08-13 実機で指摘） */
+  .map-full .map-full-btn{position:relative; z-index:1300;}
   /* 地図の下端のボタン（「＋」「大きく」）が欄に隠れないよう持ち上げる */
   .map-full .leaflet-bottom{margin-bottom:calc(env(safe-area-inset-bottom, 0px) + var(--tools-h, 0px));}
   .north-needle{display:inline-block; line-height:1.05; font-size:13px; font-weight:700; transition:transform .15s;}
@@ -259,7 +263,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v214（2026-08-13 地図の使い勝手：新しいL・全画面のまま入力）';
+const APP_VERSION = 'v215（2026-08-13 全画面の欄が広がっても小さく・くるくるが押せる）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3480,7 +3484,10 @@ function mapFullOff(now){
 /* 全画面のときに、入力の欄を地図の中へ**引っ越す**（作り直さない）。
    同じ部品を動かすので、種名も形も行動もくるくるも、いつもの処理がそのまま効く。
    作り直すと、入力中の値や監視が二重になって食い違う（2026-08-13 実機の要望） */
-const MAPFULL_TOOL_IDS = ['foldSpecies', 'flAttrRow'];
+/* 並べる順。**描くのに使うものを先**に置く（形・面の種類・高度・くるくる・行動）。
+   種情報を先にすると、開いたときに背が高く、くるくるが下へ押し出されて
+   欄の中を送らないと押せなくなる（2026-08-13 実機で指摘） */
+const MAPFULL_TOOL_IDS = ['flAttrRow', 'foldSpecies'];
 function mapFullToolsOn(f){
   const box=document.createElement('div');
   box.className='map-full-tools';
@@ -3493,12 +3500,23 @@ function mapFullToolsOn(f){
   if(!f.moved.length){ f.tools=null; return; }
   try{ L.DomEvent.disableClickPropagation(box); L.DomEvent.disableScrollPropagation(box); }catch(e){}
   f.el.appendChild(box);
-  // 地図の下端のボタン（「＋」など）が欄に隠れないよう、その分だけ持ち上げる
+  // 地図の下端のボタン（「＋」など）が欄に隠れないよう、その分だけ持ち上げる。
+  // **欄の高さは変わる**（種情報を開くなど）。最初に測った値のままにすると、
+  // 広がった欄が「小さく」ボタンを覆って戻れなくなる（2026-08-13 実機で指摘）
   const lift=()=>{ try{ f.el.style.setProperty('--tools-h', box.offsetHeight+'px'); }catch(e){} };
   lift(); f.toolsTimer=setTimeout(lift, 60);
+  try{
+    f.toolsRO=new ResizeObserver(lift);   // 高さが変わるたびに追いかける
+    f.toolsRO.observe(box);
+  }catch(e){
+    // ResizeObserver が無い端末では、開け閉めのたびに測り直す
+    f.toolsTick=setInterval(lift, 500);
+  }
 }
 function mapFullToolsOff(f){
   if(f.toolsTimer){ clearTimeout(f.toolsTimer); f.toolsTimer=null; }
+  if(f.toolsRO){ try{ f.toolsRO.disconnect(); }catch(e){} f.toolsRO=null; }
+  if(f.toolsTick){ clearInterval(f.toolsTick); f.toolsTick=null; }
   (f.moved||[]).forEach(({el, parent, next})=>{
     try{ if(parent) parent.insertBefore(el, next||null); }catch(e){}
   });
