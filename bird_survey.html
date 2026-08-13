@@ -263,7 +263,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v216（2026-08-13 新しいLが必ず続く・直後もくるくるを選べる）';
+const APP_VERSION = 'v217（2026-08-13 始・終の印をやめ矢印と点に・◎と経路をつなぐ）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -4935,6 +4935,18 @@ function pfRedraw(){
     if(b.map.nest){ try{ L.circleMarker(b.map.nest,{radius:7,color:'#fff',weight:1,fillColor:'#a894d8',fillOpacity:.4,interactive:false}).addTo(pfLayer); }catch(e){} }
   });
   const badge=(t,bg,size)=>L.divIcon({className:'',html:'<div style="background:'+bg+';border:2px solid #fff;border-radius:50%;width:'+size+'px;height:'+size+'px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:700">'+t+'</div>',iconSize:[size,size],iconAnchor:[size/2,size/2]});
+  // L1・L2… の番号。**丸い印にはしない**（始・終の印をやめた趣旨に合わせる）。
+  // 白フチを付けた文字だけを点の右上に置く。重なっても地図が読める
+  // 始点の丸。少し大きくして狙いやすくする（押すと囲みにできる）。
+  // 中身は**ただの丸**。「始」の文字は入れない（2026-08-13 指摘）
+  const startDot=(col)=>L.divIcon({className:'',
+    html:'<div class="pf-start" style="background:'+col+';border:2px solid #fff;'
+      +'border-radius:50%;width:16px;height:16px;box-shadow:0 1px 4px rgba(0,0,0,.45)"></div>',
+    iconSize:[16,16], iconAnchor:[8,8]});
+  const numIcon=(t,col)=>L.divIcon({className:'',
+    html:'<div style="font-size:12px;font-weight:800;color:'+col
+      +';text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;white-space:nowrap">'+t+'</div>',
+    iconSize:[26,16], iconAnchor:[-7,17]});
   if(PF_NEST){
     L.marker(PF_NEST,{icon:badge('巣','#8a6fd0',26)}).addTo(pfLayer);
   }
@@ -4969,24 +4981,44 @@ function pfRedraw(){
         }
         else if(seg.pts.length>1)
           L.polyline(seg.pts,{color:'#9b59b6',weight:3,opacity:.6,dashArray:'5,4',interactive:false}).addTo(pfLayer);
-        // 面がどれか分かるよう、1点目に番号（または「面」）だけ置く
-        L.marker(seg.pts[0],{icon:badge(nLines>1?segLabel(segIdx):'面','#9b59b6',22), interactive:false}).addTo(pfLayer);
+        // 面がどれか分かるよう、1点目に番号（または「面」）だけ置く。
+        // **丸い印にはしない**。◎（旋回上昇）の上に丸を重ねると記号が読めない
+        L.marker(seg.pts[0],{icon:numIcon(nLines>1?segLabel(segIdx):'面',selL?'#7d3fb0':'#6b3f96'), interactive:false}).addTo(pfLayer);
         seg.pts.forEach(pt=>L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#9b59b6',fillOpacity:1,interactive:false}).addTo(pfLayer));
+        // 旋回上昇（◎）は、前後の飛翔経路と線で結ぶ（2026-08-13 指摘）
+        soarJoins(PF_SEGS, segIdx).forEach(j=>{
+          L.polyline(j,{color:'#e0a030',weight:3,opacity:.9,interactive:false}).addTo(pfLayer);
+          const b=bearingDeg(j[0], j[1]);
+          const mid=[(j[0][0]+j[1][0])/2, (j[0][1]+j[1][1])/2];
+          L.marker(mid,{icon:flightArrowIcon(b,'#e0a030'), interactive:false, rotateWithView:true}).addTo(pfLayer);
+        });
       } else {
+        const lineCol=selL?'#ffd479':'#e0a030';
         // 線・面そのものも**タップを遮らない**。押しても何も起きない飾りなのに、
         // 上を狙ったタップが地図に届かず、描き足せなくなる（2026-08-13 監査）
-        if(seg.pts.length>1) L.polyline(seg.pts,{color:selL?'#ffd479':'#e0a030',weight:selL?7:4,opacity:.95,interactive:false}).addTo(pfLayer);
-        // 線が2本以上あるときは、始点に L1・L2… を出して「直す」チップのL番号と地図の線を見比べられるようにする
-        //（Pの番号表示と同じ流儀。1本だけなら従来どおり「始」）
+        if(seg.pts.length>1) L.polyline(seg.pts,{color:lineCol,weight:selL?7:4,opacity:.95,interactive:false}).addTo(pfLayer);
+        // 向きは**矢印**で示す。「始」「終」の丸い印はやめた（2026-08-13 指摘）。
+        // 続けて描いたLは前の終点から始まるので、終と始の印が近くに並び、
+        // 「この間は何？」と見えてしまっていた。報告書の結果図も矢印と点だけ
+        if(seg.pts.length>1)
+          flightArrowPts(seg.pts).forEach(a=>
+            L.marker(a.p,{icon:flightArrowIcon(a.b,lineCol), interactive:false, rotateWithView:true}).addTo(pfLayer));
+        // 線が2本以上あるときは、L1・L2… を小さく出して「直す」チップと見比べられるようにする
         // 前の線から引き継いだ点は「自分で描き始めた場所」ではないので、
-        // 「始」の印はその次（＝最初にタップした点）に置く。
+        // 番号と「押すと閉じる点」はその次（＝最初にタップした点）に置く。
         // ここに置かないと、囲みにするとき押すべき点と印がずれる
         const sIdx=segContOffset(seg);
-        const startMk=L.marker(seg.pts[sIdx],{icon:badge(nLines>1?segLabel(segIdx):'始','#3fb984',22)}).addTo(pfLayer);
-        // **始点の印そのものを押しても閉じられるようにする。**
-        // Leaflet の印の上のタップは地図へ伝わらないので、印に付けないと
-        // 「始点をもう一度タップ」がいちばん自然な操作（印を狙って押す）で効かない
-        //（2026-08-12 監査で判明。テストが pfDrop を直に呼んでいて見逃していた）
+        if(nLines>1)
+          L.marker(seg.pts[sIdx],{icon:numIcon(segLabel(segIdx),selL?'#b07800':'#8a6400'), interactive:false}).addTo(pfLayer);
+        // **始点の点そのものを押しても閉じられるようにする。**
+        // Leaflet の印の上のタップは地図へ伝わらないので、点に付けないと
+        // 「始点をもう一度タップ」がいちばん自然な操作（点を狙って押す）で効かない
+        //（2026-08-12 監査で判明。テストが pfDrop を直に呼んでいて見逃していた）。
+        // 丸い印をやめたので、代わりに**この点だけ少し大きく**して狙いやすくする
+        // **地図の絵（SVG）ではなく印（DOM）で置く。**
+        // 絵で置くと、押したときに地図にもタップが伝わり、閉じる処理と
+        // 地図への点追加が**二重に**起きる（旋回中は輪が2つ入った。2026-08-13）
+        const startMk=L.marker(seg.pts[sIdx],{icon:startDot(lineCol)}).addTo(pfLayer);
         startMk.on('click', ev=>{
           if(ev && ev.originalEvent) L.DomEvent.stop(ev.originalEvent);
           if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;   // 保存の後処理中は触らせない
@@ -5009,13 +5041,15 @@ function pfRedraw(){
           if(pfTryClose(seg, p[0], p[1])===true){ pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); }
           else PF_HIST.pop();   // 閉じられなかった（'ng' も含む）ので控えも戻す
         });
-        // 途中の点の丸。**点が多い線では出さない**（旋回の輪は点が細かいので、
-        // 丸を出すと線が丸の帯になって形が読めない。2026-08-13）
-        if(seg.pts.length<=12)
-          seg.pts.forEach((pt,i)=>{ if(i>0&&i<seg.pts.length-1) L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1,interactive:false}).addTo(pfLayer); });
-        // 「終」の印は**タップを遮らない**。遮ると、終点の上を狙ったタップが
-        // 地図に届かず、続きも描けず新しい線も始められない（2026-08-13 監査）
-        if(seg.pts.length>1) L.marker(seg.pts[seg.pts.length-1],{icon:badge('終','#d05555',22), interactive:false}).addTo(pfLayer);
+        // 点の丸。**点が多い線では途中を出さない**（旋回の輪は点が細かいので、
+        // 丸を出すと線が丸の帯になって形が読めない。2026-08-13）。
+        // 端の点（引き継いだ点・終わりの点）は、点が多くても出す
+        seg.pts.forEach((pt,i)=>{
+          if(i===sIdx) return;                              // 始点はもう大きく出してある
+          const 端=(i===0 || i===seg.pts.length-1);
+          if(!端 && seg.pts.length>12) return;
+          L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:lineCol,fillOpacity:1,interactive:false}).addTo(pfLayer);
+        });
       }
     }
   });
@@ -7786,7 +7820,7 @@ SCREENS.flightEdit = (argStr)=>{
   return {
     title: editing?'飛翔経路を編集':'飛翔経路を記録',
     html:`
-      <div class="note"><span id="fHelpHow"></span>鳥が飛んだ順に点がつながります（緑「始」→赤「終」で向き）。間違えたら「↶ 1つ戻す」。<br>旋回上昇の円や行動範囲・営巣範囲のように<b>範囲を囲む</b>ときは、下の「形」を<b>面</b>にしてください（3点以上で閉じます）。<br>薄い線は同じ調査の他の経路です。${editing?'':'同時に複数の鳥を追うときは「＋ 個体を追加」でトラックを増やし、タブで切り替えながら描けます（線ごとに種名・齢なども別に入力できます）。'}見失った鳥をまた見つけたときは、同じ線に足さず「保存して<b>同じ鳥</b>の続きを描く」で別の線として描いてください（前後は開始時刻で分かります。同じ鳥として結び付くので、集計で二重に数えられません）。</div>
+      <div class="note"><span id="fHelpHow"></span>鳥が飛んだ順に点がつながります（向きは線の上の<b>矢印</b>で分かります）。間違えたら「↶ 1つ戻す」。<br>旋回上昇の円や行動範囲・営巣範囲のように<b>範囲を囲む</b>ときは、下の「形」を<b>面</b>にしてください（3点以上で閉じます）。<br>薄い線は同じ調査の他の経路です。${editing?'':'同時に複数の鳥を追うときは「＋ 個体を追加」でトラックを増やし、タブで切り替えながら描けます（線ごとに種名・齢なども別に入力できます）。'}見失った鳥をまた見つけたときは、同じ線に足さず「保存して<b>同じ鳥</b>の続きを描く」で別の線として描いてください（前後は開始時刻で分かります。同じ鳥として結び付くので、集計で二重に数えられません）。</div>
       ${multiN?`<div class="chips" id="ftChips" style="margin-bottom:8px;">${SCREENS._ftracks.map((tr,i)=>{
         const col=FLIGHT_PALETTE[i%FLIGHT_PALETTE.length];
         const active=i===SCREENS._ftIdx;
@@ -8421,10 +8455,13 @@ function redrawFlight(){
       flightPath.forEach(p=>L.circleMarker(p,{radius:4,color:'#fff',weight:1,fillColor:'#9b59b6',fillOpacity:1}).addTo(flightLayer));
       L.marker(flightPath[0],{icon:badge('面','#9b59b6')}).addTo(flightLayer);
     } else {
-      if(flightPath.length>1) L.polyline(flightPath,{color:'#e0a030',weight:4,opacity:.9}).addTo(flightLayer);
-      L.marker(flightPath[0],{icon:badge('始','#3fb984')}).addTo(flightLayer);
-      flightPath.forEach((p,i)=>{ if(i>0 && i<flightPath.length-1) L.circleMarker(p,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(flightLayer); });
-      if(flightPath.length>1) L.marker(flightPath[flightPath.length-1],{icon:badge('終','#d05555')}).addTo(flightLayer);
+      // 向きは**矢印**で示す。始・終の丸い印はやめた（2026-08-13 指摘）
+      if(flightPath.length>1){
+        L.polyline(flightPath,{color:'#e0a030',weight:4,opacity:.9}).addTo(flightLayer);
+        flightArrowPts(flightPath).forEach(a=>
+          L.marker(a.p,{icon:flightArrowIcon(a.b,'#e0a030'), interactive:false, rotateWithView:true}).addTo(flightLayer));
+      }
+      flightPath.forEach(p=>L.circleMarker(p,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(flightLayer));
     }
   }
   const info=$('#fInfo');
@@ -8729,7 +8766,7 @@ SCREENS.flightList = (u)=>{
     html:`
       ${drawable.length?`<div id="map"></div>
         <div class="sp"></div>
-        <div class="note">この調査の飛翔経路を全部まとめて表示しています（緑「始」→赤「終」）。左下の凡例で線の色分けを 種／齢／個体 に切り替えられます。線をタップすると内容、下のカードをタップすると編集画面が開きます。</div>`
+        <div class="note">この調査の飛翔経路を全部まとめて表示しています（向きは<b>矢印</b>。左下のボタンで始まり・終わりの印も出せます）。左下の凡例で線の色分けを 種／齢／個体 に切り替えられます。線をタップすると内容、下のカードをタップすると編集画面が開きます。</div>`
         :''}
       <div class="sp"></div>
       <div class="row" style="align-items:center;">
@@ -9139,7 +9176,7 @@ SCREENS.map = (u)=>{
     sub:[`<span class="pill">観察地点 ${obs.length}</span>`, targets.length?`<span class="pill">止まり ${targets.length}</span>`:'', nestAll.length?`<span class="pill">巣 ${nestAll.length}${nestAll.length!==nests.length?`（位置付き ${nests.length}）`:''}</span>`:'', route.length>1?`<span class="pill">ルート 約${fmtDist(pathLength(route))}</span>`:'', flights.length?`<span class="pill">飛翔経路 ${flights.length}</span>`:''].filter(Boolean),
     html:`<div id="map"></div>
       <div class="sp"></div>
-      <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ◆赤＝鳥がいた場所 / 巣＝巣の位置 / ノート＝メモ / 色つき曲線＝飛翔経路（緑「始」→赤「終」）。左下の凡例で線の色分けを 種／齢／個体 に切り替えられます。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ。右上の重ねアイコンで、背景（標準／淡色／航空写真）を選び、さらに「陰影」「傾斜」を重ねられます。選択は次回も保持。</div>`,
+      <div class="note">丸＝観察地点 / ?＝未同定 / △＝要確認 / ◆赤＝鳥がいた場所 / 巣＝巣の位置 / ノート＝メモ / 色つき曲線＝飛翔経路（向きは<b>矢印</b>。左下のボタンで始まり・終わりの印も出せます）。左下の凡例で線の色分けを 種／齢／個体 に切り替えられます。青丸＝現在地（開くと自動で表示範囲に含めます）。右上の📍で現在地へ。右上の重ねアイコンで、背景（標準／淡色／航空写真）を選び、さらに「陰影」「傾斜」を重ねられます。選択は次回も保持。</div>`,
     onMount:()=>{ _mapTimer=setTimeout(()=>drawMap(obs,notes,flights,targets,route,nests),50); }
   };
 };
@@ -9212,6 +9249,15 @@ function drawMap(obs,notes,flights,targets,route,nests){
         pg=drawSoar(mapObj, path, {color:col, interactive:true});
         if(pg) L.polygon(path,{color:col,weight:1,opacity:.35,fill:false,
           dashArray:'4,4',interactive:false}).addTo(mapObj);
+        // 前後の飛翔経路と線で結ぶ（飛んできて・旋回して・飛び去る、のひと続き）
+        soarJoinsForRecords(flights||[], (flights||[]).indexOf(f)).forEach(j=>{
+          L.polyline(j,{color:col,weight:3,opacity:.85,interactive:false}).addTo(mapObj);
+          if(arrowsOn){
+            const mid=[(j[0][0]+j[1][0])/2, (j[0][1]+j[1][1])/2];
+            L.marker(mid,{icon:flightArrowIcon(bearingDeg(j[0],j[1]),col),
+              interactive:false, rotateWithView:true}).addTo(mapObj);
+          }
+        });
       } else {
         pg=L.polygon(path,{color:col,weight:2.5,opacity:.95,fill:false}).addTo(mapObj);
       }
@@ -9257,9 +9303,12 @@ function drawMap(obs,notes,flights,targets,route,nests){
   addLocateControl();   // 右上に「現在地へ」ボタンを設置
   locateOnMap(group);   // 現在地を取得し、自動で表示範囲に含める
 }
-// 飛翔経路の表示切り替え（始終マーカー／向き矢印）。設定は端末に記憶
-function flightEndsOn(){ return localStorage.getItem('bs_flight_ends')!=='0'; }   // 既定は表示
-function flightArrowsOn(){ return localStorage.getItem('bs_flight_arrows')==='1'; }   // 既定は非表示
+// 飛翔経路の表示切り替え（始終マーカー／向き矢印）。設定は端末に記憶。
+// **既定を入れ替えた**（2026-08-13 指摘）。報告書の結果図は矢印と点だけで、
+// 始・終の丸い印は無い。続けて描いた線では終と始が並んで「この間は何？」と
+// 見えてしまうので、既定では出さない（見たい人は下のボタンで戻せる）
+function flightEndsOn(){ return localStorage.getItem('bs_flight_ends')==='1'; }   // 既定は非表示
+function flightArrowsOn(){ return localStorage.getItem('bs_flight_arrows')!=='0'; }   // 既定は表示
 function toggleFlightEnds(){ try{ localStorage.setItem('bs_flight_ends', flightEndsOn()?'0':'1'); }catch(e){} render(); }
 function toggleFlightArrows(){ try{ localStorage.setItem('bs_flight_arrows', flightArrowsOn()?'0':'1'); }catch(e){} render(); }
 // 2点間の方位角（北=0・時計回り。矢印の回転用）
@@ -9399,6 +9448,153 @@ function drawSoar(layer, path, opt){
 }
 // 旋回上昇か（◎で描く）
 function isSoaring(f){ return isArea(f) && String((f&&f.area_type)||'')==='旋回上昇'; }
+
+/* ---------- 旋回上昇（◎）と飛翔経路（L）をつなぐ ----------
+   実際は「飛んできて → その場で旋回上昇して → また飛び去る」ひと続きなのに、
+   ◎だけ離れて浮いて見えていた（2026-08-13 指摘）。
+
+   **◎の形も大きさも位置も変えない。** 前後の線の端と、◎のいちばん近いところを
+   結ぶ線を1本引くだけ。◎の点を経路に混ぜると、旋回の広さが変わってしまう。
+
+   つなぎ目は**記録に持たない**。描いた順番から毎回引き直せるので、持つと
+   本体と控えがずれる元になる（順番はデータベース側にも時刻として残る）。 */
+function soarRing(seg){
+  return (seg && seg.t==='F' && isSoaring(seg.fl||{}) && (seg.pts||[]).length>2)
+    ? soarCircle(seg.pts) : null;
+}
+// ◎の縁のうち、点 p にいちばん近いところ。p が◎の中なら null（もう届いている）
+function soarEdgeToward(ring, p){
+  if(!ring || !validPathPt(p)) return null;
+  const k=Math.cos(ring.c[0]*Math.PI/180) || 1e-9;
+  const dy=(p[0]-ring.c[0])*111320, dx=(p[1]-ring.c[1])*111320*k;
+  const d=Math.hypot(dx,dy);
+  if(!(d>ring.r)) return null;
+  return [ring.c[0]+(dy/d*ring.r)/111320, ring.c[1]+(dx/d*ring.r)/(111320*k)];
+}
+// 隣の飛翔経路（線）を探す。止まり（P）は飛ばす。面に当たったらそこで止める
+function soarNeighborLine(segs, i, dir){
+  for(let j=i+dir; j>=0 && j<segs.length; j+=dir){
+    const s=segs[j];
+    if(!s || s.t==='P') continue;
+    if(segShape(s)===SHAPE_AREA) return null;
+    return ((s.pts||[]).filter(validPathPt).length>=1) ? s : null;
+  }
+  return null;
+}
+/* 記録（保存済みの飛翔経路）どうしをつなぐとき用。
+   **同じ鳥どうしだけ**を結ぶ。種も個体も違う記録を結ぶと、飛んでいない線を
+   引いてしまう。
+
+   個体の結び付け（individual_key）は**両方にあるときだけ**使う。片方にしか
+   無いと「絶対に一致しない」ことになり、古い記録と新しい記録が混ざったときに
+   ◎がつながらない（2026-08-13 監査 Major） */
+function sameBird(a, b){
+  const ka=String((a&&a.individual_key)||'').trim();
+  const kb=String((b&&b.individual_key)||'').trim();
+  if(ka && kb) return ka===kb;
+  const sp=x=>String((x&&x.species_name_snapshot)||'').trim();
+  const lb=x=>String((x&&x.individual_label)||'').trim();
+  return sp(a)===sp(b) && lb(a)===lb(b);
+}
+/* 並べ替え用の時刻。**文字のまま比べない**。
+   飛び始めの時刻は端末の時計（2026-08-13T05:10）、作った時刻は世界時
+   （2026-08-12T20:10Z）で書き方が違う。文字で比べると9時間ずれて前後が
+   入れ替わり、つなぎ線が逆を向く（2026-08-13 監査2巡目 Critical）。
+   数にしてから比べる。読めないものは最後に回す */
+function whenNum(v){
+  const t=v ? Date.parse(v) : NaN;
+  return isNaN(t) ? Infinity : t;
+}
+/* 並べ替えの手がかり。まず飛び始めの時刻（無ければ作った時刻）、
+   それが同じなら作った時刻で決める。
+   飛び始めは分までしか無いので、続けて記録すると同じになりうる */
+function flightWhen(f){
+  return [whenNum((f && (f.start_time || f.created_at)) || ''),
+          whenNum(f && f.created_at)];
+}
+/* 2つの記録の前後。決められないときは 0 を返す。
+   飛び始めが分までしか無いので、続けて記録すると同じ時刻になりうる。
+   そのとき**渡された順で決めつけない**——まとめの画面は新しい順に渡してくるので、
+   決めつけると入口と出口が入れ替わる（2026-08-13 監査3巡目 Critical） */
+function flightOrder(a, b){
+  const x=flightWhen(a), y=flightWhen(b);
+  for(let i=0;i<x.length;i++){
+    if(x[i]===y[i]) continue;
+    if(!isFinite(x[i]) || !isFinite(y[i])) return 0;   // 片方が不明なら決められない
+    return x[i]<y[i] ? -1 : 1;
+  }
+  return 0;
+}
+/* 並べ替え専用の比べ方。**必ず一列に並ぶ**ようにする。
+   「決められない＝0」を並べ替えに使うと、A<B・B<C なのに A と C は同じ、
+   のような矛盾した比べ方になり、時刻の分かっている記録まで順番が狂う
+   （2026-08-13 監査4巡目 Critical）。
+   ここでは不明（Infinity）を必ず最後に回し、同じときだけ元の並び順を使う。
+   **つないでよいかの判断には使わない**（そちらは flightOrder のまま）。 */
+function flightSortCmp(a, b){
+  const x=flightWhen(a.f), y=flightWhen(b.f);
+  for(let i=0;i<x.length;i++){
+    if(x[i]!==y[i]) return x[i]<y[i] ? -1 : 1;   // Infinity は自然に最後へ
+  }
+  return a.k-b.k;
+}
+/* 記録の並びの中で、◎の前後にある「同じ鳥の線」を探して結ぶ。
+
+   **並び順は当てにしない。** まとめの画面は新しい順に並べて渡してくるので、
+   渡された順のまま前後を見ると「進入線→◎→退出線」が逆になり、
+   飛んでいない向きの線を引いてしまう（2026-08-13 監査 Critical）。
+   ここで時刻の古い順に並べ直してから前後を探す。 */
+function soarJoinsForRecords(list, i){
+  const cur=(list||[])[i];
+  if(!cur || !isSoaring(cur)) return [];
+  const ring=soarCircle((cur.path||[]).filter(validPathPt));
+  if(!ring) return [];
+
+  const 順=(list||[]).map((f,k)=>({f,k})).sort(flightSortCmp);
+  const here=順.findIndex(o=>o.f===cur);
+  if(here<0) return [];
+
+  const pick=dir=>{
+    for(let j=here+dir; j>=0 && j<順.length; j+=dir){
+      const f=順[j].f;
+      if(!f || !sameBird(f, cur)) continue;        // 別の鳥は飛ばす
+      // **前後を決められないなら結ばない。** 決めつけると逆向きの線を引く
+      if(flightOrder(f, cur)!==dir) return null;
+      if(isArea(f)) return null;                   // 面が続くならそこで止める
+      const pts=(f.path||[]).filter(validPathPt);
+      return pts.length ? pts : null;
+    }
+    return null;
+  };
+  const out=[];
+  const prev=pick(-1);
+  if(prev){ const e=soarEdgeToward(ring, prev[prev.length-1]);
+    if(e) out.push([prev[prev.length-1], e]); }
+  const next=pick(+1);
+  if(next){ const e=soarEdgeToward(ring, next[0]);
+    if(e) out.push([e, next[0]]); }
+  return out;
+}
+
+// ◎と前後の線を結ぶ線を返す（[[端, ◎の縁], …]）
+function soarJoins(segs, i){
+  const ring=soarRing(segs[i]);
+  if(!ring) return [];
+  const out=[];
+  const prev=soarNeighborLine(segs, i, -1);
+  if(prev){
+    const pts=(prev.pts||[]).filter(validPathPt);
+    const end=pts[pts.length-1], edge=soarEdgeToward(ring, end);
+    if(edge) out.push([end, edge]);
+  }
+  const next=soarNeighborLine(segs, i, +1);
+  if(next){
+    const pts=(next.pts||[]).filter(validPathPt);
+    const start=pts[0], edge=soarEdgeToward(ring, start);
+    if(edge) out.push([edge, start]);
+  }
+  return out;
+}
 // 飛翔経路の凡例＋色モード切替（種→齢→個体）を地図左下に置く
 function cycleFlightColorMode(){ const order=['種','齢','個体']; const cur=flightColorMode();
   const next=order[(order.indexOf(cur)+1)%order.length]; localStorage.setItem('bs_flightcolor',next); render(); }
