@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v212（2026-08-13 旋回は1周・左右を選べる／急降下は矢じり2つ）';
+const APP_VERSION = 'v213（2026-08-13 旋回しながら移動（ばね状）を足した）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2797,6 +2797,9 @@ SCREENS.obsEdit = (argStr)=>{
                 <div class="seg" data-seg="fl_spiral_side">
                   ${['左','右'].map((n,i)=>`<button type="button" class="${i===0?'on':''}" onclick="pickObs(this,'fl_spiral_side'); spiralInfo()">${n}回り</button>`).join('')}
                 </div>
+                <div class="seg" data-seg="fl_spiral_move">
+                  ${['その場','進む'].map((n,i)=>`<button type="button" class="${i===0?'on':''}" onclick="pickObs(this,'fl_spiral_move'); spiralInfo()">${n}</button>`).join('')}
+                </div>
               </span>
             </span>
           </div>
@@ -4095,7 +4098,10 @@ function lastDrawnFl(){
 const SPIRAL_SIZES = [
   { name:'小', r:25 }, { name:'中', r:50 }, { name:'大', r:100 },
 ];
-const SPIRAL_STEP = 16;    // 輪の点の数（多いと記録が重くなる）
+const SPIRAL_STEP = 16;    // 輪1つあたりの点の数（多いと記録が重くなる）
+// 「進む」ときに並べる輪の数。報告書の図（藻琴川オジロワシ）は4〜8個ほど。
+// 足りなければもう一度タップして並べられるので、1回ぶんは控えめにする
+const SPIRAL_MOVE_LOOPS = 3;
 let PF_SPIRAL = false;     // 「くるくる」を押しているか（この画面だけの状態）
 function spiralSize(){
   const v=segVal('fl_spiral_size')||'中';
@@ -4103,6 +4109,8 @@ function spiralSize(){
 }
 // 輪を描く向き。右回り（時計回り）か左回りか。**利き手ではなく鳥の回り方**
 function spiralSide(){ return (segVal('fl_spiral_side')==='右') ? -1 : 1; }   // 1=左回り
+// その場で1周か、旋回しながら進むか
+function spiralMoves(){ return segVal('fl_spiral_move')==='進む'; }
 /* 隣どうしの点で経度が飛んでいるか（＝日付変更線をまたいだか）。
    **ちょうど180度も飛びとして扱う**。またぐと、地図やQGISで世界を横断する線になる。
    判定はここ1か所（テストからも同じものを呼ぶ。2026-08-13 監査） */
@@ -4120,14 +4128,15 @@ function destPoint(lat, lon, bearing, dist){
   return [p2/t, olon];
 }
 /* 輪の点を作る。`from` から `at` へ向かっていた鳥が、`at` で輪を描いて
-   同じ向きへ抜けていく形。**その場で真円を1周**して `at` へ戻る
-   （何周も描き分ける必要は無い、という現場の判断。2026-08-13）。
+   同じ向きへ抜けていく形。loops=1 なら**その場で真円を1周**して `at` へ戻る。
+   loops が2以上なら、輪を数珠つなぎに並べながら進む（＝旋回しながら移動。
+   報告書の図にあるばね状の線。2026-08-13）。
    side=-1 で右回り（時計回り）、それ以外は左回り。
    トロコイド（回りながら進む形）は、**1周では線が交差せず「弧」にしかならない**
    ことが分かったのでやめた（2026-08-13。数式でも1周では交差しない）。
    1点目は `at` そのものなので、呼び出し側は重なりを見て足す。
    作れないとき（極の近く・日付変更線をまたぐ）は **null** を返す（2026-08-13 監査）。 */
-function spiralPoints(at, from, r, side){
+function spiralPoints(at, from, r, side, loops){
   const lat=at[0], lon=at[1], t=Math.PI/180;
   // 進む向き（前の点から今の点へ）の方位。**前の点は呼ぶ側で確かめてある**
   let brg=0;   // 既定は北
@@ -4141,6 +4150,8 @@ function spiralPoints(at, from, r, side){
     if(Math.abs(y)>1e-12 || Math.abs(x)>1e-12) brg=Math.atan2(y,x);
   }
   const sd=(side===-1)?-1:1;           // 1=左回り（既定）、-1=右回り
+  const n=Math.max(1, loops||1);       // 並べる輪の数（1=その場、2以上=旋回しながら進む）
+  const step=r*1.4;                    // 輪と輪の間隔（少し重なって数珠つなぎに見える）
   const out=[];
   // 進む向きを前、その左を横にとって、地球のまるみに沿って置く
   const put=(along,side)=>{
@@ -4150,17 +4161,22 @@ function spiralPoints(at, from, r, side){
     out.push(destPoint(lat, lon, brg - Math.atan2(side, along), dist));
   };
   put(0,0);                            // 輪に入る点（＝タップした場所）
-  for(let i=1;i<SPIRAL_STEP;i++){
-    const a=2*Math.PI*i/SPIRAL_STEP;
-    // 中心は「入る点の左（右回りなら右）へ r」。入る点から1周して戻る。
-    // **反転するのは横だけ**。進む向きまで反転すると、入口で後ろへ戻ってしまう
-    //（2026-08-13 監査）
-    put(r*Math.sin(a), (r - r*Math.cos(a))*sd);
+  for(let k=0;k<n;k++){
+    const c=k*step;                    // この輪に入る位置（進む向き）
+    for(let i=1;i<SPIRAL_STEP;i++){
+      const a=2*Math.PI*i/SPIRAL_STEP;
+      // 中心は「入る点の左（右回りなら右）へ r」。入る点から1周して戻る。
+      // **反転するのは横だけ**。進む向きまで反転すると、入口で後ろへ戻ってしまう
+      //（2026-08-13 監査）
+      put(c + r*Math.sin(a), (r - r*Math.cos(a))*sd);
+    }
+    // **最後の点は計算し直さず、入口の座標をそのまま置く**。
+    // sin(2π)・cos(2π) から計算すると、わずかにずれて「同じ点」に見えなくなる
+    //（重なりの判定や面の検査が座標によって変わる。2026-08-13 監査）
+    if(k===0 && n===1) out.push([lat, lon]);
+    else put(c, 0);
+    if(k<n-1) put(c+step, 0);          // 次の輪へ進む
   }
-  // **最後の点は計算し直さず、入口の座標をそのまま置く**。
-  // sin(2π)・cos(2π) から計算すると、わずかにずれて「同じ点」に見えなくなる
-  //（重なりの判定や面の検査が座標によって変わる。2026-08-13 監査）
-  out.push([lat, lon]);
   // 使えない点（極の近く）や、日付変更線をまたいだ輪は**作らない**。
   // またぐと、隣どうしの点が 179°→-179° と飛び、地図やQGISで世界を横断する線になる
   for(let i=0;i<out.length;i++){
@@ -4190,8 +4206,8 @@ function segAddSpiral(sg, lat, lon, now, prev){
       +'先にふつうの点を1つ置いてから押してください', 5500);
     return;
   }
-  const s=spiralSize(), side=spiralSide();
-  const ring=spiralPoints([lat,lon], prev, s.r, side);
+  const s=spiralSize(), side=spiralSide(), moves=spiralMoves();
+  const ring=spiralPoints([lat,lon], prev, s.r, side, moves?SPIRAL_MOVE_LOOPS:1);
   // 作れない場所（極の近く・日付変更線をまたぐ）ではふつうの点だけにする
   if(!ring){
     const last0=(sg.pts||[]).length ? sg.pts[sg.pts.length-1] : null;
@@ -4207,7 +4223,7 @@ function segAddSpiral(sg, lat, lon, now, prev){
     sg.pts.push(p); sg.times.push(now);
   });
   sg.edited=true;
-  toast(`旋回（${s.name}・${side===-1?'右回り':'左回り'}）を入れました`, 2500);
+  toast(`旋回（${s.name}・${side===-1?'右回り':'左回り'}・${moves?'進む':'その場'}）を入れました`, 2500);
 }
 function spiralReset(){
   if(!PF_SPIRAL) return;
@@ -4218,7 +4234,9 @@ function spiralToggle(){
   PF_SPIRAL=!PF_SPIRAL;
   if(PF_SPIRAL && PF_MODE!=='F') pfSet('F');   // 経路にしか入れられない
   spiralInfo(); pfInfo();
-  if(PF_SPIRAL) toast('地図をタップすると、その場所に輪が1つ入ります。もう一度押すとやめます', 4500);
+  if(PF_SPIRAL) toast(spiralMoves()
+    ? `地図をタップすると、その場所から輪が${SPIRAL_MOVE_LOOPS}つ並びます。もう一度押すとやめます`
+    : '地図をタップすると、その場所に輪が1つ入ります。もう一度押すとやめます', 4500);
 }
 // ボタンの見た目と、大きさ・周回数の出し入れ
 function spiralInfo(){
@@ -4673,7 +4691,7 @@ function pfInfo(){
   const parts=[PF_MODE==='P'?'P：タップで止まっていた場所'
     :(PF_MODE==='F'?'L：タップで線。始点をもう一度タップすると囲み（面）':'N：タップで巣の位置')];
   if(PF_SPIRAL && PF_MODE==='F')
-    parts.push(`タップで旋回の輪（${spiralSize().name}・${spiralSide()===-1?'右回り':'左回り'}）`);
+    parts.push(`タップで旋回の輪（${spiralSize().name}・${spiralSide()===-1?'右回り':'左回り'}・${spiralMoves()?'進む':'その場'}）`);
   // 次の L をどこから始めるか。押し間違いに気づけるよう、待っている間だけ出す
   if(PF_MODE==='F' && PF_NEWLINE && PF_SEL===-1 && contFrom())
     parts.push(PF_CONT?'次の線は前の終点から（Lをもう一度押すと離して始める）'
