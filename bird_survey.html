@@ -34,7 +34,9 @@
   body{padding-bottom:env(safe-area-inset-bottom);}
   h1,h2,h3{margin:0 0 .4em;}
   a{color:var(--accent);}
-  button{font-family:inherit; font-size:16px;}
+  /* 連打しても画面が拡大しないようにする。スマホは「素早く2回さわる」を拡大と
+     受け取るので、「↶」を続けて押すと地図が拡大して困る（2026-08-13 実機で指摘） */
+  button{font-family:inherit; font-size:16px; touch-action:manipulation;}
   .app{max-width:900px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column;}
 
   /* ヘッダー */
@@ -149,11 +151,20 @@
   /* 全画面中は、iPhoneのノッチ・ホームバーの上に操作ボタンが隠れないよう内側に寄せる。
      横向きではノッチが左右に来る（「小さく」ボタンが押せなくなる＝戻れなくなる）ので四方向とも避ける */
   .map-full .leaflet-top{margin-top:env(safe-area-inset-top, 0px);}
-  .map-full .leaflet-bottom{margin-bottom:env(safe-area-inset-bottom, 0px);}
   .map-full .leaflet-left{left:env(safe-area-inset-left, 0px);}
   .map-full .leaflet-right{right:env(safe-area-inset-right, 0px);}
   /* 全画面中の背面ページの固定。直接 body.style を書き換えると、その間に別処理が変えた指定を消してしまう */
   body.map-full-lock{overflow:hidden;}
+  /* 全画面のときに地図の中へ引っ越してくる入力の欄（種名・形・種類・高度・行動・くるくる）。
+     大きくしたまま入力したい、という現場の要望（2026-08-13）。
+     高さは中身なり。画面の半分までにして、地図が見えなくならないようにする */
+  .map-full-tools{position:absolute; left:0; right:0; bottom:0; z-index:1200;
+    background:rgba(16,18,22,.94); border-top:1px solid var(--line);
+    padding:8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+    max-height:50%; overflow-y:auto; -webkit-overflow-scrolling:touch;}
+  .map-full-tools .fold{margin:0 0 6px;}
+  /* 地図の下端のボタン（「＋」「大きく」）が欄に隠れないよう持ち上げる */
+  .map-full .leaflet-bottom{margin-bottom:calc(env(safe-area-inset-bottom, 0px) + var(--tools-h, 0px));}
   .north-needle{display:inline-block; line-height:1.05; font-size:13px; font-weight:700; transition:transform .15s;}
 
   /* 集計テーブル */
@@ -248,7 +259,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v213（2026-08-13 旋回しながら移動（ばね状）を足した）';
+const APP_VERSION = 'v214（2026-08-13 地図の使い勝手：新しいL・全画面のまま入力）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3433,6 +3444,7 @@ function mapFullOn(m,btn){
   _mapFull=f;
   mapFullBox(el, r);   // まず「いまと同じ見た目」で position:fixed にする
   el.classList.add('map-full');
+  mapFullToolsOn(f);   // 入力の欄を地図の中へ移す（大きくしたまま入力できるように）
   el.offsetHeight;     // ここで一度確定させないと、次の指定とまとめて適用されて動きにならない
   window.addEventListener('keydown', esc);
   mapFullExpand(f);
@@ -3465,6 +3477,36 @@ function mapFullOff(now){
   mapFullTimer(f, ()=>mapFullFinish(f), MAPFULL_MS+30);
   mapFullResizeWatch(f, true);   // 縮小中の画面回転は戻り先が変わるので、動きを諦めて即座に片付ける
 }
+/* 全画面のときに、入力の欄を地図の中へ**引っ越す**（作り直さない）。
+   同じ部品を動かすので、種名も形も行動もくるくるも、いつもの処理がそのまま効く。
+   作り直すと、入力中の値や監視が二重になって食い違う（2026-08-13 実機の要望） */
+const MAPFULL_TOOL_IDS = ['foldSpecies', 'flAttrRow'];
+function mapFullToolsOn(f){
+  const box=document.createElement('div');
+  box.className='map-full-tools';
+  f.tools=box; f.moved=[];
+  MAPFULL_TOOL_IDS.forEach(id=>{
+    const el=document.getElementById(id); if(!el) return;
+    f.moved.push({el, parent:el.parentNode, next:el.nextSibling});
+    box.appendChild(el);
+  });
+  if(!f.moved.length){ f.tools=null; return; }
+  try{ L.DomEvent.disableClickPropagation(box); L.DomEvent.disableScrollPropagation(box); }catch(e){}
+  f.el.appendChild(box);
+  // 地図の下端のボタン（「＋」など）が欄に隠れないよう、その分だけ持ち上げる
+  const lift=()=>{ try{ f.el.style.setProperty('--tools-h', box.offsetHeight+'px'); }catch(e){} };
+  lift(); f.toolsTimer=setTimeout(lift, 60);
+}
+function mapFullToolsOff(f){
+  if(f.toolsTimer){ clearTimeout(f.toolsTimer); f.toolsTimer=null; }
+  (f.moved||[]).forEach(({el, parent, next})=>{
+    try{ if(parent) parent.insertBefore(el, next||null); }catch(e){}
+  });
+  f.moved=null;
+  try{ if(f.tools && f.tools.parentNode) f.tools.parentNode.removeChild(f.tools); }catch(e){}
+  f.tools=null;
+  try{ f.el.style.removeProperty('--tools-h'); }catch(e){}
+}
 // 後始末の本体。ここを通るまで _mapFull は空にしない（空にすると即時解除が効かなくなる）
 function mapFullFinish(f){
   if(_mapFull!==f) return;
@@ -3472,6 +3514,7 @@ function mapFullFinish(f){
   mapFullClear(f); mapFullResizeWatch(f, false);
   window.removeEventListener('keydown', f.esc);
   document.body.classList.remove('map-full-lock');
+  mapFullToolsOff(f);   // 借りていた入力の欄を、元の場所へ返す
   try{ MAPFULL_PROPS.forEach(p=>{ f.el.style[p]=f.prev[p]||''; }); f.el.classList.remove('map-full'); }catch(e){}
   try{ if(f.ph.parentNode) f.ph.parentNode.removeChild(f.ph); }catch(e){}
   try{ f.m.invalidateSize({animate:false}); }catch(e){}
@@ -4450,9 +4493,11 @@ function segEditBar(){
     // 軸として開いている経路自身は統合画面が受け持つ。それ以外の保存済み経路に出す
     more.style.display=(sg && sg.t==='F' && sg.srcUuid && sg.srcUuid!==SCREENS._flAnchorUuid)?'':'none'; }
   if(msg){
-    if(PF_SEL===-2) msg.textContent='巣の位置を直しています。地図をタップすると移動します';
-    else if(PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='P') msg.textContent=segLabel(PF_SEL)+' を直しています。地図をタップすると移動します';
-    else msg.textContent=segLabel(PF_SEL)+' を直しています。地図をタップすると続きを描き足します';
+    // **短く1行で**。長い説明は狭い画面で3行にも折り返し、地図を押し下げる
+    //（2026-08-13 実機で指摘）。やり方は下のボタンと地図の案内で分かる
+    if(PF_SEL===-2) msg.textContent='巣を直し中（タップで移動）';
+    else if(PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='P') msg.textContent=segLabel(PF_SEL)+' を直し中（タップで移動）';
+    else msg.textContent=segLabel(PF_SEL)+' を直し中（タップで描き足す）';
   }
 }
 function segPick(i){
@@ -4700,6 +4745,7 @@ function pfInfo(){
   if(nf) parts.push('経路 '+nf+'本');
   if(PF_NEST) parts.push('巣あり');
   el.textContent=parts.join(' ・ ');
+  if(typeof pfNewLineSync==='function') pfNewLineSync();
 }
 /* 線を描いている途中で**始点をもう一度タップしたら、閉じて面にする**。
    面にするための専用ボタンは置かない（地図が狭くなり、画面もうるさくなる）。
@@ -5016,6 +5062,38 @@ function addPfControl(m){
     mk('pfP','P','P'); mk('pfF','L','F'); mk('pfN','N','N');
     return box; }});
   new C({position:'topleft'}).addTo(m);
+  addNewLineControl(m);
+}
+/* 「＋ 新しいL」。線を1本描いたあと、次の線を始めるためのボタン。
+   左上の L まで手を伸ばすのが面倒、という現場の指摘（2026-08-13）。
+   **描いている線があるときだけ**、親指の届く右下（「大きく」の上）に出す。
+   左下に置くと「＋」を押し上げ、その「＋」が N と重なった（2026-08-13 実測）。
+   前の終点から続けるかどうかは L ボタンの切り替えに従う（ここでは変えない） */
+function addNewLineControl(m){
+  const C=L.Control.extend({ onAdd:function(){
+    const b=L.DomUtil.create('button','map-drop-btn pf-newline');
+    b.type='button'; b.id='pfNewLine'; b.textContent='＋ 新しいL';
+    b.title='次のタップから新しい経路を始める';
+    b.style.display='none';
+    L.DomEvent.disableClickPropagation(b);
+    L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>pfNewLine());
+    return b; }});
+  new C({position:'bottomright'}).addTo(m);
+}
+function pfNewLine(){
+  if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;
+  if(PF_MODE!=='F'){ pfSet('F'); return; }   // 経路モードでなければ、まず切り替えるだけ
+  PF_SEL=-1; PF_NEWLINE=true;                // 次のタップから新しい線
+  if(typeof segChips==='function') segChips();
+  pfInfo(); pfSyncFlightFields();
+  toast(PF_CONT ? '次のタップから新しいL（前の終点から続けます）'
+                : '次のタップから新しいL（離して始めます）', 3000);
+}
+// 「＋ 新しいL」の出し入れ。**描く相手がいるときだけ**出す
+function pfNewLineSync(){
+  const b=$('#pfNewLine'); if(!b) return;
+  const 描いている = PF_MODE==='F' && !!lastDrawnFl();
+  b.style.display = 描いている ? '' : 'none';
 }
 // 観察者位置マーカー（緑丸）の再描画のみ。値は書き換えない（GPS取得時の精度を消さないため分離）
 function obsPosMarkerUpdate(lat,lon){
