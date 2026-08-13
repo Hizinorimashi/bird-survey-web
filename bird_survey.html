@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v211（2026-08-13 くるくる（旋回）を経路に入れられる）';
+const APP_VERSION = 'v212（2026-08-13 旋回は1周・左右を選べる／急降下は矢じり2つ）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2794,8 +2794,8 @@ SCREENS.obsEdit = (argStr)=>{
                 <div class="seg" data-seg="fl_spiral_size">
                   ${SPIRAL_SIZES.map((s,i)=>`<button type="button" class="${i===1?'on':''}" onclick="pickObs(this,'fl_spiral_size'); spiralInfo()">${esc(s.name)}</button>`).join('')}
                 </div>
-                <div class="seg" data-seg="fl_spiral_turns">
-                  ${[1,2,3].map((n,i)=>`<button type="button" class="${i===0?'on':''}" onclick="pickObs(this,'fl_spiral_turns'); spiralInfo()">${n}周</button>`).join('')}
+                <div class="seg" data-seg="fl_spiral_side">
+                  ${['左','右'].map((n,i)=>`<button type="button" class="${i===0?'on':''}" onclick="pickObs(this,'fl_spiral_side'); spiralInfo()">${n}回り</button>`).join('')}
                 </div>
               </span>
             </span>
@@ -4090,17 +4090,19 @@ function lastDrawnFl(){
    「くるくる」を押しておくと、1タップで輪を1つ入れられるようにする。
    **本物の点として入れる**ので、アプリ地図・DB地図・QGIS書き出しの
    どこでもそのまま輪に見える（描く側の細工が要らない）。
-   輪の大きさは報告書の図から見当をつけた（外径でおよそ40m／100m／200m）。 */
+   輪の大きさは報告書の図から見当をつけた（差し径でおよそ50m／100m／200m）。 */
+// r=半径(m)。現場で言う「大きさ」は**差し径（横幅）**なので、その半分を持つ
 const SPIRAL_SIZES = [
-  { name:'小', r:20 }, { name:'中', r:50 }, { name:'大', r:100 },   // r=半径(m)
+  { name:'小', r:25 }, { name:'中', r:50 }, { name:'大', r:100 },
 ];
-const SPIRAL_STEP = 16;    // 1周あたりの点の数（多いと記録が重くなる）
+const SPIRAL_STEP = 16;    // 輪の点の数（多いと記録が重くなる）
 let PF_SPIRAL = false;     // 「くるくる」を押しているか（この画面だけの状態）
 function spiralSize(){
   const v=segVal('fl_spiral_size')||'中';
   return SPIRAL_SIZES.find(s=>s.name===v) || SPIRAL_SIZES[1];
 }
-function spiralTurns(){ return Math.max(1, parseInt(segVal('fl_spiral_turns')||'1',10)||1); }
+// 輪を描く向き。右回り（時計回り）か左回りか。**利き手ではなく鳥の回り方**
+function spiralSide(){ return (segVal('fl_spiral_side')==='右') ? -1 : 1; }   // 1=左回り
 /* 隣どうしの点で経度が飛んでいるか（＝日付変更線をまたいだか）。
    **ちょうど180度も飛びとして扱う**。またぐと、地図やQGISで世界を横断する線になる。
    判定はここ1か所（テストからも同じものを呼ぶ。2026-08-13 監査） */
@@ -4118,13 +4120,14 @@ function destPoint(lat, lon, bearing, dist){
   return [p2/t, olon];
 }
 /* 輪の点を作る。`from` から `at` へ向かっていた鳥が、`at` で輪を描いて
-   同じ向きへ抜けていく形。**その場で真円を1周**して `at` へ戻り、
-   2周・3周のときは少しずつ進めて、報告書の図のように輪を並べる。
+   同じ向きへ抜けていく形。**その場で真円を1周**して `at` へ戻る
+   （何周も描き分ける必要は無い、という現場の判断。2026-08-13）。
+   side=-1 で右回り（時計回り）、それ以外は左回り。
    トロコイド（回りながら進む形）は、**1周では線が交差せず「弧」にしかならない**
    ことが分かったのでやめた（2026-08-13。数式でも1周では交差しない）。
    1点目は `at` そのものなので、呼び出し側は重なりを見て足す。
    作れないとき（極の近く・日付変更線をまたぐ）は **null** を返す（2026-08-13 監査）。 */
-function spiralPoints(at, from, r, turns){
+function spiralPoints(at, from, r, side){
   const lat=at[0], lon=at[1], t=Math.PI/180;
   // 進む向き（前の点から今の点へ）の方位。**前の点は呼ぶ側で確かめてある**
   let brg=0;   // 既定は北
@@ -4137,7 +4140,7 @@ function spiralPoints(at, from, r, turns){
     const x=Math.cos(p1)*Math.sin(p2) - Math.sin(p1)*Math.cos(p2)*Math.cos(dl);
     if(Math.abs(y)>1e-12 || Math.abs(x)>1e-12) brg=Math.atan2(y,x);
   }
-  const step=r*0.6;                    // 2周目以降を進める量（少し重なって並ぶ）
+  const sd=(side===-1)?-1:1;           // 1=左回り（既定）、-1=右回り
   const out=[];
   // 進む向きを前、その左を横にとって、地球のまるみに沿って置く
   const put=(along,side)=>{
@@ -4147,20 +4150,17 @@ function spiralPoints(at, from, r, turns){
     out.push(destPoint(lat, lon, brg - Math.atan2(side, along), dist));
   };
   put(0,0);                            // 輪に入る点（＝タップした場所）
-  for(let k=0;k<turns;k++){
-    const c=k*step;                    // この輪に入る位置（進む向き）
-    const enter=out[out.length-1];     // この輪の入口（＝出口。必ずここへ戻す）
-    for(let i=1;i<SPIRAL_STEP;i++){
-      const a=2*Math.PI*i/SPIRAL_STEP;
-      // 中心は「入る点の左 r」。入る点から1周して戻る
-      put(c + r*Math.sin(a), r - r*Math.cos(a));
-    }
-    // **最後の点は計算し直さず、入口の座標をそのまま置く**。
-    // sin(2π)・cos(2π) から計算すると、わずかにずれて「同じ点」に見えなくなる
-    //（重なりの判定や面の検査が座標によって変わる。2026-08-13 監査）
-    out.push([enter[0], enter[1]]);
-    if(k<turns-1) put(c+step, 0);      // 次の輪へ少し進む
+  for(let i=1;i<SPIRAL_STEP;i++){
+    const a=2*Math.PI*i/SPIRAL_STEP;
+    // 中心は「入る点の左（右回りなら右）へ r」。入る点から1周して戻る。
+    // **反転するのは横だけ**。進む向きまで反転すると、入口で後ろへ戻ってしまう
+    //（2026-08-13 監査）
+    put(r*Math.sin(a), (r - r*Math.cos(a))*sd);
   }
+  // **最後の点は計算し直さず、入口の座標をそのまま置く**。
+  // sin(2π)・cos(2π) から計算すると、わずかにずれて「同じ点」に見えなくなる
+  //（重なりの判定や面の検査が座標によって変わる。2026-08-13 監査）
+  out.push([lat, lon]);
   // 使えない点（極の近く）や、日付変更線をまたいだ輪は**作らない**。
   // またぐと、隣どうしの点が 179°→-179° と飛び、地図やQGISで世界を横断する線になる
   for(let i=0;i<out.length;i++){
@@ -4190,8 +4190,8 @@ function segAddSpiral(sg, lat, lon, now, prev){
       +'先にふつうの点を1つ置いてから押してください', 5500);
     return;
   }
-  const s=spiralSize(), turns=spiralTurns();
-  const ring=spiralPoints([lat,lon], prev, s.r, turns);
+  const s=spiralSize(), side=spiralSide();
+  const ring=spiralPoints([lat,lon], prev, s.r, side);
   // 作れない場所（極の近く・日付変更線をまたぐ）ではふつうの点だけにする
   if(!ring){
     const last0=(sg.pts||[]).length ? sg.pts[sg.pts.length-1] : null;
@@ -4207,7 +4207,7 @@ function segAddSpiral(sg, lat, lon, now, prev){
     sg.pts.push(p); sg.times.push(now);
   });
   sg.edited=true;
-  toast(`旋回（${s.name}・${turns}周）を入れました`, 2500);
+  toast(`旋回（${s.name}・${side===-1?'右回り':'左回り'}）を入れました`, 2500);
 }
 function spiralReset(){
   if(!PF_SPIRAL) return;
@@ -4673,7 +4673,7 @@ function pfInfo(){
   const parts=[PF_MODE==='P'?'P：タップで止まっていた場所'
     :(PF_MODE==='F'?'L：タップで線。始点をもう一度タップすると囲み（面）':'N：タップで巣の位置')];
   if(PF_SPIRAL && PF_MODE==='F')
-    parts.push(`タップで旋回の輪（${spiralSize().name}・${spiralTurns()}周）`);
+    parts.push(`タップで旋回の輪（${spiralSize().name}・${spiralSide()===-1?'右回り':'左回り'}）`);
   // 次の L をどこから始めるか。押し間違いに気づけるよう、待っている間だけ出す
   if(PF_MODE==='F' && PF_NEWLINE && PF_SEL===-1 && contFrom())
     parts.push(PF_CONT?'次の線は前の終点から（Lをもう一度押すと離して始める）'
@@ -9164,11 +9164,11 @@ function flightArrowPts(path){
 // 細い線のV字矢印（白フチ付き・線の色に合わせる。位置指定の十字と同じ描法）。
 // 回転はCSSでなくSVG内部の rotate(角度 中心x 中心y) で行う——iOS SafariはSVG要素へのCSS回転の
 // 基準点が左上になることがあり、中心で回らず「線の横にずれた変な向きの矢印」になるため
-function flightArrowIcon(bearing, col, triple){
-  // 急降下（ハンティング）は**三重の矢じり**にする。報告書の凡例の「↠」に合わせる
-  //（→＝飛翔経路 / ↠＝急降下。同じ矢印だと図で見分けられない）
+function flightArrowIcon(bearing, col, double2){
+  // 急降下（ハンティング）は**矢じり2つ**（→→）。報告書の凡例をそのまま数えて確かめた
+  //（→＝飛翔経路 / →→＝急降下。3つにしていたのを直した。2026-08-13）
   const one='M4 12 L9 5 L14 12';
-  const d=triple ? ['M4 15 L9 8 L14 15','M4 11 L9 4 L14 11','M4 7 L9 0 L14 7'] : [one];
+  const d=double2 ? ['M4 14 L9 7 L14 14','M4 9 L9 2 L14 9'] : [one];
   const line=(w,c)=>d.map(p=>`<path d="${p}" fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`).join('');
   return L.divIcon({className:'', iconSize:[18,18], iconAnchor:[9,9],
     html:`<svg width="18" height="18" viewBox="0 0 18 18" style="display:block;">
