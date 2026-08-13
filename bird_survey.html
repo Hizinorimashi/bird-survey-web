@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v208（2026-08-12 旋回上昇の◎・急降下の↠・攻撃と歩行）';
+const APP_VERSION = 'v209（2026-08-13 地図下の欄の変更検知・閉じ失敗時の↶）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2945,7 +2945,7 @@ SCREENS.obsEdit = (argStr)=>{
            saveObs の next=true と位置引き継ぎ（keep）の仕組み自体は残している -->
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteObs('${o.uuid}')">この記録を削除</button>`:''}
       <div class="sp"></div>
-      <div class="note">地図の <b>P</b> で鳥がいた場所、<b>F</b> で飛んだ経路を記録します。落とした内容に応じて記録が作られ、時刻と距離帯は自動で入ります。</div>
+      <div class="note">地図の <b>P</b> で鳥がいた場所、<b>L</b> で飛んだ経路を記録します。範囲（旋回上昇・行動範囲など）は、囲ってから<b>始点をもう一度タップ</b>すると面になります。落とした内容に応じて記録が作られ、時刻と距離帯は自動で入ります。</div>
       <!-- 現場でいちばん押すのは「保存して次の個体へ」なので、こちらを常に見える位置に置く。
            記録を直しているとき（editing）は次の個体に進む場面ではないので「保存する」を前に出す -->
       <div class="savebar">${editing
@@ -3737,6 +3737,15 @@ function obsBindFormWatch(){
     if(t && t.closest && (t.closest('[data-seg="fl_height"]') || t.getAttribute && t.getAttribute('data-other')==='fl_behavior')
       && typeof flStoreInto==='function' && SCREENS._flSeg) flStoreInto(SCREENS._flSeg);
   })); }   // 文字・数値・日時・チェックの変更検知
+  // 飛翔の項目（形・面の種類・高度・行動）は**地図のすぐ下**にあり、
+  // フォームの外なので上の監視に乗らない。同じ扱いをここで付ける。
+  // 付けないと、行動の「その他（内容）」だけ書いて画面を離れたときに、
+  // 確認も出ずに消える（2026-08-13 監査）
+  const attrEl=$('#flAttrRow'); if(attrEl){ ['input','change'].forEach(ev=>attrEl.addEventListener(ev, ()=>{
+    if(SCREENS._flLoading) return;
+    SCREENS._dirty=true;
+    if(typeof flStoreInto==='function' && SCREENS._flSeg) flStoreInto(SCREENS._flSeg);
+  })); }
   const _cEl=$('#obForm [name="count"]');
   if(_cEl) ['input','change'].forEach(ev=>_cEl.addEventListener(ev, ()=>{ SCREENS._countTouched=true; }));
   // 巣の記入欄を書いたら「巣を触った」扱いにする
@@ -4035,6 +4044,11 @@ function willSaveObs(){ return !!SCREENS._obsEditing || pfPoints().length>0 || n
 // **点数の決まりを1か所に集める**（線は2点・面は3点）
 function segShape(sg){ return (sg && sg.fl && sg.fl.shape===SHAPE_AREA) ? SHAPE_AREA : SHAPE_LINE; }
 function segEnough(sg){ return (sg.pts||[]).length >= minPointsFor(segShape(sg)); }
+// いま描いている線（＝いちばん最後に足した F）。始点タップで閉じてよい相手を決めるのに使う
+function lastDrawnFl(){
+  for(let i=PF_SEGS.length-1;i>=0;i--){ if(PF_SEGS[i].t==='F') return PF_SEGS[i]; }
+  return null;
+}
 // 開いたときから形を変えたか。**変えたら「触った」扱い**にして検査を通す
 //（既存レコードは「触っていなければそのまま書き戻す」ので、形だけ変えると素通りする）
 function segShapeChanged(sg){
@@ -4433,9 +4447,11 @@ function pfTryClose(sg,lat,lon){
   try{ a=mapObj.latLngToContainerPoint(pts[0]); b=mapObj.latLngToContainerPoint([lat,lon]); }
   catch(e){ return false; }
   if(Math.hypot(a.x-b.x, a.y-b.y) > PF_CLOSE_PX) return false;
-  // 囲めない形（一直線・線が交差など）なら、線のままにして理由を知らせる
+  // 囲めない形（一直線・線が交差など）なら、線のままにして理由を知らせる。
+  // **何も変わっていない**ので 'ng' を返す（呼び出し元が控えを捨てる。
+  // 残すと「↶」が一度空振りする。2026-08-13 監査）
   const pb=areaProblem(pts);
-  if(pb){ toast(`囲みにできません（${pb}）`, 5000); return true; }
+  if(pb){ toast(`囲みにできません（${pb}）`, 5000); return 'ng'; }
   sg.fl=sg.fl||{}; sg.fl.shape=SHAPE_AREA; sg.edited=true;
   SCREENS._dirty=true;
   // 画面がこのトレースを写しているなら、欄も面に切り替える
@@ -4464,7 +4480,10 @@ function pfDrop(lat,lon){
         if(sg.id===PF_LEGACY_ID){ PF_LEGACY_ID=null; }
       }
       else {
-        if(pfTryClose(sg,lat,lon)){ pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); return; }
+        const closed=pfTryClose(sg,lat,lon);
+        if(closed){
+          if(closed==='ng') PF_HIST.pop();   // 何も変わっていないので控えも戻す
+          pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); return; }
         sg.pts.push([lat,lon]); sg.times.push(now); sg.edited=true; }
       SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); return;
     }
@@ -4487,8 +4506,11 @@ function pfDrop(lat,lon){
     // 前のトレースの形は引き継がない（線のつもりが面になるのを防ぐ）
     if(PF_NEWLINE || !last || last.t!=='F'){ PF_SEGS.push({t:'F', id:pfId(), pts:[[lat,lon]], times:[now],
       fl:{height:'',behavior:'',shape:SHAPE_LINE,area_type:''}}); PF_NEWLINE=false; }
-    else if(pfTryClose(last,lat,lon)){ /* 閉じた（点は足さない） */ }
-    else { last.pts.push([lat,lon]); last.times.push(now); last.edited=true; }
+    else {
+      const closed=pfTryClose(last,lat,lon);
+      if(closed==='ng') PF_HIST.pop();       // 何も変わっていないので控えも戻す
+      else if(!closed){ last.pts.push([lat,lon]); last.times.push(now); last.edited=true; }
+    }
   }
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips();
 }
@@ -4505,7 +4527,14 @@ function obsMapUndo(){
     // 画面には編集値が見えるのに保存では元の値へ戻ってしまう
     if(nowSg.perch){ sg.perch=nowSg.perch; if(nowSg.perchEdited) sg.perchEdited=true; }
     if(nowSg.ov) sg.ov=nowSg.ov;
-    if(nowSg.fl) sg.fl=nowSg.fl;   // 高度・行動も「↶」で巻き戻さない（入力は地図の操作ではない）
+    if(nowSg.fl){
+      // 高度・行動は「↶」で巻き戻さない（入力は地図の操作ではない）。
+      // **形（線／面）と面の種類だけは戻す**——始点をもう一度タップして閉じるのは
+      // 地図の操作なので、戻せないと「閉じたのを取り消せない」（2026-08-13 監査）
+      const histShape=(sg.fl&&sg.fl.shape)||SHAPE_LINE;
+      const histType=(sg.fl&&sg.fl.area_type)||'';
+      sg.fl=Object.assign({}, nowSg.fl, {shape:histShape, area_type:histType});
+    }
   });
   SCREENS._pendingPerch=st.pending||null;
   PF_LEGACY_ID=(st.legacy==null)?null:st.legacy;
@@ -4586,7 +4615,30 @@ function pfRedraw(){
         if(seg.pts.length>1) L.polyline(seg.pts,{color:selL?'#ffd479':'#e0a030',weight:selL?7:4,opacity:.95}).addTo(pfLayer);
         // 線が2本以上あるときは、始点に L1・L2… を出して「直す」チップのL番号と地図の線を見比べられるようにする
         //（Pの番号表示と同じ流儀。1本だけなら従来どおり「始」）
-        L.marker(seg.pts[0],{icon:badge(nLines>1?segLabel(segIdx):'始','#3fb984',22)}).addTo(pfLayer);
+        const startMk=L.marker(seg.pts[0],{icon:badge(nLines>1?segLabel(segIdx):'始','#3fb984',22)}).addTo(pfLayer);
+        // **始点の印そのものを押しても閉じられるようにする。**
+        // Leaflet の印の上のタップは地図へ伝わらないので、印に付けないと
+        // 「始点をもう一度タップ」がいちばん自然な操作（印を狙って押す）で効かない
+        //（2026-08-12 監査で判明。テストが pfDrop を直に呼んでいて見逃していた）
+        startMk.on('click', ev=>{
+          if(ev && ev.originalEvent) L.DomEvent.stop(ev.originalEvent);
+          if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;   // 保存の後処理中は触らせない
+          // **閉じられるのは「いま描いている線」だけ**にする。
+          // どの線の始点でも閉じられると、止まり（P）や巣（N）を落としている最中や、
+          // 別の線を直している最中に、関係のない線が面に変わる（2026-08-13 監査）
+          // 「直す」で選んだ線は、**どのモードでも**閉じられる
+          //（地図タップは選択中の線をモードに関係なく編集するので、印だけ動きが違うと混乱する）。
+          // 選んでいないときは、L で描いている途中の線だけ。
+          // PF_NEWLINE は「次のタップから新しい線を始める」状態＝描いている途中の線は無い
+          //（Lを押し直した直後に、前の線が面に変わってしまう。2026-08-13 監査）
+          const target=(PF_SEL>=0) ? PF_SEGS[PF_SEL]
+            : ((PF_MODE==='F' && !PF_NEWLINE) ? lastDrawnFl() : null);
+          if(target!==seg) return;
+          const p=seg.pts[0];
+          pfSnap();   // 「↶」で戻せるように、変える前の状態を控える
+          if(pfTryClose(seg, p[0], p[1])===true){ pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); }
+          else PF_HIST.pop();   // 閉じられなかった（'ng' も含む）ので控えも戻す
+        });
         seg.pts.forEach((pt,i)=>{ if(i>0&&i<seg.pts.length-1) L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(pfLayer); });
         if(seg.pts.length>1) L.marker(seg.pts[seg.pts.length-1],{icon:badge('終','#d05555',22)}).addTo(pfLayer);
       }
@@ -5554,9 +5606,9 @@ function saveObs(u, svUuid, editing, cont){
   }
   // 経路が無いのに飛翔専用の入力（高度・飛翔の行動）が残っているときは、黙って捨てない
   if(!paths.length && (segVal('fl_height') || segVals('fl_behavior'))){
-    if(!confirm('飛翔高度・飛翔の行動が入力されていますが、経路（F）がありません。\n'
+    if(!confirm('飛翔高度・飛翔の行動が入力されていますが、経路（L）がありません。\n'
       +'このまま保存するとこれらの入力は保存されません。\n\n'
-      +'保存しますか？（キャンセルして F で経路を描くこともできます）')) return;
+      +'保存しますか？（キャンセルして L で経路を描くこともできます）')) return;
   }
   // 編集では、Pを消しても記録そのものは残す（位置だけ空になる）
   // 巣だけを記録した場合も観察を1件作る（画面で入れられるのに保存先が無い、を作らない）
@@ -8271,7 +8323,7 @@ SCREENS.flightList = (u)=>{
         <h3 class="grow" style="margin:0;">経路一覧 <span class="muted small">(${flights.length})</span></h3>
       </div>
       ${flights.length? flights.map(f=>flightCard(u,f)).join('')
-        : '<div class="empty small">まだ飛翔経路がありません。記録は「🐦 観察を追加」の画面で、地図の <b>F</b>（飛んだ道すじ）または <b>⬠</b>（範囲を囲む）を押して描きます。</div>'}
+        : '<div class="empty small">まだ飛翔経路がありません。記録は「🐦 観察を追加」の画面で、地図の <b>L</b> を押して描きます。範囲（旋回上昇・行動範囲など）は、囲ってから<b>始点をもう一度タップ</b>すると面になります。</div>'}
     `,
     onMount:()=>{ if(drawable.length) _mapTimer=setTimeout(()=>drawMap([],[],drawable),50); }
   };
@@ -8725,8 +8777,10 @@ function drawMap(obs,notes,flights,targets,route,nests){
   const legend={};   // 凡例用：値→色
   // 表示切り替え: トレースが混んできたら始終マーカーを消して線だけにできる。向きは等間隔の細い矢印で補える
   const endsOn=flightEndsOn(), arrowsOn=flightArrowsOn();
-  // 歩行の線が1本でもあるか。あるときだけ、飛翔を点線にして歩行と分ける
-  const hasWalk=(flights||[]).some(x=>lineKind(x)===LINE_WALK);
+  // 歩行の**線**が1本でもあるか。あるときだけ、飛翔を点線にして歩行と分ける。
+  // 面は数えない（面に「歩行」が付いていても、線の描き方は変えない）。
+  // 数えると、QGIS（線の層だけを見る）と食い違う
+  const hasWalk=(flights||[]).some(x=>!isArea(x) && traceDrawable(x) && lineKind(x)===LINE_WALK);
   (flights||[]).forEach(f=>{ const path=(f.path||[]).filter(validPathPt);
     const area=isArea(f);
     if(path.length < minPointsFor(shapeOf(f))) return;
@@ -8737,10 +8791,17 @@ function drawMap(obs,notes,flights,targets,route,nests){
       // 面は閉じて描く。**塗らない・滑らかにしない・始終の印と矢印は出さない**。
       // 報告書の結果図に合わせる（面は輪郭だけ・色は種ごと。2026-08-12 に6業務の図で確認）。
       // 旋回上昇だけは ◎（内側にもう1本の輪）にする——凡例で他と区別されている記号
-      // 旋回上昇は ◎（きれいな二重丸）。それ以外は囲った形のまま輪郭だけ
-      const pg = isSoaring(f)
-        ? drawSoar(mapObj, path, {color:col, interactive:true})
-        : L.polygon(path,{color:col,weight:2.5,opacity:.95,fill:false}).addTo(mapObj);
+      // 旋回上昇は ◎（きれいな二重丸）。**囲った形は薄い点線で残す**
+      //（データベースの地図・編集の地図と同じ見え方にそろえる）。
+      // それ以外は囲った形のまま輪郭だけ
+      let pg;
+      if(isSoaring(f)){
+        pg=drawSoar(mapObj, path, {color:col, interactive:true});
+        if(pg) L.polygon(path,{color:col,weight:1,opacity:.35,fill:false,
+          dashArray:'4,4',interactive:false}).addTo(mapObj);
+      } else {
+        pg=L.polygon(path,{color:col,weight:2.5,opacity:.95,fill:false}).addTo(mapObj);
+      }
       if(pg) pg.bindPopup(`${head}<br>${esc(f.area_type||'面')} ・ 面積 約${m.text}<br>${esc(indCount(f.count))}個体<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
     } else {
       const disp=smoothPath(path);   // 線・矢印とも表示用の滑らか経路に載せる（ズレると矢印が線から浮く）
@@ -8751,13 +8812,18 @@ function drawMap(obs,notes,flights,targets,route,nests){
       const pl=L.polyline(disp,{color:col,weight:4,opacity:.85,
         dashArray: dashed?'7,5':null}).addTo(mapObj);
       pl.bindPopup(`${head}<br>${esc(indCount(f.count))}個体 ・ ${esc(f.height_class||'')}<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
-      // 攻撃は →×→（線の中ほどに ×）
-      if(kind===LINE_ATTACK && disp.length>1)
-        L.marker(disp[Math.floor(disp.length/2)],{icon:attackIcon(col), interactive:false}).addTo(mapObj);
+      // 攻撃は →×→（線の中ほどに ×）。**長さの半分の位置**に置く。
+      // 点の番号の真ん中だと、点が片側に密集した経路で端に寄る（QGISとも食い違う）
+      if(kind===LINE_ATTACK && disp.length>1){
+        const mid=pointAtHalf(disp);
+        if(mid) L.marker(mid,{icon:attackIcon(col), interactive:false}).addTo(mapObj);
+      }
       if(endsOn){
         const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
         L.marker(path[0],{icon:badge('始','#3fb984')}).addTo(mapObj);
-        L.marker(path[path.length-1],{icon:badge('終','#d05555')}).addTo(mapObj);
+        // 急降下は終わりに ↠ を置くので、「終」の印は重ねない（記号が隠れる）
+        if(!(arrowsOn && kind===LINE_DIVE))
+          L.marker(path[path.length-1],{icon:badge('終','#d05555')}).addTo(mapObj);
       }
       // 急降下（ハンティング）の ↠ は**終わりに1つだけ**。報告書の凡例と同じ
       //（途中に何度も出すと、飛翔経路の矢印と見分けがつかない）
@@ -8844,6 +8910,25 @@ function lineKind(f){
   return '';
 }
 function isDive(f){ return lineKind(f)===LINE_DIVE; }
+// 線の「長さの半分」の位置。攻撃の × を置くのに使う。
+// 点の番号の真ん中では、点が片側に密集した経路で端に寄ってしまう
+// （データベース側 map_helpers.point_at_half() と同じ計算）
+function pointAtHalf(path){
+  const p=(path||[]).filter(validPathPt);
+  if(p.length<2) return null;
+  const total=pathLength(p);
+  if(!(total>0)) return p[0];
+  let acc=0;
+  for(let i=1;i<p.length;i++){
+    const seg=distMeters(p[i-1],p[i]);
+    if(acc+seg>=total/2){
+      const t=seg>0?((total/2-acc)/seg):0;
+      return [p[i-1][0]+(p[i][0]-p[i-1][0])*t, p[i-1][1]+(p[i][1]-p[i-1][1])*t];
+    }
+    acc+=seg;
+  }
+  return p[p.length-1];
+}
 // 攻撃の × の印（線の中ほどに置く）
 function attackIcon(col){
   return L.divIcon({className:'', iconSize:[16,16], iconAnchor:[8,8],
@@ -8858,13 +8943,36 @@ const SOAR_INNER=0.45;
    囲った形をそのまま二重にすると、いびつな二重丸になって記号に見えない。
    中心は囲った形の重心、大きさは**囲った面積と同じ円の半径**にするので、
    描いた広がりの情報は失わない（記録そのものは囲った形のまま持っている）。 */
-function soarCircle(path){
-  const p=(path||[]).filter(validPathPt);
+// 囲った形の中心。**頂点の平均ではなく「面積の重心」**を使う。
+// 平均だと、点を細かく打った側へ中心が寄る（凹んだ形ではもっとずれる）。
+// 閉じ点は外してから数える（残すと始点だけ二重に効く）。
+// データベース側 map_helpers.area_centroid() と同じ計算
+function areaCentroid(path){
+  let p=(path||[]).filter(validPathPt);
+  if(p.length>1 && p[0][0]===p[p.length-1][0] && p[0][1]===p[p.length-1][1]) p=p.slice(0,-1);
   if(p.length<3) return null;
-  const cy=p.reduce((s,q)=>s+q[0],0)/p.length, cx=p.reduce((s,q)=>s+q[1],0)/p.length;
-  const a=pathArea(p);
+  // **1点目を原点にずらしてから計算する。**
+  // 緯度経度（43度・141度）のまま掛け算すると、数十mの小さな面では
+  // 桁が足りずに中心がずれる（2026-08-13 監査）。最後に足し戻す
+  const oy=p[0][0], ox=p[0][1];
+  let a2=0, cy=0, cx=0;
+  for(let i=0;i<p.length;i++){
+    const qy=p[i][0]-oy, qx=p[i][1]-ox;
+    const ry=p[(i+1)%p.length][0]-oy, rx=p[(i+1)%p.length][1]-ox;
+    const cross=qx*ry-rx*qy;
+    a2+=cross; cy+=(qy+ry)*cross; cx+=(qx+rx)*cross;
+  }
+  if(Math.abs(a2)<1e-18){   // つぶれた形は平均で代用する
+    return [p.reduce((s,q)=>s+q[0],0)/p.length, p.reduce((s,q)=>s+q[1],0)/p.length];
+  }
+  return [oy+cy/(3*a2), ox+cx/(3*a2)];
+}
+function soarCircle(path){
+  const c=areaCentroid(path);
+  if(!c) return null;
+  const a=pathArea((path||[]).filter(validPathPt));
   if(!(a>0)) return null;
-  return { c:[cy,cx], r:Math.sqrt(a/Math.PI) };
+  return { c, r:Math.sqrt(a/Math.PI) };
 }
 // 地図に ◎ を描く（外側と内側の2本）。描けたら true
 function drawSoar(layer, path, opt){
