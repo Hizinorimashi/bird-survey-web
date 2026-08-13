@@ -248,7 +248,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v209（2026-08-13 地図下の欄の変更検知・閉じ失敗時の↶）';
+const APP_VERSION = 'v211（2026-08-13 くるくる（旋回）を経路に入れられる）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2783,6 +2783,23 @@ SCREENS.obsEdit = (argStr)=>{
                 ${OPT.flightHeight.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}
               </select></label>
           </div>
+          <!-- くるくる（旋回）。報告書の結果図では、飛翔経路の線そのものに輪が入る。
+               1点ずつ輪を描くのは現場で無理なので、押しておくと1タップで輪が1つ入る。
+               ふだんは大きさ・周回数を隠して、画面をうるさくしない -->
+          <div class="row" id="flSpiralWrap" style="display:none; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+            <button type="button" class="btn ghost" id="flSpiralBtn" style="width:auto; padding:6px 10px;"
+              onclick="spiralToggle()">◠ くるくる（旋回）</button>
+            <span id="flSpiralOpts" style="display:none;">
+              <span class="row" style="gap:6px; align-items:center; flex-wrap:wrap;">
+                <div class="seg" data-seg="fl_spiral_size">
+                  ${SPIRAL_SIZES.map((s,i)=>`<button type="button" class="${i===1?'on':''}" onclick="pickObs(this,'fl_spiral_size'); spiralInfo()">${esc(s.name)}</button>`).join('')}
+                </div>
+                <div class="seg" data-seg="fl_spiral_turns">
+                  ${[1,2,3].map((n,i)=>`<button type="button" class="${i===0?'on':''}" onclick="pickObs(this,'fl_spiral_turns'); spiralInfo()">${n}周</button>`).join('')}
+                </div>
+              </span>
+            </span>
+          </div>
           <div id="flBehWrap">${segFold('fl_behavior','行動（複数選択可）',OPT.flightBehavior)}</div>
         </div>
         <div class="note" id="obsOnlyNote" style="display:none;">飛翔経路だけの記録です。観察にしか残せない項目（性別・確認方法・生息環境・巣など）は入力できません。止まった場所を記録するなら <b>P</b> を落としてください。
@@ -2996,7 +3013,7 @@ SCREENS.obsEdit = (argStr)=>{
       SCREENS._audio=(o.audio||[]).slice(); SCREENS._media=(o.media||[]).slice();
       // 記録モードは毎回「止まっている」から始める（前の画面の経路を持ち越さない）
       // 地図の状態は毎回まっさらから始める（前の画面の内容を持ち越さない）
-      PF_MODE='P'; PF_SEGS=[]; PF_NEWLINE=true; flightPath=[]; flightLayer=null; pfLayer=null;
+      PF_MODE='P'; PF_SEGS=[]; PF_NEWLINE=true; PF_SPIRAL=false; flightPath=[]; flightLayer=null; pfLayer=null;
       PF_NEST=null; PF_NEST_ID=nestId(o); PERCH_IDX=0; PF_SEL=-1;
       SCREENS._flSeg=null; PF_HIST=[]; PF_SEQ=0;
       // 「保存して続けて」で位置を引き継いだときは、その位置を守る（空のまま引き継いだ場合も）
@@ -3044,6 +3061,8 @@ SCREENS.obsEdit = (argStr)=>{
               // 開いたときの形を控える。**形を変えたら「触った」扱いにする**ため
               //（控えないと、2点の線を面に変えても検査を素通りする）
               shape0:shapeOf(f),
+              // 1点目が引き継いだ点かどうかも戻す（「始」の印の位置と、面にするとき外す点）
+              cont:contOf(f),
               ov:{start:f.start_time||'', end:f.end_time||''}});
           });
       }
@@ -3074,6 +3093,8 @@ SCREENS.obsEdit = (argStr)=>{
               // 開いたときの形を控える。**形を変えたら「触った」扱いにする**ため
               //（控えないと、2点の線を面に変えても検査を素通りする）
               shape0:shapeOf(f),
+              // 1点目が引き継いだ点かどうかも戻す（「始」の印の位置と、面にするとき外す点）
+              cont:contOf(f),
               ov:{start:f.start_time||'', end:f.end_time||''}});
           });
       }
@@ -3644,7 +3665,7 @@ function clearObsTarget(){
 function newBird(){ return {
   dirty:false,   // この個体に書きかけがあるか（段Bで使用）
   map:{ mode:'P', segs:[], newline:true, nest:null, nestId:'', sel:-1, hist:[], seq:0,
-        perchIdx:0, legacyId:null },
+        perchIdx:0, legacyId:null, cont:true },
   media:{ audio:undefined, media:undefined, ghost:undefined, ctx:undefined },
   st:{},   // SCREENS._obs などの個体別フィールド（アクセサ経由で読み書き）
 }; }
@@ -3655,7 +3676,7 @@ function CUR(){ return BIRDS[BIRD_IDX]; }
 [ ['PF_MODE','map','mode'], ['PF_SEGS','map','segs'], ['PF_NEWLINE','map','newline'],
   ['PF_NEST','map','nest'], ['PF_NEST_ID','map','nestId'], ['PF_SEL','map','sel'],
   ['PF_HIST','map','hist'], ['PF_SEQ','map','seq'], ['PERCH_IDX','map','perchIdx'],
-  ['PF_LEGACY_ID','map','legacyId'],
+  ['PF_LEGACY_ID','map','legacyId'], ['PF_CONT','map','cont'],
 ].forEach(function(m){
   Object.defineProperty(window, m[0], {
     configurable:true,
@@ -3868,6 +3889,7 @@ function birdGhostPurgeToast(res){
 }
 // 今の入力（欄・書きかけの印）を自分の入れ物へ写し取る
 function birdStash(){
+  if(typeof spiralReset==='function') spiralReset();   // 押している状態を持ち越さない
   if(typeof flStoreInto==='function' && SCREENS._flSeg) flStoreInto(SCREENS._flSeg);
   CUR().form=formSnapshot(document.getElementById('obForm'));
   CUR().dirty=!!SCREENS._dirty;
@@ -3931,6 +3953,7 @@ function birdDrop(){
 // この個体を「保存済みの記録の編集」として読み直す（追加なら新しい個体も開く）
 function birdAfterSave(u2, add, flU){
   if(!add && BIRDS.length<=1) return false;
+  if(typeof spiralReset==='function') spiralReset();   // 押している状態を次の個体へ持ち越さない
   const nb=newBird();
   const b=CUR();
   b.dirty=false; b.form=null; b.st=nb.st; b.map=nb.map; b.media=nb.media;
@@ -3969,6 +3992,14 @@ function birdAfterSave(u2, add, flU){
 }
 /* ---------- ここまで 段A・段B ---------- */
 function pfSet(mode){
+  // L を押し直したときは「前の L の終点から続ける／離して始める」を切り替える。
+  // 同じ鳥を追っている間は前の終わりから続けたいことがほとんどだが、
+  // 見失って出直したときは離して始めたい（2026-08-13 実機で使っての要望）
+  if(mode==='F'){
+    if(PF_MODE==='F' && PF_NEWLINE && PF_SEL===-1 && contFrom()) PF_CONT=!PF_CONT;
+    else PF_CONT=true;
+  }
+  if(mode!=='F' && typeof spiralReset==='function') spiralReset();   // 経路以外では使わない
   // P/F/N を押したら必ず「次は新しく始める」。同じボタンをもう一度押したときも同じ
   //（押し直しても前の線が伸びる、という取り違えを防ぐ）
   PF_NEWLINE=true;
@@ -3985,9 +4016,13 @@ function pfPoints(){ return PF_SEGS.filter(x=>x.t==='P'); }
 // 末尾を削る作りだと、既存記録を開いただけで保存済みの位置を消せてしまうため（2026-08-06 監査）
 // PF_HIST / PF_SEQ の実体は CUR().map（段A）
 function pfId(){ return ++PF_SEQ; }   // 戻すときに同じものだと分かるように、落としたものに番号を振る
-function pfSnap(){
-  if(typeof flStoreInto==='function' && SCREENS._flSeg) flStoreInto(SCREENS._flSeg);   // 画面の値を経路へ控えてから状態を残す
+// noStore … 画面の値を経路へ写さずに控える。
+// 形を「面」に変える瞬間だけ使う（写してしまうと、控えが「もう面」になり、
+// 「↶」で線へ戻せなくなる。2026-08-13 監査）
+function pfSnap(noStore){
+  if(!noStore && typeof flStoreInto==='function' && SCREENS._flSeg) flStoreInto(SCREENS._flSeg);   // 画面の値を経路へ控えてから状態を残す
   PF_HIST.push(JSON.stringify({segs:PF_SEGS, nest:PF_NEST, newline:PF_NEWLINE, sel:PF_SEL, perch:PERCH_IDX,
+    cont:PF_CONT,
     pending:(SCREENS._pendingPerch||null), legacy:PF_LEGACY_ID,
     nestTouched:!!SCREENS._nestTouchedMap}));   // 引き継ぎ待ちの情報・「地図で巣を触ったか」も一緒に戻す
   if(PF_HIST.length>60) PF_HIST.shift();
@@ -4047,6 +4082,195 @@ function segEnough(sg){ return (sg.pts||[]).length >= minPointsFor(segShape(sg))
 // いま描いている線（＝いちばん最後に足した F）。始点タップで閉じてよい相手を決めるのに使う
 function lastDrawnFl(){
   for(let i=PF_SEGS.length-1;i>=0;i--){ if(PF_SEGS[i].t==='F') return PF_SEGS[i]; }
+  return null;
+}
+/* くるくる（旋回）を経路に入れる（2026-08-13）。
+   報告書の結果図（福島川・オジロワシほか）では、飛翔経路の**線そのもの**に
+   大小の輪が入っている。現場で輪のまわりを1点ずつタップするのは無理なので、
+   「くるくる」を押しておくと、1タップで輪を1つ入れられるようにする。
+   **本物の点として入れる**ので、アプリ地図・DB地図・QGIS書き出しの
+   どこでもそのまま輪に見える（描く側の細工が要らない）。
+   輪の大きさは報告書の図から見当をつけた（外径でおよそ40m／100m／200m）。 */
+const SPIRAL_SIZES = [
+  { name:'小', r:20 }, { name:'中', r:50 }, { name:'大', r:100 },   // r=半径(m)
+];
+const SPIRAL_STEP = 16;    // 1周あたりの点の数（多いと記録が重くなる）
+let PF_SPIRAL = false;     // 「くるくる」を押しているか（この画面だけの状態）
+function spiralSize(){
+  const v=segVal('fl_spiral_size')||'中';
+  return SPIRAL_SIZES.find(s=>s.name===v) || SPIRAL_SIZES[1];
+}
+function spiralTurns(){ return Math.max(1, parseInt(segVal('fl_spiral_turns')||'1',10)||1); }
+/* 隣どうしの点で経度が飛んでいるか（＝日付変更線をまたいだか）。
+   **ちょうど180度も飛びとして扱う**。またぐと、地図やQGISで世界を横断する線になる。
+   判定はここ1か所（テストからも同じものを呼ぶ。2026-08-13 監査） */
+function lonJump(lon1, lon2){ return Math.abs(lon2-lon1)>=180; }
+/* 地球のまるみに沿って、ある地点から「向き」と「距離」で移動した先を求める。
+   緯度経度をメートルに換算して足し算するやり方は、極の近くや日付変更線で壊れる */
+function destPoint(lat, lon, bearing, dist){
+  const R=6378137, d=dist/R, t=Math.PI/180;
+  const p1=lat*t, l1=lon*t;
+  const p2=Math.asin(Math.sin(p1)*Math.cos(d) + Math.cos(p1)*Math.sin(d)*Math.cos(bearing));
+  const l2=l1 + Math.atan2(Math.sin(bearing)*Math.sin(d)*Math.cos(p1),
+                           Math.cos(d) - Math.sin(p1)*Math.sin(p2));
+  let olon=l2/t;
+  if(olon>180) olon-=360; else if(olon<-180) olon+=360;
+  return [p2/t, olon];
+}
+/* 輪の点を作る。`from` から `at` へ向かっていた鳥が、`at` で輪を描いて
+   同じ向きへ抜けていく形。**その場で真円を1周**して `at` へ戻り、
+   2周・3周のときは少しずつ進めて、報告書の図のように輪を並べる。
+   トロコイド（回りながら進む形）は、**1周では線が交差せず「弧」にしかならない**
+   ことが分かったのでやめた（2026-08-13。数式でも1周では交差しない）。
+   1点目は `at` そのものなので、呼び出し側は重なりを見て足す。
+   作れないとき（極の近く・日付変更線をまたぐ）は **null** を返す（2026-08-13 監査）。 */
+function spiralPoints(at, from, r, turns){
+  const lat=at[0], lon=at[1], t=Math.PI/180;
+  // 進む向き（前の点から今の点へ）の方位。**前の点は呼ぶ側で確かめてある**
+  let brg=0;   // 既定は北
+  if(from && validPathPt(from)){
+    const p1=from[0]*t, p2=lat*t;
+    let dl=(lon-from[1]);
+    if(dl>180) dl-=360; else if(dl<-180) dl+=360;
+    dl*=t;
+    const y=Math.sin(dl)*Math.cos(p2);
+    const x=Math.cos(p1)*Math.sin(p2) - Math.sin(p1)*Math.cos(p2)*Math.cos(dl);
+    if(Math.abs(y)>1e-12 || Math.abs(x)>1e-12) brg=Math.atan2(y,x);
+  }
+  const step=r*0.6;                    // 2周目以降を進める量（少し重なって並ぶ）
+  const out=[];
+  // 進む向きを前、その左を横にとって、地球のまるみに沿って置く
+  const put=(along,side)=>{
+    const dist=Math.hypot(along,side);
+    if(dist<1e-9){ out.push([lat,lon]); return; }
+    // 左を向くほど方位は小さくなる（方位は北0度で時計回り）
+    out.push(destPoint(lat, lon, brg - Math.atan2(side, along), dist));
+  };
+  put(0,0);                            // 輪に入る点（＝タップした場所）
+  for(let k=0;k<turns;k++){
+    const c=k*step;                    // この輪に入る位置（進む向き）
+    const enter=out[out.length-1];     // この輪の入口（＝出口。必ずここへ戻す）
+    for(let i=1;i<SPIRAL_STEP;i++){
+      const a=2*Math.PI*i/SPIRAL_STEP;
+      // 中心は「入る点の左 r」。入る点から1周して戻る
+      put(c + r*Math.sin(a), r - r*Math.cos(a));
+    }
+    // **最後の点は計算し直さず、入口の座標をそのまま置く**。
+    // sin(2π)・cos(2π) から計算すると、わずかにずれて「同じ点」に見えなくなる
+    //（重なりの判定や面の検査が座標によって変わる。2026-08-13 監査）
+    out.push([enter[0], enter[1]]);
+    if(k<turns-1) put(c+step, 0);      // 次の輪へ少し進む
+  }
+  // 使えない点（極の近く）や、日付変更線をまたいだ輪は**作らない**。
+  // またぐと、隣どうしの点が 179°→-179° と飛び、地図やQGISで世界を横断する線になる
+  for(let i=0;i<out.length;i++){
+    if(!validPathPt(out[i])) return null;
+    if(i>0 && lonJump(out[i-1][1], out[i][1])) return null;
+  }
+  return out;
+}
+/* 経路に点を足す。「くるくる」を押していれば輪ごと足す。
+   足す道は pfDrop の中に2つある（直している線／描いている線）ので、ここ1か所にまとめる */
+function segAddPts(sg, lat, lon, now){
+  if(!sg) return;
+  const prev=(sg.pts||[]).length ? sg.pts[sg.pts.length-1] : null;
+  if(PF_SPIRAL && segShape(sg)!==SHAPE_AREA){ segAddSpiral(sg, lat, lon, now, prev); return; }
+  sg.pts.push([lat,lon]); sg.times.push(now); sg.edited=true;
+}
+function segAddSpiral(sg, lat, lon, now, prev){
+  // **向きが分からないうちは輪を作らない。** 前の点が無いのに向きを決め打ちすると、
+  // 見てもいない経路（と、その距離）を勝手に記録することになる（2026-08-13 監査）
+  if(!prev || !validPathPt(prev) || (prev[0]===lat && prev[1]===lon)){
+    // 呼び出し元がすでにこの点を入れていることがある（新しい線の1点目）。
+    // 確かめずに足すと同じ点が2つ並ぶ
+    const last0=(sg.pts||[]).length ? sg.pts[sg.pts.length-1] : null;
+    if(!last0 || last0[0]!==lat || last0[1]!==lon){ sg.pts.push([lat,lon]); sg.times.push(now); }
+    sg.edited=true;
+    toast('どちらへ飛んでいたか分からないので、輪は入れませんでした。'
+      +'先にふつうの点を1つ置いてから押してください', 5500);
+    return;
+  }
+  const s=spiralSize(), turns=spiralTurns();
+  const ring=spiralPoints([lat,lon], prev, s.r, turns);
+  // 作れない場所（極の近く・日付変更線をまたぐ）ではふつうの点だけにする
+  if(!ring){
+    const last0=(sg.pts||[]).length ? sg.pts[sg.pts.length-1] : null;
+    if(!last0 || last0[0]!==lat || last0[1]!==lon){ sg.pts.push([lat,lon]); sg.times.push(now); }
+    sg.edited=true;
+    toast('この場所では輪を作れませんでした（ふつうの点にしました）', 5000);
+    return;
+  }
+  // 1点目（=タップした場所）が経路の末尾と同じなら重ねない
+  const last=(sg.pts||[]).length ? sg.pts[sg.pts.length-1] : null;
+  ring.forEach((p,i)=>{
+    if(i===0 && last && last[0]===p[0] && last[1]===p[1]) return;
+    sg.pts.push(p); sg.times.push(now);
+  });
+  sg.edited=true;
+  toast(`旋回（${s.name}・${turns}周）を入れました`, 2500);
+}
+function spiralReset(){
+  if(!PF_SPIRAL) return;
+  PF_SPIRAL=false;
+  if(typeof spiralInfo==='function') spiralInfo();
+}
+function spiralToggle(){
+  PF_SPIRAL=!PF_SPIRAL;
+  if(PF_SPIRAL && PF_MODE!=='F') pfSet('F');   // 経路にしか入れられない
+  spiralInfo(); pfInfo();
+  if(PF_SPIRAL) toast('地図をタップすると、その場所に輪が1つ入ります。もう一度押すとやめます', 4500);
+}
+// ボタンの見た目と、大きさ・周回数の出し入れ
+function spiralInfo(){
+  const w=$('#flSpiralWrap'), b=$('#flSpiralBtn'), o=$('#flSpiralOpts');
+  if(!w||!b||!o) return;
+  const one=SCREENS._flSeg;
+  // 線を描いているときだけ出す（面に「進む向き」は無い）
+  w.style.display=(PF_MODE==='F' || (one && one.t==='F' && segShape(one)!==SHAPE_AREA)) ? '' : 'none';
+  if(segShape(one)===SHAPE_AREA){ w.style.display='none'; PF_SPIRAL=false; }
+  b.classList.toggle('primary', PF_SPIRAL);
+  b.textContent=(PF_SPIRAL?'◠ くるくる 入れる中':'◠ くるくる（旋回）');
+  o.style.display=PF_SPIRAL?'':'none';
+}
+/* 新しい L を、前の L の終点から続けて描けるようにする（2026-08-13）。
+   同じ画面で描き続けている間は同じ鳥のことがほとんどで、
+   前の経路の終わりから続けたいという要望。見失って出直したときは
+   L をもう一度押して離す（PF_CONT を false にする）。
+   続けられるのは**線の終点だけ**。面は閉じているので「終わり」が無い */
+// 引き継いだ点の数（0か1）。**線として描いている間だけ**意味を持つ
+function segContOffset(sg){
+  return (sg && sg.cont && sg.t==='F' && segShape(sg)!==SHAPE_AREA
+    && (sg.pts||[]).length>1) ? 1 : 0;
+}
+/* 面にするときは、前の線から引き継いだ点を外す（点も時刻も一緒に）。
+   囲みに前の経路の終点が混ざると、範囲の形と面積が変わってしまう。
+   **面にする道は2つある**（始点をもう一度タップする／形の欄で「面」を選ぶ）ので、
+   外す処理はこの1か所にまとめる（2026-08-13 監査） */
+function segDropCont(sg){
+  const skip=segContOffset(sg);
+  if(!skip) return 0;
+  sg.pts=sg.pts.slice(skip); sg.times=(sg.times||[]).slice(skip); sg.cont=0;
+  return skip;
+}
+/* 真偽の値を読む。**「FALSE」という文字も真になる**ので、そのまま if に入れない。
+   データベースやGeoJSONは 'TRUE'/'FALSE' の文字で持っているため、書き戻しを
+   読み直すとここに文字が入る。受ける言葉は取り込み側（_flag）とそろえる
+   （2026-08-13 監査） */
+function isTrueFlag(v){
+  if(typeof v==='boolean') return v;
+  return ['TRUE','1','YES','T','はい'].indexOf(String(v==null?'':v).trim().toUpperCase())>=0;
+}
+// 記録に残っている「引き継いで始めた線か」を読む（古い記録には無いので0）
+function contOf(f){ return (f && isTrueFlag(f.continued_start)) ? 1 : 0; }
+function contFrom(){
+  const sg=lastDrawnFl();
+  if(!sg || segShape(sg)===SHAPE_AREA) return null;
+  // 描きかけ（1点だけ）の線からは続けない。続けると未完成の線が残ったまま次が始まる
+  if((sg.pts||[]).filter(validPathPt).length<2) return null;
+  const pts=sg.pts||[];
+  for(let i=pts.length-1;i>=0;i--){
+    if(validPathPt(pts[i])) return { pt:[pts[i][0], pts[i][1]], time:(sg.times||[])[i]||'' };
+  }
   return null;
 }
 // 開いたときから形を変えたか。**変えたら「触った」扱い**にして検査を通す
@@ -4329,7 +4553,25 @@ function flShapePick(){
   if(SCREENS._flLoading) return;   // 読み込みで入れた値は「書きかけ」にしない
   SCREENS._dirty=true;
   const seg=SCREENS._flSeg;
-  if(seg && seg.t==='F'){ flStoreInto(seg); pfRedraw(); pfInfo(); }
+  if(seg && seg.t==='F'){
+    if(segVal('fl_shape')===SHAPE_AREA){
+      // 囲めない形（旋回の輪を含む線など）は、その場で線へ戻して**理由を言う**。
+      // 保存のときまで黙っていると「点を足すか消して」としか出ず、
+      // 輪を戻せばよいことが伝わらない（2026-08-13 監査）
+      // **戻すのは「あとから点を足しても直らない形」だけ**（交差・同じ点の重複）。
+      // 点が足りない・一直線は点を足せば直るので、そのままにする
+      //（1点目から形を選べるようにしてあるので、途中で戻してはいけない）
+      const pb=areaProblem((seg.pts||[]).slice(segContOffset(seg)));
+      if(pb && /交差|2回使われ/.test(pb)){
+        segSet('fl_shape', SHAPE_LINE);
+        toast(`この線は面にできません（${pb}）。`
+          +'旋回の輪が入っているなら「↶」で輪を戻すか、線のまま保存してください', 6500);
+        flShapeSyncUI(); return;
+      }
+      // 点を1つ外すので、「↶」で戻せるように先に控える
+      if(segContOffset(seg)){ pfSnap(true); segDropCont(seg); seg.edited=true; }
+    }
+    flStoreInto(seg); pfRedraw(); pfInfo(); }
   flShapeSyncUI();
 }
 function flAreaTypePick(){
@@ -4355,6 +4597,7 @@ function flShapeSyncUI(){
   const lab=$('#flAttrLabel');
   if(lab && on){ const i=PF_SEGS.indexOf(one);
     lab.textContent=(i>=0?segLabel(i):'L')+(area?'（面）':'（線）'); }
+  if(typeof spiralInfo==='function') spiralInfo();   // 「くるくる」の欄も一緒に出し入れ
 }
 // 経路の高度・行動を画面へ読み込む。
 // 「その他（記入内容）」は標準の「その他」ボタン＋記入欄に分解して出す。
@@ -4429,6 +4672,12 @@ function pfInfo(){
   const np=pfPoints().length, nf=pfPaths().length;
   const parts=[PF_MODE==='P'?'P：タップで止まっていた場所'
     :(PF_MODE==='F'?'L：タップで線。始点をもう一度タップすると囲み（面）':'N：タップで巣の位置')];
+  if(PF_SPIRAL && PF_MODE==='F')
+    parts.push(`タップで旋回の輪（${spiralSize().name}・${spiralTurns()}周）`);
+  // 次の L をどこから始めるか。押し間違いに気づけるよう、待っている間だけ出す
+  if(PF_MODE==='F' && PF_NEWLINE && PF_SEL===-1 && contFrom())
+    parts.push(PF_CONT?'次の線は前の終点から（Lをもう一度押すと離して始める）'
+                      :'次の線は離して始める（Lをもう一度押すと前の終点から）');
   if(np) parts.push('止まり '+np+'か所');
   if(nf) parts.push('経路 '+nf+'本');
   if(PF_NEST) parts.push('巣あり');
@@ -4441,7 +4690,13 @@ function pfInfo(){
 const PF_CLOSE_PX = 28;   // 始点の印（22px）より少し広め
 function pfTryClose(sg,lat,lon){
   if(!sg || sg.t!=='F' || segShape(sg)===SHAPE_AREA) return false;
-  const pts=(sg.pts||[]).filter(validPathPt);
+  // 「くるくる」を押している間は閉じない。閉じ判定は**画面の28px**なので、
+  // 広い縮尺だと、離れた場所への旋回タップまで閉じ操作に取られ、
+  // 同じ操作なのに縮尺で結果が変わる（2026-08-13 監査）
+  if(PF_SPIRAL) return false;
+  // 前の線から引き継いだ1点目は、囲みの一部ではない（自分でタップした点から囲む）
+  const skip=segContOffset(sg);
+  const pts=(sg.pts||[]).slice(skip).filter(validPathPt);
   if(pts.length<3 || !mapObj) return false;   // 3点以上でないと囲めない
   let a,b;
   try{ a=mapObj.latLngToContainerPoint(pts[0]); b=mapObj.latLngToContainerPoint([lat,lon]); }
@@ -4452,6 +4707,7 @@ function pfTryClose(sg,lat,lon){
   // 残すと「↶」が一度空振りする。2026-08-13 監査）
   const pb=areaProblem(pts);
   if(pb){ toast(`囲みにできません（${pb}）`, 5000); return 'ng'; }
+  segDropCont(sg);   // 引き継いだ点は面に含めない
   sg.fl=sg.fl||{}; sg.fl.shape=SHAPE_AREA; sg.edited=true;
   SCREENS._dirty=true;
   // 画面がこのトレースを写しているなら、欄も面に切り替える
@@ -4484,7 +4740,7 @@ function pfDrop(lat,lon){
         if(closed){
           if(closed==='ng') PF_HIST.pop();   // 何も変わっていないので控えも戻す
           pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); return; }
-        sg.pts.push([lat,lon]); sg.times.push(now); sg.edited=true; }
+        segAddPts(sg, lat, lon, now); }
       SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); return;
     }
   }
@@ -4504,12 +4760,26 @@ function pfDrop(lat,lon){
     const last=PF_SEGS[PF_SEGS.length-1];
     // トレースは**必ず線から始まる**。面にするのは「始点をもう一度タップして閉じる」操作。
     // 前のトレースの形は引き継がない（線のつもりが面になるのを防ぐ）
-    if(PF_NEWLINE || !last || last.t!=='F'){ PF_SEGS.push({t:'F', id:pfId(), pts:[[lat,lon]], times:[now],
-      fl:{height:'',behavior:'',shape:SHAPE_LINE,area_type:''}}); PF_NEWLINE=false; }
+    if(PF_NEWLINE || !last || last.t!=='F'){
+      // 「続きから」なら、前の L の終点を新しい線の1点目にしてつなぐ。
+      // 時刻は前の終点のものをそのまま使う（同じ場所・同じ時のことなので）
+      // 前の終点そのものをタップしたときは引き継がない。
+      // 引き継ぐと同じ点が2つ並んだ「長さ0の線」ができてしまう
+      const c=PF_CONT?contFrom():null;
+      const from=(c && !(c.pt[0]===lat && c.pt[1]===lon))?c:null;
+      const pts=from?[[from.pt[0],from.pt[1]],[lat,lon]]:[[lat,lon]];
+      const times=from?[from.time||now, now]:[now];
+      // cont=1 … 1点目は**自分でタップした点ではなく、前の線から引き継いだ点**。
+      // 面にするときは外す（囲った範囲に前の経路の終点が混ざると形が変わる）
+      const sg={t:'F', id:pfId(), pts, times, cont:from?1:0,
+        fl:{height:'',behavior:'',shape:SHAPE_LINE,area_type:''}};
+      PF_SEGS.push(sg); PF_NEWLINE=false;
+      // 「くるくる」なら、いま置いた点を中心に輪を足す（向きは引き継ぎ点から）
+      if(PF_SPIRAL) segAddSpiral(sg, lat, lon, now, from?from.pt:null); }
     else {
       const closed=pfTryClose(last,lat,lon);
       if(closed==='ng') PF_HIST.pop();       // 何も変わっていないので控えも戻す
-      else if(!closed){ last.pts.push([lat,lon]); last.times.push(now); last.edited=true; }
+      else if(!closed) segAddPts(last, lat, lon, now);
     }
   }
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips();
@@ -4522,6 +4792,7 @@ function obsMapUndo(){
   const cur=new Map(); PF_SEGS.forEach(sg=>{ if(sg.id!=null) cur.set(sg.id, sg); });
   const st=JSON.parse(PF_HIST.pop());
   PF_SEGS=st.segs; PF_NEST=st.nest; PF_NEWLINE=st.newline; PF_SEL=st.sel; PERCH_IDX=st.perch;
+  PF_CONT=(st.cont!==false);   // 「続きから／離して」も戻す（古い控えは既定の「続きから」）
   PF_SEGS.forEach(sg=>{ const nowSg=cur.get(sg.id); if(!nowSg) return;
     // 止まり情報は値だけでなく「触った」印も一緒に残す。印が落ちると、
     // 画面には編集値が見えるのに保存では元の値へ戻ってしまう
@@ -4603,19 +4874,25 @@ function pfRedraw(){
             // 囲った形も薄く残す（どこを囲ったかが分かるように）
             L.polygon(seg.pts,{color:col,weight:1,opacity:.35,fill:false,dashArray:'4,4',interactive:false}).addTo(pfLayer);
           } else {
-            L.polygon(seg.pts,{color:col,weight:selL?4:2.5,opacity:.95,fill:false}).addTo(pfLayer);
+            L.polygon(seg.pts,{color:col,weight:selL?4:2.5,opacity:.95,fill:false,interactive:false}).addTo(pfLayer);
           }
         }
         else if(seg.pts.length>1)
-          L.polyline(seg.pts,{color:'#9b59b6',weight:3,opacity:.6,dashArray:'5,4'}).addTo(pfLayer);
+          L.polyline(seg.pts,{color:'#9b59b6',weight:3,opacity:.6,dashArray:'5,4',interactive:false}).addTo(pfLayer);
         // 面がどれか分かるよう、1点目に番号（または「面」）だけ置く
-        L.marker(seg.pts[0],{icon:badge(nLines>1?segLabel(segIdx):'面','#9b59b6',22)}).addTo(pfLayer);
-        seg.pts.forEach(pt=>L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#9b59b6',fillOpacity:1}).addTo(pfLayer));
+        L.marker(seg.pts[0],{icon:badge(nLines>1?segLabel(segIdx):'面','#9b59b6',22), interactive:false}).addTo(pfLayer);
+        seg.pts.forEach(pt=>L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#9b59b6',fillOpacity:1,interactive:false}).addTo(pfLayer));
       } else {
-        if(seg.pts.length>1) L.polyline(seg.pts,{color:selL?'#ffd479':'#e0a030',weight:selL?7:4,opacity:.95}).addTo(pfLayer);
+        // 線・面そのものも**タップを遮らない**。押しても何も起きない飾りなのに、
+        // 上を狙ったタップが地図に届かず、描き足せなくなる（2026-08-13 監査）
+        if(seg.pts.length>1) L.polyline(seg.pts,{color:selL?'#ffd479':'#e0a030',weight:selL?7:4,opacity:.95,interactive:false}).addTo(pfLayer);
         // 線が2本以上あるときは、始点に L1・L2… を出して「直す」チップのL番号と地図の線を見比べられるようにする
         //（Pの番号表示と同じ流儀。1本だけなら従来どおり「始」）
-        const startMk=L.marker(seg.pts[0],{icon:badge(nLines>1?segLabel(segIdx):'始','#3fb984',22)}).addTo(pfLayer);
+        // 前の線から引き継いだ点は「自分で描き始めた場所」ではないので、
+        // 「始」の印はその次（＝最初にタップした点）に置く。
+        // ここに置かないと、囲みにするとき押すべき点と印がずれる
+        const sIdx=segContOffset(seg);
+        const startMk=L.marker(seg.pts[sIdx],{icon:badge(nLines>1?segLabel(segIdx):'始','#3fb984',22)}).addTo(pfLayer);
         // **始点の印そのものを押しても閉じられるようにする。**
         // Leaflet の印の上のタップは地図へ伝わらないので、印に付けないと
         // 「始点をもう一度タップ」がいちばん自然な操作（印を狙って押す）で効かない
@@ -4634,13 +4911,21 @@ function pfRedraw(){
           const target=(PF_SEL>=0) ? PF_SEGS[PF_SEL]
             : ((PF_MODE==='F' && !PF_NEWLINE) ? lastDrawnFl() : null);
           if(target!==seg) return;
-          const p=seg.pts[0];
+          const p=seg.pts[segContOffset(seg)];
+          // 「くるくる」中は閉じずに、押した場所へ輪を入れる
+          //（印の上だけ動きが違うと、狙って押したのに何も起きない）
+          if(PF_SPIRAL){ pfDrop(p[0], p[1]); return; }
           pfSnap();   // 「↶」で戻せるように、変える前の状態を控える
           if(pfTryClose(seg, p[0], p[1])===true){ pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); }
           else PF_HIST.pop();   // 閉じられなかった（'ng' も含む）ので控えも戻す
         });
-        seg.pts.forEach((pt,i)=>{ if(i>0&&i<seg.pts.length-1) L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1}).addTo(pfLayer); });
-        if(seg.pts.length>1) L.marker(seg.pts[seg.pts.length-1],{icon:badge('終','#d05555',22)}).addTo(pfLayer);
+        // 途中の点の丸。**点が多い線では出さない**（旋回の輪は点が細かいので、
+        // 丸を出すと線が丸の帯になって形が読めない。2026-08-13）
+        if(seg.pts.length<=12)
+          seg.pts.forEach((pt,i)=>{ if(i>0&&i<seg.pts.length-1) L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#e0a030',fillOpacity:1,interactive:false}).addTo(pfLayer); });
+        // 「終」の印は**タップを遮らない**。遮ると、終点の上を狙ったタップが
+        // 地図に届かず、続きも描けず新しい線も始められない（2026-08-13 監査）
+        if(seg.pts.length>1) L.marker(seg.pts[seg.pts.length-1],{icon:badge('終','#d05555',22), interactive:false}).addTo(pfLayer);
       }
     }
   });
@@ -4772,13 +5057,16 @@ function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsRev
       behavior: behaviorNew,
       shape: shapeNew,
       area_type: areaTypeNew,
+      // 1点目が「前の線から引き継いだ点」かどうかも残す。
+      // 残さないと、開き直したあと「始」の印の位置と、面にしたときに外す点がずれる
+      continued_start: !!seg.cont,
     });
   }
   return { uuid:uuid(), survey_uuid:svUuid,
     species_id:spId,
     species_name_snapshot:name,
     path:seg.pts.slice(), start_time:st, end_time:en,
-    shape:shapeNew, area_type:areaTypeNew,
+    shape:shapeNew, area_type:areaTypeNew, continued_start:!!seg.cont,
     // 面には飛翔高度の意味がないので、既定の「不明」も入れない
     height_class:heightRaw||(shapeNew===SHAPE_AREA?'':'不明'),
     age_class:ageCls||'不明', individual_label:String(indLabel===undefined?'':indLabel||''),
@@ -10384,6 +10672,8 @@ function flightFeature(s,f,path){
       individual_key:f.individual_key||'',
       // 形と面の種類。線のときは面の種類・面積を空にする（読む側が形で分けられるように）
       shape:shapeOf(f), area_type:area?(f.area_type||''):'',
+      // 1点目が前の経路の終点から続けて描いた点か（つなぎ目の「終」を出すかの判断に使う）
+      continued_start: (!area && isTrueFlag(f.continued_start)) ? 'TRUE' : 'FALSE',
       length_m: area?'':m.length_m,
       area_m2: area?m.area_m2:'',
       audio_file:(f.audio||[]).map((a,i)=>flightAudioFilename(f,i,a)).join(';'),
