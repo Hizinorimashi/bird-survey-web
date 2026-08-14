@@ -139,11 +139,11 @@
     background:var(--panel); color:var(--fg); border:1px solid var(--line);
     border-radius:10px; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
   .map-full-btn:active{background:var(--panel2);}
-  /* 全画面のときだけ出る「‹ 戻る」。地図の上でも読めるよう、はっきりした色にする */
-  .map-back-btn{width:auto; padding:8px 12px; font-size:13px; font-weight:700; white-space:nowrap;
+  /* 全画面のときだけ出る「↶ 1つ戻す」。地図の上でも読めるよう、はっきりした色にする */
+  .map-undo-btn{width:auto; padding:8px 12px; font-size:13px; font-weight:700; white-space:nowrap;
     background:var(--panel); color:var(--fg); border:1px solid var(--line);
     border-radius:10px; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
-  .map-back-btn:active{background:var(--panel2);}
+  .map-undo-btn:active{background:var(--panel2);}
   /* 音声入力の種名候補。押して選ぶ（選ばれているものは塗りつぶし＋✓）。
      指で押す前提なので、小さくても縦の当たり判定は確保する */
   .voice-chip{display:inline-block; margin:2px 5px 2px 0; padding:6px 11px; font-size:13px; font-weight:700;
@@ -268,7 +268,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v220（2026-08-14 全画面のときに「戻る」を出す）';
+const APP_VERSION = 'v221（2026-08-14 全画面のときに「↶ 1つ戻す」を出す）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3436,7 +3436,10 @@ function createBaseMap(elId, center, zoom, opts){
   m.on('baselayerchange', e=>{ try{ localStorage.setItem('bs_basemap', e.name); }catch(err){} });
   if(rotatable) addCompassControls(m);
   addFullscreenControl(m);
-  addBackControl(m);          // 全画面のときだけ出る「‹ 戻る」
+  // 「↶ 1つ戻す」は**観察を描く地図だけ**。他の地図（一覧・飛翔・まとめ）に
+  // 出すと、いま見ている地図と関係のない観察の操作を取り消せてしまう
+  //（2026-08-14 監査 Major）
+  if(opts.undoable) addUndoControl(m);
   setTimeout(()=>{ try{ m.invalidateSize(); }catch(e){} },200);
   return m;
 }
@@ -3454,27 +3457,29 @@ const MAPFULL_MS=280;
 // 戻したときに地図の上下の余白が失われる（実測で8pxずれた）。必ず4辺それぞれで持つ
 const MAPFULL_PROPS=['position','marginTop','marginRight','marginBottom','marginLeft',
   'width','height','zIndex','top','left','right','bottom','transition','borderRadius','border'];
-/* 全画面のときだけ出す「‹ 戻る」（2026-08-14 実機で指摘）。
-   全画面にすると画面上の「‹ 戻る」ごと地図で覆われ、**画面から出られない**。
-   いったん「小さく」を押して、上まで戻して、それから「戻る」——では手間が多い。
-   押したときの動きは画面上の「戻る」と同じ（書きかけがあれば確認が出る）。
-   **先に全画面をやめてから戻る**（全画面のまま画面を変えると、地図が居座る） */
-function addBackControl(m){
+/* 全画面のときだけ出す「↶ 1つ戻す」（2026-08-14 実機で指摘）。
+   ↶ は地図の**下**に置いてあるので、全画面にすると地図で覆われて押せない。
+   描いている途中にいちばん使うボタンなので、全画面のときは地図の上に出す。
+   押したときの動きは下の ↶ と同じ（obsMapUndo）。
+   **画面から出る「‹ 戻る」ではない**——それは「小さく」を押してから使う */
+function addUndoControl(m){
   const C=L.Control.extend({ onAdd:function(){
-    const b=L.DomUtil.create('button','map-back-btn');
-    b.type='button'; b.textContent='‹ 戻る'; b.title='前の画面に戻る';
+    const b=L.DomUtil.create('button','map-undo-btn');
+    b.type='button'; b.textContent='↶ 1つ戻す'; b.title='地図でした操作を1つ戻す';
     b.style.display='none';   // 全画面のときだけ出す
     L.DomEvent.disableClickPropagation(b);
     L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>{
-      if(_mapFull) mapFullOff();
-      goBack();
+      if(typeof obsMapUndo==='function') obsMapUndo();
     });
     return b; }});
   new C({position:'topright'}).addTo(m);
 }
-// 全画面の出入りに合わせて「戻る」の出し隠れを切り替える
-function mapBackBtnSync(on){
-  document.querySelectorAll('.map-back-btn').forEach(b=>{ b.style.display=on?'':'none'; });
+/* 全画面の出入りに合わせて「↶」の出し隠れを切り替える。
+   **いま全画面になっている地図の中だけ**を見る。文書ぜんぶを対象にすると、
+   別の地図のボタンまで出てしまう（2026-08-14 監査 Major） */
+function mapUndoBtnSync(on, root){
+  const box = root || (_mapFull && _mapFull.el) || document;
+  box.querySelectorAll('.map-undo-btn').forEach(b=>{ b.style.display=on?'':'none'; });
 }
 function addFullscreenControl(m){
   const C=L.Control.extend({ onAdd:function(){
@@ -3513,7 +3518,7 @@ function mapFullOn(m,btn){
   // 後ろのページを止めると読み位置が先頭に飛ぶ端末があるので、戻すときのために覚えておく
   const f={el, ph, prev, m, btn, esc, sy:window.scrollY||0, timers:[], closing:false, onres:null};
   _mapFull=f;
-  mapBackBtnSync(true);       // 全画面の間だけ「戻る」を出す
+  mapUndoBtnSync(true, el);   // 全画面の間だけ「↶」を出す（この地図の中だけ）
   mapFullBox(el, r);   // まず「いまと同じ見た目」で position:fixed にする
   el.classList.add('map-full');
   mapFullToolsOn(f);   // 入力の欄を地図の中へ移す（大きくしたまま入力できるように）
@@ -3539,7 +3544,7 @@ function mapFullOff(now){
   if(f.closing && !now) return;   // すでに閉じ中（二度押しは無視）
   mapFullClear(f);
   f.closing=true;
-  mapBackBtnSync(false);   // 全画面をやめたら「戻る」は隠す（画面上の戻るが出るため）
+  mapUndoBtnSync(false, f.el);   // 全画面をやめたら「↶」は隠す（地図の下の ↶ が使えるため）
   if(f.btn){ try{ f.btn.textContent='⛶ 大きく'; f.btn.title='地図を画面いっぱいに広げる'; }catch(e){} }
   // 先にページの固定を解いて読み位置を戻す（戻り先の枠は、その状態で測らないとずれる）
   document.body.classList.remove('map-full-lock');
@@ -3598,7 +3603,7 @@ function mapFullToolsOff(f){
 function mapFullFinish(f){
   if(_mapFull!==f) return;
   _mapFull=null;
-  mapBackBtnSync(false);
+  mapUndoBtnSync(false, f.el);
   mapFullClear(f); mapFullResizeWatch(f, false);
   window.removeEventListener('keydown', f.esc);
   document.body.classList.remove('map-full-lock');
@@ -5154,7 +5159,7 @@ function initObsPosMap(){
   if(_p0){ center=_p0.pt; zoom=16; }
   else if(_f0){ center=_f0.pts[0]; zoom=15; }
   else if(PF_NEST){ center=PF_NEST; zoom=16; }   // 巣だけがある記録でも画面に入るように
-  mapObj=createBaseMap('obsPosMap', center, zoom, {});
+  mapObj=createBaseMap('obsPosMap', center, zoom, {undoable:true});   // 描く地図なので「↶」を出す
   // 観察の地図は自前の十字ボタンを持つ。飛翔画面の十字モードには影響されない
   //（見ないと、飛翔画面で十字を使った端末では地図タップが全部効かなくなる）
   mapObj.on('click', e=>{ pfDrop(e.latlng.lat, e.latlng.lng); });
