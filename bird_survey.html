@@ -263,7 +263,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v217（2026-08-13 始・終の印をやめ矢印と点に・◎と経路をつなぐ）';
+const APP_VERSION = 'v219（2026-08-14 環境・営巣木の写真とメモ・威嚇行動・案内を1行に）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -326,6 +326,12 @@ function recordIssues(name, x){
   for(const f of (STAMP_FIELDS[name]||[])){ if(!okStamp(x[f])) bad.push(f); }
   if(!okMediaList(x.audio)) bad.push('audio');
   if(!okMediaList(x.media)) bad.push('media');
+  // 環境・営巣木の写真も同じ形で検査する。見ないと、壊れた中身が
+  // そのまま入り、画面や同期が止まる（2026-08-14 監査2巡目 Major）
+  if(name==='observations'){
+    if(!okMediaList(x.env_media)) bad.push('env_media');
+    if(!okMediaList(x.nest_media)) bad.push('nest_media');
+  }
   // 座標の対（観察者・鳥がいた場所・巣）。片方だけ・範囲外は、地図・書き出しで黙って落ちる値なので
   // 取込・同期では拒否し、起動点検では修復対象として見えるようにする
   if(name==='observations'){
@@ -553,7 +559,10 @@ function makeBlobStore(store, refField){
       const valid=new Set();
       // 参照元(観察・飛翔・マイ図鑑)が1つでも読めない時は、孤児判定が誤るので一切削除しない（原本保護）
       try{
-        DB.loadRaw(DB.key.ob).forEach(o=>(o[refField]||[]).forEach(a=>a&&a.id&&valid.add(a.id)));
+        // 観察は**写真をしまう欄が3つ**（観察・環境・営巣木）。数え漏らすと、
+        // 使われているのに「残骸」と見なして実体を消してしまう（2026-08-14 監査 Critical）
+        const 欄 = (refField==='media') ? ['media','env_media','nest_media'] : [refField];
+        DB.loadRaw(DB.key.ob).forEach(o=>欄.forEach(f=>(o[f]||[]).forEach(a=>a&&a.id&&valid.add(a.id))));
         DB.loadRaw(DB.key.fl).forEach(f=>(f[refField]||[]).forEach(a=>a&&a.id&&valid.add(a.id)));
         const mg=localStorage.getItem('bs_myguide');
         if(mg) JSON.parse(mg).forEach(g=>{
@@ -667,10 +676,11 @@ const OPT = {
   flightShape:[SHAPE_LINE, SHAPE_AREA],
   areaType:AREA_TYPES,
   flightHeight:['低（樹冠以下）','中（樹冠〜数十m）','高（上空）','不明'],
-  // 「攻撃」「歩行」は報告書の結果図に凡例がある（→×→ ／ 実線の→）。
-  // 選べないと図が作れないので、飛翔の行動にも置く（2026-08-12 追加）
+  // 「攻撃」「歩行」「威嚇」は報告書の結果図に凡例がある
+  //（→×→ ／ 実線の→ ／ ギザギザの→）。選べないと図が作れないので、
+  // 飛翔の行動にも置く（2026-08-12 追加、威嚇は 2026-08-14 追加）
   flightBehavior:['旋回','直線飛行','帆翔（ソアリング）','はばたき','急降下','ディスプレイ',
-    '狩り','攻撃','歩行','その他'],
+    '狩り','攻撃','威嚇','歩行','その他'],
   flightAge:['成鳥','亜成鳥','幼鳥','幼綿羽','不明'],
   // 止まっていたもの。種類で下の項目が変わる（木＝サイズ/樹種/樹高、人工物＝電柱など、その他＝メモ）
   perchType:['木','人工物','その他'],
@@ -1265,6 +1275,10 @@ let currentSurveyUuid = null; // 調査中コンテキスト
 let mapObj = null;
 let _mapTimer = null;   // 地図初期化の保留タイマー（画面を離れたら取り消す）
 let _recGen = 0, _mediaGen = 0;   // 録音/写真パネルの世代。再描画・画面遷移で+1し、古い非同期処理のURL割当を無効化する
+/* 写真パネルは**欄ごとに世代を持つ**（2026-08-14 監査 Major）。
+   1つの数を3つの欄で使い回すと、続けて描き直したときに先の欄の番号が
+   古くなり、写真があるのに絵が出ない（最後に描いた欄だけ出る） */
+const _mediaGenBy = { media:0, env_media:0, nest_media:0 };
 let mapCurMarker = null, mapCurCircle = null; // 地図上の現在地マーカー・精度円
 
 // 破棄を選んだ新規記録のuuid。後から完了する写真・録音の保存処理が仮記録を作り直さないための名簿（セッション内のみ）
@@ -1388,6 +1402,7 @@ function render(){
   if(typeof renderWalkPill==='function') renderWalkPill();   // 歩行記録中の常設表示（全画面）
   const main = $('#main');
   _recGen++; _mediaGen++;   // 保留中のメディア非同期処理を無効化（切り離されたDOMへURLを付けない）
+  Object.keys(_mediaGenBy).forEach(k=>_mediaGenBy[k]++);
   revokePanelUrls(main, 'audio, .mediael');   // 画面差し替え前に音声・写真のObject URLを解放（リーク防止）
   main.innerHTML = out.html || '';
   if(out.onMount) out.onMount();
@@ -2172,7 +2187,8 @@ async function quickRec(svUuid){
     target_latitude:'', target_longitude:'', perch_size:'', perch_class:'',
     nest_tree_species:'', nest_tree_height:'', nest_state:'',
     identification_status:'未同定', confidence:'中', needs_review:true,
-    note:'', external_photo_reference:'', audio:[], media:[] };
+    note:'', external_photo_reference:'', audio:[], media:[],
+    env_note:'', nest_note:'', env_media:[], nest_media:[] };
   if(!DB.upsertObs(rec)) return;
   SCREENS._mediaCtx={ kind:'obs', uuid:rec.uuid, sv:svUuid };
   QUICKREC=rec.uuid;
@@ -2686,7 +2702,10 @@ SCREENS.obsEdit = (argStr)=>{
       perch_type:'', perch_artificial:'', perch_note:'', nest_latitude:'', nest_longitude:'',
       individual_label:'',
       note:'', identification_status:'確定', confidence:'中',
-      needs_review:false, external_photo_reference:'' };
+      needs_review:false, external_photo_reference:'',
+      // 環境・営巣木それぞれの写真とメモ（2026-08-14 追加）。
+      // 観察のメディア記録とは**別に持つ**。どの写真が何の写真かが分かるように
+      env_note:'', nest_note:'', env_media:[], nest_media:[] };
     // 「保存して続けて」からは前の記録の位置をそのまま引き継ぐ（位置を消して保存したなら空のまま＝GPSで上書きしない）。
     // keepが無いときだけ、新鮮なGPSを初期値にする（古い測位は使わない）
     if(initKeep){ const k=initKeep;
@@ -2823,17 +2842,25 @@ SCREENS.obsEdit = (argStr)=>{
                 </span>
               </span>
             </div>
-        <div class="note" id="obsOnlyNote" style="display:none;">飛翔経路だけの記録です。観察にしか残せない項目（性別・確認方法・生息環境・巣など）は入力できません。止まった場所を記録するなら <b>P</b> を落としてください。
-          <div class="sp"></div><button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsOnlyReset()">観察の項目を最初の状態に戻す</button></div>
+        <!-- **短く1行で**。長い説明は狭い画面で3行にもなり、下の入力を押し下げる
+             （2026-08-14 実機で指摘）。入力できない欄は薄くなっているので見れば分かる。
+             止まりの記録の仕方だけ、いちばん短い形で残す -->
+        <div class="note" id="obsOnlyNote" style="display:none;"><span id="obsOnlyText" style="display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">飛翔経路だけの記録です。止まりは <b>P</b> で。</span>
+          <div class="sp"></div><button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsOnlyReset()">観察の項目を元に戻す</button></div>
         <div class="note" id="legacyPosNote" style="display:none;">この記録の位置は、以前の画面では「止まり木・巣など」の位置でした。巣の位置なら下のボタンで移せます。
           <div class="sp"></div><button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="legacyPosToNest()">この位置を巣にする</button></div>
         <!-- 落としたものの一覧。選ぶと地図で光り、位置直しや削除ができる（P=止まり／L=経路） -->
         <div class="chips" id="segChips" style="margin-top:6px;"></div>
-        <div class="row" id="segEditBar" style="display:none; margin-top:6px; gap:8px; align-items:center;">
-          <span class="tiny grow" id="segEditMsg"></span>
-          <button type="button" class="btn ghost" id="segFlMore" style="display:none; width:auto; padding:6px 10px;" onclick="segFlOpen()">🎤📷 この経路の添付・メモ</button>
-          <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="segEditDone()">やめる</button>
-          <button type="button" class="btn danger" style="width:auto; padding:6px 10px;" onclick="segEditDelete()">✕ 消す</button>
+        <!-- 案内は**ボタンと同じ行に置かない**。狭い画面では場所を取り合って
+             1文字ずつ折り返し、縦に長い帯になる（2026-08-13 実機で指摘）。
+             1行で収まるよう、独立した行にして折り返しも禁じる -->
+        <div id="segEditBar" style="display:none; margin-top:6px;">
+          <div class="tiny" id="segEditMsg" style="margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+          <div class="row" style="gap:8px; align-items:center;">
+            <button type="button" class="btn ghost" id="segFlMore" style="display:none; width:auto; padding:6px 10px;" onclick="segFlOpen()">🎤📷 この経路の添付・メモ</button>
+            <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="segEditDone()">やめる</button>
+            <button type="button" class="btn danger" style="width:auto; padding:6px 10px;" onclick="segEditDelete()">✕ 消す</button>
+          </div>
         </div>
       </div>
       <div id="birdList" style="display:none; margin-bottom:8px;"></div>
@@ -2903,7 +2930,7 @@ SCREENS.obsEdit = (argStr)=>{
 
         <details class="fold obs-only" id="foldEnv">
           <summary><span class="lab" style="display:inline; margin:0;">🌿 環境</span>
-            <span class="small muted">生息環境・止まり木・巣</span></summary>
+            <span class="small muted">生息環境・止まり木・写真</span></summary>
           <div class="lab" style="margin-top:4px;">まわりの環境（どんな場所か・複数選択可）</div>
           <label class="field">${segMulti('habitat',OPT.habitat)}</label>
           <div class="divider"></div>
@@ -2944,6 +2971,10 @@ SCREENS.obsEdit = (argStr)=>{
           </div>
           <label class="field" id="perchNoteWrap" style="display:none;"><span class="lab">メモ（任意）</span>
             <input id="perchNote" placeholder="どんなものに止まっていたか" oninput="perchStore()"></label>
+          <div class="divider"></div>
+          <div class="field"><span class="lab">環境の写真</span><div id="envMediaPanel"></div></div>
+          <label class="field"><span class="lab">環境のメモ</span>
+            <textarea name="env_note" placeholder="どんな場所か・林の様子・水辺の状態など">${esc(o.env_note||'')}</textarea></label>
         </details>
 
         <details class="fold obs-only" id="foldNest">
@@ -2961,6 +2992,9 @@ SCREENS.obsEdit = (argStr)=>{
             <input name="nest_state" value="${esc(o.nest_state||'')}" list="nestStateList" placeholder="例：抱卵、育雛、巣立ち後"
               oninput="syncDisabledStates()">
             <datalist id="nestStateList">${OPT.nestState.map(x=>`<option value="${esc(x)}">`).join('')}</datalist></label>
+          <div class="field"><span class="lab">営巣木の写真</span><div id="nestMediaPanel"></div></div>
+          <label class="field"><span class="lab">営巣木のメモ</span>
+            <textarea name="nest_note" placeholder="巣の高さ・向き・木の様子など">${esc(o.nest_note||'')}</textarea></label>
           <input type="hidden" id="nestLat" value="${esc(o.nest_latitude||'')}">
           <input type="hidden" id="nestLon" value="${esc(o.nest_longitude||'')}">
         </details>
@@ -3032,6 +3066,8 @@ SCREENS.obsEdit = (argStr)=>{
         ? {kind:'flight', uuid:flAnchor.uuid, sv:o.survey_uuid}
         : {kind:'obs', uuid:o.uuid, sv:o.survey_uuid};
       SCREENS._audio=(o.audio||[]).slice(); SCREENS._media=(o.media||[]).slice();
+      // 環境・営巣木の写真も読み直す（2026-08-14 追加）
+      SCREENS._envMedia=(o.env_media||[]).slice(); SCREENS._nestMedia=(o.nest_media||[]).slice();
       // 記録モードは毎回「止まっている」から始める（前の画面の経路を持ち越さない）
       // 地図の状態は毎回まっさらから始める（前の画面の内容を持ち越さない）
       PF_MODE='P'; PF_SEGS=[]; PF_NEWLINE=true; PF_SPIRAL=false; flightPath=[]; flightLayer=null; pfLayer=null;
@@ -3733,7 +3769,11 @@ function newBird(){ return {
   dirty:false,   // この個体に書きかけがあるか（段Bで使用）
   map:{ mode:'P', segs:[], newline:true, nest:null, nestId:'', sel:-1, hist:[], seq:0,
         perchIdx:0, legacyId:null, cont:true },
-  media:{ audio:undefined, media:undefined, ghost:undefined, ctx:undefined },
+  // 環境・営巣木の写真も**個体ごと**に持つ（2026-08-14 監査4巡目 Critical）。
+  // 全個体で共有すると、個体を切り替えたときに前の個体の写真が出て、
+  // 同じ写真が別の個体の記録にも付く／先に保存した分が消える
+  media:{ audio:undefined, media:undefined, envMedia:undefined,
+          nestMedia:undefined, ghost:undefined, ctx:undefined },
   st:{},   // SCREENS._obs などの個体別フィールド（アクセサ経由で読み書き）
 }; }
 let BIRDS=[newBird()];
@@ -3753,7 +3793,7 @@ function CUR(){ return BIRDS[BIRD_IDX]; }
 });
 // SCREENS._〜 のうち「1個体に属する状態」も入れ物へ経由させる。
 // （_dirty や飛翔画面・一覧画面のものは個体の状態ではないので対象外）
-[ 'audio','media','ghost' ].forEach(function(k){
+[ 'audio','media','envMedia','nestMedia','ghost' ].forEach(function(k){
   Object.defineProperty(SCREENS, '_'+k, {
     configurable:true,
     get(){ return CUR().media[k]; },
@@ -5978,6 +6018,9 @@ function saveObs(u, svUuid, editing, cont){
     confidence: segVal('confidence'), needs_review: $('#needsReview').checked,
     note: g('note'), external_photo_reference: g('external_photo_reference'),
     audio: SCREENS._audio||[], media: SCREENS._media||[],
+    // 環境・営巣木それぞれの写真とメモ（2026-08-14 追加）
+    env_media: SCREENS._envMedia||[], nest_media: SCREENS._nestMedia||[],
+    env_note: g('env_note'), nest_note: g('nest_note'),
     // 同一個体の目印。飛翔経路と行き来したときに引き継ぐ（画面で触れないので既存値を持ち越す）。
     // 「飛翔経路を描く」で出ていくときは、まだ目印が無ければここで発行して両方の記録に同じ値を入れる
     individual_key: (SCREENS._obs&&SCREENS._obs.individual_key)||((base||{}).individual_key||'')
@@ -6144,7 +6187,11 @@ function saveObs(u, svUuid, editing, cont){
     }
     else if(editing && !uClaimed && !assignedU){ r2=rec; assignedU=true; }   // 開いた記録（位置なしだった）に最初の新しいPを割り当てる
     else if(!editing && i===0){ r2=rec; }
-    else { r2=Object.assign({}, rec, { uuid:uuid(), audio:[], media:[] }); }
+    // **写真の欄は3つとも空にする**（2026-08-14 監査3巡目 Critical）。
+    // 同じIDを写しに入れると、1枚の写真を2つの記録が指すことになり、
+    // 片方を消したときにもう片方が壊れる・書き出しで二重に出る
+    else { r2=Object.assign({}, rec,
+      { uuid:uuid(), audio:[], media:[], env_media:[], nest_media:[] }); }
     r2.individual_key = indKey;
     if(editing && !sg.srcUuid){
       // 新しく作る記録に、開いた記録の古い観察者位置を写さない
@@ -6728,6 +6775,7 @@ function saveObs(u, svUuid, editing, cont){
       if(!saveJournalClear()){ saveFatalHalt('保存の控えを片付けられませんでした。'); return true; }
       if(name) DB.pushRecent(name);
       SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
+      SCREENS._envMedia=null; SCREENS._nestMedia=null;
       SCREENS._dirty=false; SCREENS._ghost=null;
       PF_SEGS=[]; PF_NEWLINE=true;
       toast(flRecs.length ? ('飛翔経路を'+flRecs.length+'本保存しました') : '経路を削除しました');
@@ -6893,6 +6941,7 @@ function saveObs(u, svUuid, editing, cont){
   if(name) DB.pushRecent(name);
   const keep={ lat:rec.latitude, lon:rec.longitude, acc:rec.gps_accuracy };   // 「続けて」用に、保存した位置と精度をそのまま引き継ぐ
   SCREENS._acc=null; SCREENS._chosenId=null; SCREENS._audio=null; SCREENS._media=null;
+  SCREENS._envMedia=null; SCREENS._nestMedia=null;
   SCREENS._dirty=false; SCREENS._ghost=null;   // 保存済みなので離脱ガード対象から外す
   if(reasons.length) toast((rec.needs_review?'保存しました ⚠ 要確認を付けました: ':'保存しました（⚠ ')+reasons.join('・')+(rec.needs_review?'':'）'), 4000);
   else toast('保存しました');
@@ -7218,7 +7267,32 @@ function delAudio(id){
 }
 // メディアの持ち主（観察 or 飛翔）。飛翔画面では SCREENS._mediaCtx を設定する
 function mediaCtx(){ return SCREENS._mediaCtx || { kind:'obs', uuid:(SCREENS._obs&&SCREENS._obs.uuid)||'', sv:(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid }; }
-function mediaTarget(){ const c=mediaCtx(); return { kind:c.kind, uuid:c.uuid, sv:c.sv||currentSurveyUuid }; }
+/* 写真をどの記録に付けるか。
+   **環境・営巣木の写真は必ず「観察」に付ける**（2026-08-14 監査4巡目 Critical）。
+   飛翔経路を軸に開いた画面では持ち主が飛翔になるが、飛翔の記録には
+   環境・営巣木の欄が無く、掃除・同期・一覧もそこを見ないので、
+   実体が「どこからも使われていない」と判断されて消える */
+function mediaTarget(field){
+  const c=mediaCtx();
+  if(field==='env_media' || field==='nest_media'){
+    return { kind:'obs', uuid:(SCREENS._obs&&SCREENS._obs.uuid)||'',
+             sv:(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid };
+  }
+  return { kind:c.kind, uuid:c.uuid, sv:c.sv||currentSurveyUuid };
+}
+/* いま画面に出ている相手かどうか。**欄によって見る相手が違う**
+   （2026-08-14 監査5巡目 Critical）。
+   環境・営巣木の写真は必ず観察に付く（mediaTarget 参照）ので、
+   飛翔を軸に開いた画面でも「画面の観察」と比べる。ここを mediaCtx のままにすると、
+   データベースには入るのに画面の控えに入らず、次の保存で参照が消える */
+function mediaOnScreen(target, field){
+  if(field==='env_media' || field==='nest_media'){
+    return target.kind==='obs' && !!target.uuid
+      && target.uuid===((SCREENS._obs&&SCREENS._obs.uuid)||'');
+  }
+  const cur=mediaCtx();
+  return cur.kind===target.kind && cur.uuid===target.uuid;
+}
 // 対象レコード(target)へメディアmetaを追記。保存済みならDBへ直接反映し、
 // 現在画面が同じ対象の時だけ編集中配列とパネルを更新する（別記録への誤添付・誤表示を防ぐ）
 function attachMediaMeta(target, field, meta){
@@ -7252,15 +7326,16 @@ function attachMediaMeta(target, field, meta){
     const ftr=SCREENS._ftracks.find(t=>t&&t.uuid===target.uuid);
     if(ftr && ftr.fields) ftr.fields[field]=(ftr.fields[field]||[]).concat([meta]);
   }
-  const cur=mediaCtx();
-  if(ok && cur.kind===target.kind && cur.uuid===target.uuid){
+  if(ok && mediaOnScreen(target, field)){
     // 「未保存の新規記録」への追加だけを離脱ガード対象にする（既存記録へのメディアは即DB保存済み＝離脱しても消えないため）
     const isNew = target.kind==='flight' ? (SCREENS._flightEditing===false && SCREENS._flightSelf===target.uuid)
                                          : (SCREENS._obsEditing===false && SCREENS._obs && SCREENS._obs.uuid===target.uuid);
     if(isNew){ SCREENS._dirty=true;
       SCREENS._ghost={ key:(target.kind==='flight'?DB.key.fl:DB.key.ob), uuid:target.uuid }; }
     if(field==='audio'){ SCREENS._audio=(SCREENS._audio||[]).concat([meta]); renderRecPanel(); }
-    else { SCREENS._media=(SCREENS._media||[]).concat([meta]); renderMediaPanel(); } }
+    else { const spec=MEDIA_FIELDS[field]||MEDIA_FIELDS.media;
+      SCREENS[spec.arr]=(SCREENS[spec.arr]||[]).concat([meta]);
+      renderMediaPanel(MEDIA_FIELDS[field]?field:'media'); } }
   return ok;
 }
 function detachMediaMeta(target, field, id){
@@ -7271,10 +7346,11 @@ function detachMediaMeta(target, field, id){
     if(i>=0){ list[i][field]=(list[i][field]||[]).filter(x=>x.id!==id);
       saved = target.kind==='flight' ? !!DB.upsertFlight(list[i]) : !!DB.upsertObs(list[i]);
       if(!saved) return false; } }
-  const cur=mediaCtx();
-  if(cur.kind===target.kind && cur.uuid===target.uuid){
+  if(mediaOnScreen(target, field)){
     if(field==='audio'){ SCREENS._audio=(SCREENS._audio||[]).filter(x=>x.id!==id); renderRecPanel(); }
-    else { SCREENS._media=(SCREENS._media||[]).filter(x=>x.id!==id); renderMediaPanel(); } }
+    else { const spec=MEDIA_FIELDS[field]||MEDIA_FIELDS.media;
+      SCREENS[spec.arr]=(SCREENS[spec.arr]||[]).filter(x=>x.id!==id);
+      renderMediaPanel(MEDIA_FIELDS[field]?field:'media'); } }
   return saved;
 }
 // パネル再構築や画面遷移の前に、割り当て済みのObject URLをまとめて解放する（メモリリーク防止）
@@ -7315,11 +7391,27 @@ function fileExt(name, mime){
 // 遅れて完了した分の持ち主が居なくなるため、その間は切り替え・保存を止める
 let MEDIA_PENDING=0;
 function mediaBusy(){ return MEDIA_PENDING>0; }
+/* 写真・動画をどの欄に付けるか。
+   'media'      … 観察のメディア記録（今までどおり）
+   'env_media'  … 環境の写真（2026-08-14 追加）
+   'nest_media' … 営巣木・巣の写真（同）
+   **欄ごとに分けて持つ**。ひとまとめにすると、後から「どれが営巣木の写真か」が
+   分からなくなる（報告書では別々に使う） */
+const MEDIA_FIELDS={
+  media:      { arr:'_media',     panel:'mediaPanel',     label:'写真・動画' },
+  env_media:  { arr:'_envMedia',  panel:'envMediaPanel',  label:'環境の写真' },
+  nest_media: { arr:'_nestMedia', panel:'nestMediaPanel', label:'営巣木の写真' },
+};
+function mediaFieldOf(input){
+  const f=(input && input.dataset && input.dataset.field) || 'media';
+  return MEDIA_FIELDS[f] ? f : 'media';
+}
 function pickMedia(input){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY){ toast('保存の処理中です。少し待ってください'); input.value=''; return; }
   const files=Array.from(input.files||[]); input.value='';
   if(!files.length) return;
-  const target=mediaTarget();   // 取り込み開始時点の対象を固定
+  const field=mediaFieldOf(input);          // どの欄の写真か（取り込み開始時点で固定）
+  const target=mediaTarget(field);   // 取り込み開始時点の対象を固定
   // 未保存の新規記録なら、保存完了を待たずこの時点でガード対象にする（完了前に離脱してもすり抜けない）
   if((target.kind==='obs' && SCREENS._obsEditing===false && SCREENS._obs && SCREENS._obs.uuid===target.uuid) ||
      (target.kind==='flight' && SCREENS._flightEditing===false && SCREENS._flightSelf===target.uuid)){
@@ -7334,7 +7426,7 @@ function pickMedia(input){
     const meta={ id:uuid(), kind, mime:f.type||'', ext:fileExt(f.name,f.type), size:f.size, name:f.name||'', created_at:nowISO() };
     // 1件ずつ、成功したものだけ確実に反映（1件失敗しても成功分は残る）
     return PhotoDB.put(Object.assign({}, meta, { blob:f }, owner))
-      .then(()=>{ if(attachMediaMeta(target,'media',meta)) ok++; else fail++; })   // 紐付け失敗も失敗として数える
+      .then(()=>{ if(attachMediaMeta(target,field,meta)) ok++; else fail++; })   // 紐付け失敗も失敗として数える
       .catch(()=>{ fail++; });
   });
   MEDIA_PENDING++;
@@ -7342,43 +7434,50 @@ function pickMedia(input){
     MEDIA_PENDING=Math.max(0, MEDIA_PENDING-1);
     if(DISCARDED.has(target.uuid)){ mediaGcAll().catch(()=>{}); return; }   // 取り込み中に破棄された→結果は捨てて実体も掃除
     scheduleFolderFull();
-    if(fail) toast(`写真・動画：${ok}件追加・${fail}件失敗`); else toast('写真・動画を追加しました'); });
+    const 名=MEDIA_FIELDS[field].label;
+    if(fail) toast(`${名}：${ok}件追加・${fail}件失敗`); else toast(`${名}を追加しました`); });
 }
-function delMedia(id){
+function delMedia(id, field){
   if(!writeAllowed()) return;
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY){ toast('保存の処理中です。少し待ってください'); return; }
-  const target=mediaTarget();
-  if(!detachMediaMeta(target,'media',id)){ toast('削除できませんでした（空き容量を確認してください）'); return; }
+  field=MEDIA_FIELDS[field]?field:'media';
+  const target=mediaTarget(field);
+  if(!detachMediaMeta(target,field,id)){ toast('削除できませんでした（空き容量を確認してください）'); return; }
   PhotoDB.gc().catch(()=>{}).then(()=>scheduleFolderFull());
   toast('この記録から外しました');
 }
-function renderMediaPanel(){
-  const box=$('#mediaPanel'); if(!box) return;
+function renderMediaPanel(field){
+  // 欄を指定しなければ、ある欄をぜんぶ描き直す
+  if(!field){ Object.keys(MEDIA_FIELDS).forEach(f=>renderMediaPanel(f)); return; }
+  const spec=MEDIA_FIELDS[field]; if(!spec) return;
+  const box=$('#'+spec.panel); if(!box) return;
   revokePanelUrls(box, '.mediael');   // 再構築前に古いObject URLを解放（リーク防止）
-  const list=SCREENS._media||[];
+  const list=SCREENS[spec.arr]||[];
+  const 動画あり=(field==='media');   // 環境・営巣木は写真だけ（動画は観察側にまとめる）
   // ラベル直結＋capture属性で、端末のカメラを確実に起動（撮影と選択を分離）
   const HID='position:absolute; width:1px; height:1px; opacity:0; overflow:hidden;';
+  const id=n=>field==='media'?n:field+'_'+n;
   box.innerHTML=`
-    <input type="file" id="mediaCamPhoto" accept="image/*" capture="environment" style="${HID}" onchange="pickMedia(this)">
-    <input type="file" id="mediaCamVideo" accept="video/*" capture="environment" style="${HID}" onchange="pickMedia(this)">
-    <input type="file" id="mediaLib" accept="image/*,video/*" multiple style="${HID}" onchange="pickMedia(this)">
+    <input type="file" id="${id('mediaCamPhoto')}" data-field="${field}" accept="image/*" capture="environment" style="${HID}" onchange="pickMedia(this)">
+    ${動画あり?`<input type="file" id="${id('mediaCamVideo')}" data-field="${field}" accept="video/*" capture="environment" style="${HID}" onchange="pickMedia(this)">`:''}
+    <input type="file" id="${id('mediaLib')}" data-field="${field}" accept="${動画あり?'image/*,video/*':'image/*'}" multiple style="${HID}" onchange="pickMedia(this)">
     <div class="btn-grid">
-      <label class="btn" for="mediaCamPhoto">📷 写真を撮る</label>
-      <label class="btn" for="mediaCamVideo">🎬 動画を撮る</label>
-      <label class="btn" for="mediaLib">🖼 ライブラリから選ぶ</label>
-      ${document.getElementById('obForm')?`<button type="button" class="btn ghost" id="voiceBtnWrap" onclick="voiceDockToggle()">🎙 音声で入力</button>`:''}
+      <label class="btn" for="${id('mediaCamPhoto')}">📷 写真を撮る</label>
+      ${動画あり?`<label class="btn" for="${id('mediaCamVideo')}">🎬 動画を撮る</label>`:''}
+      <label class="btn" for="${id('mediaLib')}">🖼 ライブラリから選ぶ</label>
+      ${(動画あり && document.getElementById('obForm'))?`<button type="button" class="btn ghost" id="voiceBtnWrap" onclick="voiceDockToggle()">🎙 音声で入力</button>`:''}
     </div>
     ${list.length?`<div class="mediagrid">${list.map(m=>`
       <div class="mediaitem" data-id="${m.id}">
         <div class="mediathumb">${m.kind==='video'
           ? '<video class="mediael" controls preload="metadata"></video>'
           : '<img class="mediael" alt="写真">'}</div>
-        <button type="button" class="mediadel" onclick="delMedia('${m.id}')">×</button>
+        <button type="button" class="mediadel" onclick="delMedia('${m.id}','${field}')">×</button>
         <div class="tiny muted mediacap">${m.kind==='video'?'🎬 動画':'📷 写真'} ・ ${Math.max(1,Math.round(m.size/1024))}KB</div>
       </div>`).join('')}</div>`:''}`;
-  const gen=++_mediaGen;
+  const gen=++_mediaGenBy[field];
   list.forEach(m=>{ PhotoDB.get(m.id).then(r=>{ if(!r||!r.blob) return;
-    if(gen!==_mediaGen) return;
+    if(gen!==_mediaGenBy[field]) return;
     const el=box.querySelector(`.mediaitem[data-id="${m.id}"] .mediael`); if(!el||!el.isConnected) return;
     if(el._url) URL.revokeObjectURL(el._url); el._url=URL.createObjectURL(r.blob); el.src=el._url;
   }).catch(()=>{}); });
@@ -9277,6 +9376,12 @@ function drawMap(obs,notes,flights,targets,route,nests){
         const mid=pointAtHalf(disp);
         if(mid) L.marker(mid,{icon:attackIcon(col), interactive:false}).addTo(mapObj);
       }
+      // 威嚇行動はギザギザ（線の中ほど）。攻撃の × と同じ置き方
+      if(kind===LINE_THREAT && disp.length>1){
+        const mid=pointAtHalf(disp);
+        if(mid) L.marker(mid,{icon:threatIcon(bearingAtHalf(disp), col),
+          interactive:false, rotateWithView:true}).addTo(mapObj);
+      }
       if(endsOn){
         const badge=(txt,bg)=>L.divIcon({className:'',html:`<div style="background:${bg};border:2px solid #fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.5)">${txt}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
         L.marker(path[0],{icon:badge('始','#3fb984')}).addTo(mapObj);
@@ -9356,6 +9461,7 @@ function flightArrowIcon(bearing, col, double2){
    →    飛翔経路（ふつう）
    ↠    急降下（ハンティング）… 終わりに1つだけ
    →×→  攻撃 … 線の中ほどに ×
+   ∿→   威嚇行動 … 線の中ほどにギザギザ（藻琴川・東農大資料の凡例。2026-08-14 追加）
    →    歩行経路 … 実線。**同じ図に歩行があるときは、飛翔を点線にして分ける**
         （タンチョウの図の流儀。猛禽だけの図では飛翔が実線なので、常に点線にはしない）
 
@@ -9363,11 +9469,12 @@ function flightArrowIcon(bearing, col, double2){
    含むので、これで両方に当たる）。2026-08-12、Ht(狩り) だけを見ていて当たらなかった。
    1本の線に複数の行動が付くことがあるので、**強い順に1つだけ**選ぶ。 */
 const DIVE_BEHAVIORS=['急降下','狩り'];
-const LINE_DIVE='急降下', LINE_ATTACK='攻撃', LINE_WALK='歩行';
+const LINE_DIVE='急降下', LINE_ATTACK='攻撃', LINE_THREAT='威嚇', LINE_WALK='歩行';
 function lineKind(f){
   const b=String((f&&f.behavior)||'');
   if(DIVE_BEHAVIORS.some(x=>b.includes(x))) return LINE_DIVE;
   if(b.includes(LINE_ATTACK)) return LINE_ATTACK;
+  if(b.includes(LINE_THREAT)) return LINE_THREAT;
   if(b.includes(LINE_WALK)) return LINE_WALK;
   return '';
 }
@@ -9391,12 +9498,44 @@ function pointAtHalf(path){
   }
   return p[p.length-1];
 }
+/* 線の「長さの半分」の位置での**進む向き**。威嚇のギザギザを線に沿わせるのに使う。
+   ギザギザは横向きの絵なので、回さないと南北の線で横倒しになる */
+function bearingAtHalf(path){
+  const p=(path||[]).filter(validPathPt);
+  if(p.length<2) return 90;
+  const total=pathLength(p);
+  if(!(total>0)) return bearingDeg(p[0],p[p.length-1]);
+  let acc=0;
+  for(let i=1;i<p.length;i++){
+    const seg=distMeters(p[i-1],p[i]);
+    if(acc+seg>=total/2) return bearingDeg(p[i-1],p[i]);
+    acc+=seg;
+  }
+  return bearingDeg(p[p.length-2],p[p.length-1]);
+}
 // 攻撃の × の印（線の中ほどに置く）
 function attackIcon(col){
   return L.divIcon({className:'', iconSize:[16,16], iconAnchor:[8,8],
     html:`<svg width="16" height="16" viewBox="0 0 16 16" style="display:block;">
       <path d="M3 3 L13 13 M13 3 L3 13" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
       <path d="M3 3 L13 13 M13 3 L3 13" fill="none" stroke="${col}" stroke-width="2" stroke-linecap="round"/>
+    </svg>`});
+}
+/* 威嚇行動のギザギザ（線の中ほどに置く）。藻琴川・東農大資料の凡例に合わせた。
+   **線に沿って回す**。回さないと、南北に飛んだ線でギザギザが横倒しになる。
+   回し方は矢印と同じ流儀（SVGの中で回す。iOS Safari で中心がずれないため） */
+function threatIcon(bearing, col){
+  // **横長にして山を3つ**（2026-08-14）。小さいと線の飾りに埋もれて、
+  // 報告書の凡例の「威嚇行動」に見えない。回すぶんの余白を見て、
+  // 描く箱は正方形（28×28）にし、その中に横長の記号を置く
+  const d='M2 14 L6 8 L10 20 L14 8 L18 20 L22 8 L26 14';
+  const line=(w,c)=>`<path d="${d}" fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`;
+  return L.divIcon({className:'', iconSize:[28,28], iconAnchor:[14,14],
+    html:`<svg width="28" height="28" viewBox="0 0 28 28" style="display:block;">
+      <g transform="rotate(${Math.round((bearing-90)*10)/10} 14 14)">
+        ${line(5,'#fff')}
+        ${line(2.2,col)}
+      </g>
     </svg>`});
 }
 // ◎（旋回上昇）の内側の輪の割合
@@ -9748,18 +9887,23 @@ function galleryItems(){
   const take=(owner, ownerType)=>{
     const s=svMap[owner.survey_uuid]; if(!s) return;   // 削除済み調査のものは出さない
     const when=(ownerType==='obs' ? owner.observed_at : owner.start_time)||'';
-    const add=(m, store)=>{
+    const add=(m, store, 欄)=>{
       if(!m||!m.id) return; const key=store+':'+m.id;
       if(seen.has(key)) return; seen.add(key);
       const w=when || m.created_at || '';
       const t=Date.parse(w);   // 保存形式（UTC/端末時刻）が混在しても正しく並ぶよう数値化して比較する
       items.push({ store, id:m.id, kind:(store==='audio'?'audio':(m.kind||'photo')),
-        when:w, t:isNaN(t)?0:t, dur:m.dur,
+        when:w, t:isNaN(t)?0:t, dur:m.dur, field:欄||'media',
         species:owner.species_name_snapshot||'', svUuid:s.uuid, svName:s.name||'',
         ownerType, ownerUuid:owner.uuid });
     };
-    (owner.audio||[]).forEach(m=>add(m,'audio'));
-    (owner.media||[]).forEach(m=>add(m,'media'));
+    (owner.audio||[]).forEach(m=>add(m,'audio','audio'));
+    (owner.media||[]).forEach(m=>add(m,'media','media'));
+    // 環境・営巣木の写真も一覧に出す。出さないと「撮ったのに見当たらない」になる
+    if(ownerType==='obs'){
+      (owner.env_media||[]).forEach(m=>add(m,'media','env_media'));
+      (owner.nest_media||[]).forEach(m=>add(m,'media','nest_media'));
+    }
   };
   DB.observations().forEach(o=>take(o,'obs'));
   DB.flights().forEach(f=>take(f,'flight'));
@@ -10707,8 +10851,12 @@ function buildZip(files){
   parts.push(new Uint8Array(end));
   return new Blob(parts,{type:'application/zip'});
 }
-function mediaFilename(o,i,m){ const k=(m&&m.kind==='video')?'video':'photo';
-  return `${o.uuid}_${k}${i+1}.${(m&&m.ext)||(k==='video'?'mp4':'jpg')}`; }
+/* 写真・動画のファイル名。**どの欄の写真かを名前に入れる**
+   （2026-08-14 追加）。フォルダに並んだときに、環境の写真か営巣木の写真かを
+   名前だけで見分けられるようにするため */
+function mediaFilename(o,i,m,field){ const k=(m&&m.kind==='video')?'video':'photo';
+  const pre=field==='env_media'?'env_':(field==='nest_media'?'nest_':'');
+  return `${o.uuid}_${pre}${k}${i+1}.${(m&&m.ext)||(k==='video'?'mp4':'jpg')}`; }
 function flightAudioFilename(f,i,a){ return `flight_${f.uuid}_${i+1}.${(a&&a.ext)||'webm'}`; }
 function flightMediaFilename(f,i,m){ const k=(m&&m.kind==='video')?'video':'photo';
   return `flight_${f.uuid}_${k}${i+1}.${(m&&m.ext)||(k==='video'?'mp4':'jpg')}`; }
@@ -10717,7 +10865,9 @@ async function exportMediaZip(surveys, base){
   const audioItems=[], mediaItems=[], flAudioItems=[], flMediaItems=[];
   surveys.forEach(s=>{ DB.obsOf(s.uuid).forEach(o=>{
     (o.audio||[]).forEach((a,i)=>audioItems.push({s,o,a,i}));
-    (o.media||[]).forEach((m,i)=>mediaItems.push({s,o,m,i}));
+    (o.media||[]).forEach((m,i)=>mediaItems.push({s,o,m,i,field:'media'}));
+    (o.env_media||[]).forEach((m,i)=>mediaItems.push({s,o,m,i,field:'env_media'}));
+    (o.nest_media||[]).forEach((m,i)=>mediaItems.push({s,o,m,i,field:'nest_media'}));
   });
   DB.flightsOf(s.uuid).forEach(f=>{
     (f.audio||[]).forEach((a,i)=>flAudioItems.push({s,f,a,i}));
@@ -10742,7 +10892,7 @@ async function exportMediaZip(surveys, base){
   for(const it of mediaItems){
     let r; try{ r=await PhotoDB.get(it.m.id); }catch(e){ r=null; }
     if(!r||!r.blob) continue;
-    const name=mediaFilename(it.o,it.i,it.m);
+    const name=mediaFilename(it.o,it.i,it.m,it.field);
     files.push({ name, u8:new Uint8Array(await r.blob.arrayBuffer()) });
     idxRows.push([name,(it.m.kind==='video'?'動画':'写真'),csvCell(it.s.name),isoLocal(it.o.observed_at),csvCell(it.o.species_name_snapshot),it.o.latitude,it.o.longitude].join(','));
   }
@@ -10784,7 +10934,9 @@ const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','survey_
   'nest_latitude','nest_longitude',
   // individual_label: 同じ鳥を追い続けたときの呼び名。同じ調査・同じ種で同じ名前なら
   // individual_key も同じ値になり、集計では1羽として数える。**必ず末尾に足す**
-  'individual_label'];
+  'individual_label',
+  // 環境・営巣木それぞれの写真とメモ（2026-08-14 追加）。**必ず末尾に足す**
+  'env_media_file','nest_media_file','env_note','nest_note'];
 function csvCell(v){ v=v==null?'':String(v);
   // 数式インジェクション対策は「数値でない」文字列にだけ適用する。
   // 負の緯度経度(-73.98)や個体数を ' 付きの文字列に変えてGIS/R/Pythonの数値処理を壊さないため。
@@ -10818,7 +10970,10 @@ function buildRows(surveys){
       identification_status:o.identification_status,
       confidence:o.confidence, needs_review:o.needs_review?1:0, note:o.note,
       audio_file:(o.audio||[]).map((a,i)=>audioFilename(o,i,a)).join(';'),
-      media_file:(o.media||[]).map((m,i)=>mediaFilename(o,i,m)).join(';'),
+      media_file:(o.media||[]).map((m,i)=>mediaFilename(o,i,m,'media')).join(';'),
+      env_media_file:(o.env_media||[]).map((m,i)=>mediaFilename(o,i,m,'env_media')).join(';'),
+      nest_media_file:(o.nest_media||[]).map((m,i)=>mediaFilename(o,i,m,'nest_media')).join(';'),
+      env_note:o.env_note||'', nest_note:o.nest_note||'',
       external_photo_reference:o.external_photo_reference });
   });});
   return rows;
@@ -11644,13 +11799,34 @@ async function gdriveFetchRaw(path, token){
 // 同期対象のメディア一覧＝「観察・飛翔レコードが参照している録音・写真・動画」。
 // 図鑑の切り抜き画像や資料PDFはレコードから参照されないため、この集め方だと自然に対象外になる。
 // 読取失敗時は例外（壊れた状態で同期して他端末を巻き込まないため）
+/* **古い版の端末・古い控えが持っていない項目は、こちらの値を残す**
+   （2026-08-14 監査 Critical）。
+   v219 で足した「環境・営巣木の写真とメモ」は、v218 以前の記録には項目そのものが
+   無い。丸ごと置き換えると、古い端末で直して送る／古い控えを取り込むだけで
+   写真とメモが消える（そのあと掃除で実体まで失われる）。
+   **項目が有って空**なら「消した」という意思なので、そのまま尊重する。
+   無い（undefined）ときだけ引き継ぐ。同期・控えの取り込みの両方で使う */
+const NEW_OBS_FIELDS=['env_media','nest_media','env_note','nest_note'];
+function keepNewFields(mine, theirs){
+  if(!mine || !theirs) return theirs;
+  let out=theirs;
+  NEW_OBS_FIELDS.forEach(f=>{
+    if(theirs[f]===undefined && mine[f]!==undefined){
+      if(out===theirs) out=Object.assign({}, theirs);
+      out[f]=mine[f];
+    }
+  });
+  return out;
+}
 function collectMediaRefs(){
   const refs=[]; const seen=new Set();
   const take=(owner, ownerType, field, store)=>{ (owner[field]||[]).forEach(m=>{
     if(m && m.id && !seen.has(store+':'+m.id)){ seen.add(store+':'+m.id);
       refs.push({ store, id:m.id, ext:m.ext||'', mime:m.mime||'',
         kind:(store==='audio'?'audio':(m.kind||'photo')), meta:m, ownerType, ownerUuid:owner.uuid }); } }); };
-  DB.loadRaw(DB.key.ob).forEach(o=>{ take(o,'obs','audio','audio'); take(o,'obs','media','media'); });
+  // 観察は写真の欄が3つ。足し忘れると、環境・営巣木の写真だけドライブに上がらない
+  DB.loadRaw(DB.key.ob).forEach(o=>{ take(o,'obs','audio','audio'); take(o,'obs','media','media');
+    take(o,'obs','env_media','media'); take(o,'obs','nest_media','media'); });
   DB.loadRaw(DB.key.fl).forEach(f=>{ take(f,'flight','audio','audio'); take(f,'flight','media','media'); });
   return refs;
 }
@@ -11822,7 +11998,13 @@ function mergeRemoteRecords(d){
     d[name].forEach(x=>{ if(!x || typeof x!=='object' || !x.uuid) return;
       const mine=byId[x.uuid];
       if(!mine){ if(!x.deleted_at){ byId[x.uuid]=x; changed++; } return; }
-      if(!newer(mine,x)){ byId[x.uuid]=x; changed++; }
+      // **勝ち負けのどちら向きでも補う**。こちらが新しくても、相手だけが
+      // 環境・営巣木を持っていることがある（相手が新しい版で入れて、
+      // こちらが古い版で直した場合）。片方向だけだと、次の同期で消えていく
+      //（2026-08-14 監査2巡目 Critical）
+      if(!newer(mine,x)){ byId[x.uuid]=keepNewFields(mine, x); changed++; }
+      else { const 補った=keepNewFields(x, mine);
+        if(補った!==mine){ byId[x.uuid]=補った; changed++; } }
     });
     for(const u in byId){ if(buried(byId[u])){ delete byId[u]; changed++; } }
     merged[key]=Object.values(byId);
@@ -12431,17 +12613,34 @@ function doImport(){
     const d=JSON.parse(rd.result);
     if(!importIdsOk(d)){ toast('このバックアップは形式が不正なため取り込めません'); return; }
     // 1) メディアを先に保存し、失敗したidを控える（実体の無い参照を記録に残さないため）
-    let ok=0, fail=0, total=0; const failed=new Set();
-    const putAll=async (arr, storeDB, mk)=>{ for(const it of (arr||[])){ if(!it||!it.b64){ if(it&&it.id) failed.add(it.id); continue; } total++;
+    // **録音と写真で失敗の入れ物を分ける**（2026-08-14 監査4巡目 Major）。
+    // 同じIDが両方にあると、片方の実体を見つけて「失敗ではない」と誤判定し、
+    // 実体の無い参照が残る
+    let ok=0, fail=0, total=0;
+    const failedAudio=new Set(), failedMedia=new Set();
+    const putAll=async (arr, storeDB, mk, failed)=>{ for(const it of (arr||[])){ if(!it||!it.b64){ if(it&&it.id) failed.add(it.id); continue; } total++;
       try{ await storeDB.put(mk(it)); ok++; }catch(e){ fail++; if(it.id) failed.add(it.id); } } };  // b64ToBlobの同期例外もここで捕捉
     await putAll(d.audio, AudioDB, a=>({ id:a.id, blob:b64ToBlob(a.b64,a.mime),
-      mime:a.mime, ext:a.ext, dur:a.dur, size:a.size, obs_uuid:a.obs_uuid, flight_uuid:a.flight_uuid, created_at:a.created_at }));
+      mime:a.mime, ext:a.ext, dur:a.dur, size:a.size, obs_uuid:a.obs_uuid, flight_uuid:a.flight_uuid, created_at:a.created_at }), failedAudio);
     await putAll(d.media, PhotoDB, m=>({ id:m.id, blob:b64ToBlob(m.b64,m.mime),
-      kind:m.kind, mime:m.mime, ext:m.ext, size:m.size, name:m.name, obs_uuid:m.obs_uuid, flight_uuid:m.flight_uuid, created_at:m.created_at }));
-    // 2) 記録側の audio[]/media[] から、保存に失敗したメディア参照を除く
+      kind:m.kind, mime:m.mime, ext:m.ext, size:m.size, name:m.name, obs_uuid:m.obs_uuid, flight_uuid:m.flight_uuid, created_at:m.created_at }), failedMedia);
+    // 2) 記録側の audio[]/media[] から、保存に失敗したメディア参照を除く。
+    // **ただし、その実体がこの端末に既にあるなら外さない**（2026-08-14 監査3巡目 Critical）。
+    // 控えの中身が壊れていただけで、こちらは正しく持っていることがある。
+    // そこで参照を消すと、正しい写真まで見えなくなり、掃除で実体も失われる
+    // **その入れ物の実体**が手元にあるなら、失敗から外す（同じIDでも別の入れ物は見ない）
+    for(const [failed, storeDB] of [[failedAudio, AudioDB], [failedMedia, PhotoDB]]){
+      for(const id of Array.from(failed)){
+        const 手元 = await storeDB.get(id).catch(()=>null);
+        if(手元 && 手元.blob) failed.delete(id);
+      }
+    }
     const clean=rec=>{ if(!rec) return rec;
-      if(Array.isArray(rec.audio)) rec.audio=rec.audio.filter(a=>a&&!failed.has(a.id));
-      if(Array.isArray(rec.media)) rec.media=rec.media.filter(m=>m&&!failed.has(m.id)); return rec; };
+      if(Array.isArray(rec.audio)) rec.audio=rec.audio.filter(a=>a&&!failedAudio.has(a.id));
+      // 写真の欄は3つ（観察・環境・営巣木）。数え漏らすと、実体の無い参照が残る
+      ['media','env_media','nest_media'].forEach(f=>{
+        if(Array.isArray(rec[f])) rec[f]=rec[f].filter(m=>m&&!failedMedia.has(m.id)); });
+      return rec; };
     (d.observations||[]).forEach(clean); (d.flights||[]).forEach(clean);
     // 2.5) 完全削除の記録（墓標）を合体し、墓標より古いレコードは取り込まない・残さない
     //（古いバックアップの取り込みで、完全削除したはずの記録が復活して同期で全端末に広がるのを防ぐ）
@@ -12455,7 +12654,11 @@ function doImport(){
     let saveOk=true;
     const merge=(key,arr)=>{ const cur=DB.load(key); const byId=Object.create(null);
       cur.forEach(x=>{ if(x&&x.uuid) byId[x.uuid]=x; });
-      (arr||[]).forEach(x=>{ if(x&&x.uuid) byId[x.uuid]=x; });
+      // **古い版のバックアップで、新しい項目を消さない**（2026-08-14 監査2巡目）。
+      // v218以前の控えには環境・営巣木の項目そのものが無い。丸ごと入れ替えると、
+      // いま持っている写真とメモの参照が消え、掃除で実体まで失われる
+      (arr||[]).forEach(x=>{ if(x&&x.uuid)
+        byId[x.uuid]=(key===DB.key.ob && byId[x.uuid]) ? keepNewFields(byId[x.uuid], x) : x; });
       if(!DB.save(key,Object.values(byId).filter(alive))) saveOk=false; };
     merge(DB.key.sv,d.surveys); merge(DB.key.ob,d.observations); merge(DB.key.nt,d.notes);
     merge(DB.key.hy,d.hypotheses); merge(DB.key.hr,d.hyp_results); merge(DB.key.fl,d.flights);
@@ -12495,7 +12698,7 @@ const SCAN_AUX = [
   ['recent',     DB.key.recent,   '最近使った種'],
 ];
 // 点検結果の表示用。recordIssuesが返す項目名を平易な言葉にする
-const FIELD_LABELS = { record:'記録全体', size:'記録の大きさ（上限超え）', repair_note:'修復メモ', uuid:'記録ID', id:'旧ID', survey_uuid:'調査への参照', individual_key:'同一個体の目印', nest_id:'巣の目印',
+const FIELD_LABELS = { env_media:'環境の写真', nest_media:'営巣木の写真', record:'記録全体', size:'記録の大きさ（上限超え）', repair_note:'修復メモ', uuid:'記録ID', id:'旧ID', survey_uuid:'調査への参照', individual_key:'同一個体の目印', nest_id:'巣の目印',
   hypothesis_uuid:'仮説への参照', ref_id:'図鑑参照', created_at:'作成日時', updated_at:'更新日時',
   deleted_at:'削除日時', audio:'録音の参照', media:'写真・動画の参照',
   survey_date:'調査日', start_datetime:'開始日時', end_datetime:'終了日時', observed_at:'観察日時',
@@ -12743,8 +12946,10 @@ async function buildRepairPlan(){
         x[f]='';
         act(`${d.label}: ${FIELD_LABELS[f]}を空にしました（元の値は記録内に控えあり）`);
       }
-      // 録音・写真・動画の参照
-      for(const f of ['audio','media']){
+      // 録音・写真・動画の参照。観察は写真の欄が3つ（観察・環境・営巣木）
+      for(const f of (name==='observations'
+            ? ['audio','media','env_media','nest_media'] : ['audio','media'])){
+        if(x[f]===undefined) continue;   // 古い記録には項目そのものが無い
         if(okMediaList(x[f])) continue;
         d.changed=true;
         if(!Array.isArray(x[f])){
