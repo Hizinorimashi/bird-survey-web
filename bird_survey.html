@@ -139,6 +139,11 @@
     background:var(--panel); color:var(--fg); border:1px solid var(--line);
     border-radius:10px; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
   .map-full-btn:active{background:var(--panel2);}
+  /* 全画面のときだけ出る「‹ 戻る」。地図の上でも読めるよう、はっきりした色にする */
+  .map-back-btn{width:auto; padding:8px 12px; font-size:13px; font-weight:700; white-space:nowrap;
+    background:var(--panel); color:var(--fg); border:1px solid var(--line);
+    border-radius:10px; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
+  .map-back-btn:active{background:var(--panel2);}
   /* 音声入力の種名候補。押して選ぶ（選ばれているものは塗りつぶし＋✓）。
      指で押す前提なので、小さくても縦の当たり判定は確保する */
   .voice-chip{display:inline-block; margin:2px 5px 2px 0; padding:6px 11px; font-size:13px; font-weight:700;
@@ -263,7 +268,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v219（2026-08-14 環境・営巣木の写真とメモ・威嚇行動・案内を1行に）';
+const APP_VERSION = 'v220（2026-08-14 全画面のときに「戻る」を出す）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3431,6 +3436,7 @@ function createBaseMap(elId, center, zoom, opts){
   m.on('baselayerchange', e=>{ try{ localStorage.setItem('bs_basemap', e.name); }catch(err){} });
   if(rotatable) addCompassControls(m);
   addFullscreenControl(m);
+  addBackControl(m);          // 全画面のときだけ出る「‹ 戻る」
   setTimeout(()=>{ try{ m.invalidateSize(); }catch(e){} },200);
   return m;
 }
@@ -3448,6 +3454,28 @@ const MAPFULL_MS=280;
 // 戻したときに地図の上下の余白が失われる（実測で8pxずれた）。必ず4辺それぞれで持つ
 const MAPFULL_PROPS=['position','marginTop','marginRight','marginBottom','marginLeft',
   'width','height','zIndex','top','left','right','bottom','transition','borderRadius','border'];
+/* 全画面のときだけ出す「‹ 戻る」（2026-08-14 実機で指摘）。
+   全画面にすると画面上の「‹ 戻る」ごと地図で覆われ、**画面から出られない**。
+   いったん「小さく」を押して、上まで戻して、それから「戻る」——では手間が多い。
+   押したときの動きは画面上の「戻る」と同じ（書きかけがあれば確認が出る）。
+   **先に全画面をやめてから戻る**（全画面のまま画面を変えると、地図が居座る） */
+function addBackControl(m){
+  const C=L.Control.extend({ onAdd:function(){
+    const b=L.DomUtil.create('button','map-back-btn');
+    b.type='button'; b.textContent='‹ 戻る'; b.title='前の画面に戻る';
+    b.style.display='none';   // 全画面のときだけ出す
+    L.DomEvent.disableClickPropagation(b);
+    L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>{
+      if(_mapFull) mapFullOff();
+      goBack();
+    });
+    return b; }});
+  new C({position:'topright'}).addTo(m);
+}
+// 全画面の出入りに合わせて「戻る」の出し隠れを切り替える
+function mapBackBtnSync(on){
+  document.querySelectorAll('.map-back-btn').forEach(b=>{ b.style.display=on?'':'none'; });
+}
 function addFullscreenControl(m){
   const C=L.Control.extend({ onAdd:function(){
     const b=L.DomUtil.create('button','map-full-btn');
@@ -3485,6 +3513,7 @@ function mapFullOn(m,btn){
   // 後ろのページを止めると読み位置が先頭に飛ぶ端末があるので、戻すときのために覚えておく
   const f={el, ph, prev, m, btn, esc, sy:window.scrollY||0, timers:[], closing:false, onres:null};
   _mapFull=f;
+  mapBackBtnSync(true);       // 全画面の間だけ「戻る」を出す
   mapFullBox(el, r);   // まず「いまと同じ見た目」で position:fixed にする
   el.classList.add('map-full');
   mapFullToolsOn(f);   // 入力の欄を地図の中へ移す（大きくしたまま入力できるように）
@@ -3510,6 +3539,7 @@ function mapFullOff(now){
   if(f.closing && !now) return;   // すでに閉じ中（二度押しは無視）
   mapFullClear(f);
   f.closing=true;
+  mapBackBtnSync(false);   // 全画面をやめたら「戻る」は隠す（画面上の戻るが出るため）
   if(f.btn){ try{ f.btn.textContent='⛶ 大きく'; f.btn.title='地図を画面いっぱいに広げる'; }catch(e){} }
   // 先にページの固定を解いて読み位置を戻す（戻り先の枠は、その状態で測らないとずれる）
   document.body.classList.remove('map-full-lock');
@@ -3568,6 +3598,7 @@ function mapFullToolsOff(f){
 function mapFullFinish(f){
   if(_mapFull!==f) return;
   _mapFull=null;
+  mapBackBtnSync(false);
   mapFullClear(f); mapFullResizeWatch(f, false);
   window.removeEventListener('keydown', f.esc);
   document.body.classList.remove('map-full-lock');
