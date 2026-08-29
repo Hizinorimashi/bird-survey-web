@@ -268,7 +268,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v221（2026-08-14 全画面のときに「↶ 1つ戻す」を出す）';
+const APP_VERSION = 'v222（2026-08-28 全体監査：記録の取り違え・見せかけの保存成功・書きかけの消失・圏外の詰まりを直す）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -423,6 +423,15 @@ const DB = {
   // 読取・JSON解析に失敗したら例外を投げる（「本当に空」と「読めない」を区別する版）。
   // GCやバックアップなど、空を鵜呑みにするとデータ喪失につながる処理はこちらを使う。
   loadRaw(k){ const s=localStorage.getItem(k); if(s==null||s==='') return []; return JSON.parse(s); },
+  // **書き込みのために読むときは、必ずこちら。** 読めなければ null を返し、
+  // 呼び出し側は何も書かずに中止する。寛容版(load)は「壊れている」も「空」も
+  // 同じ [] を返すので、その戻り値を保存すると残っていた記録を全部消してしまう
+  // （2026-08-28 全体監査 Critical。同じ形が保存・まとめて記録・取り込み・墓標に4か所）
+  loadForWrite(k){
+    let a; try{ a=this.loadRaw(k); }catch(e){ a=undefined;
+      try{ console.error('loadForWrite parse failed', k, e); }catch(_){} }
+    if(!Array.isArray(a)){ brokenDataWarn(k); return null; }
+    return a; },
   // 保存に失敗（多くは端末の空き容量不足）したら黙って失わせず、必ず警告する。成功時のみtrue。
   save(k,v){
     if(!writeAllowed()) return false;
@@ -443,40 +452,61 @@ const DB = {
   flights(){ return this.load(this.key.fl).filter(f=>!f.deleted_at); },
   flightsOf(svUuid){ return this.flights().filter(f=>f.survey_uuid===svUuid); },
   flight(u){ return this.load(this.key.fl).find(f=>f.uuid===u); },
-  upsertFlight(rec){ const a=this.load(this.key.fl); const i=a.findIndex(x=>x.uuid===rec.uuid);
+  upsertFlight(rec){ const a=this.loadForWrite(this.key.fl); if(!a) return false;
+    const i=a.findIndex(x=>x.uuid===rec.uuid);
     rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; return this.save(this.key.fl,a); },
   hypothesis(u){ return this.load(this.key.hy).find(h=>h.uuid===u); },
   resultsOf(hyUuid){ return this.hypResults().filter(r=>r.hypothesis_uuid===hyUuid); },
   survey(u){ return this.allSurveys().find(s=>s.uuid===u); },
-  upsertSurvey(rec){ const a=this.load(this.key.sv); const i=a.findIndex(x=>x.uuid===rec.uuid);
+  upsertSurvey(rec){ const a=this.loadForWrite(this.key.sv); if(!a) return false;
+    const i=a.findIndex(x=>x.uuid===rec.uuid);
     rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; return this.save(this.key.sv,a); },
-  upsertObs(rec){ const a=this.load(this.key.ob); const i=a.findIndex(x=>x.uuid===rec.uuid);
+  upsertObs(rec){ const a=this.loadForWrite(this.key.ob); if(!a) return false;
+    const i=a.findIndex(x=>x.uuid===rec.uuid);
     rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; return this.save(this.key.ob,a); },
-  upsertNote(rec){ const a=this.load(this.key.nt); const i=a.findIndex(x=>x.uuid===rec.uuid);
+  upsertNote(rec){ const a=this.loadForWrite(this.key.nt); if(!a) return false;
+    const i=a.findIndex(x=>x.uuid===rec.uuid);
     rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; return this.save(this.key.nt,a); },
-  upsertHyp(rec){ const a=this.load(this.key.hy); const i=a.findIndex(x=>x.uuid===rec.uuid);
+  upsertHyp(rec){ const a=this.loadForWrite(this.key.hy); if(!a) return false;
+    const i=a.findIndex(x=>x.uuid===rec.uuid);
     rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; return this.save(this.key.hy,a); },
-  upsertHypResult(rec){ const a=this.load(this.key.hr); const i=a.findIndex(x=>x.uuid===rec.uuid);
+  upsertHypResult(rec){ const a=this.loadForWrite(this.key.hr); if(!a) return false;
+    const i=a.findIndex(x=>x.uuid===rec.uuid);
     rec.updated_at=nowISO(); if(i<0){ rec.created_at=nowISO(); a.push(rec);} else a[i]=rec; return this.save(this.key.hr,a); },
   // updated_at も更新する（端末間同期は updated_at の新しい方を残すため、これが無いと削除・復元が他端末に伝わらない）。
   // 保存の成否を返す（容量不足で削除できていないのに「削除しました」と表示しないため）
-  softDelete(k,u){ const a=this.load(k); const i=a.findIndex(x=>x.uuid===u);
+  softDelete(k,u){ const a=this.loadForWrite(k); if(!a) return false;
+    const i=a.findIndex(x=>x.uuid===u);
     if(i>=0){ a[i].deleted_at=nowISO(); a[i].updated_at=nowISO(); return this.save(k,a); } return false; },
-  restore(k,u){ const a=this.load(k); const i=a.findIndex(x=>x.uuid===u);
+  restore(k,u){ const a=this.loadForWrite(k); if(!a) return false;
+    const i=a.findIndex(x=>x.uuid===u);
     if(i>=0){ delete a[i].deleted_at; a[i].updated_at=nowISO(); return this.save(k,a); } return false; },
   // 完全削除は「削除記録（墓標）」を残す。端末間同期で他端末にも完全削除を伝え、古いデータからの復活を防ぐため。
   // 墓標が保存できなければ本体も消さず、本体が消せなければ墓標も戻す（片方だけの中途半端な状態を残さない）。
   // 原本の読み取りは厳格版（読めない状態で寛容版の[]を保存すると、全記録を空で上書きしてしまうため）
-  hardDelete(k,u){ if(!tombstoneAdd(u)){ try{ toast('空き容量不足のため完全削除できませんでした'); }catch(e){} return false; }
-    let a; try{ a=this.loadRaw(k); }catch(e){ this._untomb(u);
-      try{ toast('データを読み取れないため完全削除を中止しました'); }catch(_){} return false; }
-    if(!this.save(k, a.filter(x=>x.uuid!==u))){ this._untomb(u); return false; }
+  hardDelete(k,u){
+    // **消す前の墓標を丸ごと控える。** 1件だけ取り消すやり方だと、
+    // もともと在った墓標まで消してしまう（監査1巡目 Critical）
+    const 元墓標=tombstonesForWrite();
+    if(!元墓標) return false;   // 読めない断りは brokenDataWarn が出している
+    if(!tombstoneAdd(u)){ try{ toast('空き容量不足のため完全削除できませんでした'); }catch(e){} return false; }
+    const a=this.loadForWrite(k); if(!a){ this._墓標を戻す(元墓標); return false; }
+    if(!this.save(k, a.filter(x=>x.uuid!==u))){ this._墓標を戻す(元墓標); return false; }
     return true; },
-  _untomb(u){ if(!tombstoneRemove(u)){   // 墓標を戻せないと、消していない記録が同期で消される恐れがあるため強く警告
-    try{ toast('⚠ 削除記録の取り消しに失敗しました。空き容量を確保し、この記録を開いて保存し直してください', 5000); }catch(e){} } },
+  // **丸ごと戻す**（完全削除に失敗したときの巻き戻し）。1件だけ外すのは tombstoneRemove。
+  // 用途を混ぜると、UUIDを渡された側が配列の検査に落ちて何も外せなくなる（監査4巡目 Critical）
+  _墓標を戻す(元墓標){ if(tombstonesSave(元墓標)) return true;
+    // **戻せないときは止める。** 消していない本体に削除記録だけが付いた状態で
+    // 操作を続けると、次の同期でその本体が消える（監査9巡目 Critical）
+    try{ saveFatalHalt('削除記録の取り消しに失敗しました。これ以上操作せず、'
+      +'設定の「記録の救出ファイル」を保存してください'); }
+    catch(e){ try{ toast('⚠ 削除記録の取り消しに失敗しました。これ以上操作せず、設定の「記録の救出ファイル」を保存してください', 10000); }catch(_){} }
+    return false; },
   deleted(k){ return this.load(k).filter(x=>x.deleted_at); },
   recentSpecies(){ return this.load(this.key.recent); },
-  pushRecent(name){ if(!name) return; let a=this.load(this.key.recent).filter(x=>x!==name);
+  pushRecent(name){ if(!name) return; const cur=this.loadForWrite(this.key.recent);
+    if(!cur) return;   // 読めないときは触らない（最近の種名のために全体を壊さない）
+    let a=cur.filter(x=>x!==name);
     a.unshift(name); a=a.slice(0,12); this.save(this.key.recent,a); },
 };
 
@@ -492,6 +522,13 @@ function tombstonesList(){ try{
 // 画面の無効化だけに頼ると、確認中や対応していないブラウザで別のタブと同時に書けてしまう。
 // 記録に関わる書き込みは必ずこの門を通す（DB.save・墓標・マイ図鑑・図鑑資料・メディア保存）。
 // 端末ごとの好み（テーマ・地図の表示設定・下書き）は記録ではないので対象外
+// 「読めない」ときの言い方は1か所に。何が起きたか・何をすればよいかまで言う
+function brokenDataWarn(k){
+  try{ toast('⚠ 保存されている記録を読み取れないため、書き込みを中止しました。'
+    +'上書きを避けるためです。設定の「記録の救出ファイル」を保存してからご相談ください', 8000);
+  }catch(_){}
+  try{ console.error('broken storage', k); }catch(_){}
+}
 function writeAllowed(){
   // 回復不能の停止中は最優先で拒否する（復旧の内部権限だけは通す）
   if(typeof SAVE_FATAL!=='undefined' && SAVE_FATAL && !window.RECOVERY_OK){
@@ -506,14 +543,40 @@ function writeAllowed(){
   }catch(_){}
   return false;
 }
+// 墓標も、書き足す前は厳しく読む。読めないまま1件だけ書くと、
+// それまでの完全削除がすべて無かったことになり、消した記録が同期で復活する
+function tombstonesForWrite(){
+  let a; try{ a=JSON.parse(localStorage.getItem('bs_tombstones')||'[]'); }
+  catch(e){ a=undefined; }
+  if(!Array.isArray(a)){ brokenDataWarn('bs_tombstones'); return null; }
+  // **おかしな1件を捨てて詰めない。** 捨てて保存すると、直せたはずの削除記録が消え、
+  // 完全削除したはずの記録が同期で復活する（監査1巡目 Critical）。
+  // 検査は**取り込み・同期と同じ okTombstone** を使う。ここだけ緩いと、
+  // at:'zzzz' のような日時が通り、比べ算で「いちばん新しい削除」と見なされて
+  // 生きている記録が消える（監査2巡目 Critical）
+  if(!a.every(okTombstone)){ brokenDataWarn('bs_tombstones'); return null; }
+  return a;
+}
 function tombstonesSave(a){ if(!writeAllowed()) return false;
+  // 書き込みの入口でも確かめる（呼び出し側の作り方に関わらず塞ぐ）
+  if(!Array.isArray(a) || !a.every(okTombstone)){ brokenDataWarn('bs_tombstones'); return false; }
   try{ localStorage.setItem('bs_tombstones', JSON.stringify(a)); return true; }catch(e){ return false; } }
 // 保存の成否を返す。falseのときは呼び出し側が完全削除を中止する（墓標なしで消すと他端末から復活してしまうため）
-function tombstoneAdd(uuid){ if(!uuid) return false; const a=tombstonesList();
-  if(!a.some(t=>t.uuid===uuid)) a.push({uuid, at:nowISO()});
+function tombstoneAdd(uuid){ if(!uuid) return false; const a=tombstonesForWrite();
+  if(!a) return false;
+  // すでに墓標があるときは**時刻を今にする**。古いままだと、削除後に作り直された
+  // 記録をもう一度消しても、同期先から復活してしまう（監査1巡目 Critical）
+  // **足す1件も同じ検査を通す。** 通らないものを書くと、以後この端末では
+  // 墓標が丸ごと「読めない」判定になり、完全削除・同期・取り込みが止まる（監査3巡目 Critical）
+  const 新しい={uuid, at:nowISO()};
+  if(!okTombstone(新しい)){ brokenDataWarn('bs_tombstones'); return false; }
+  const i=a.findIndex(t=>t.uuid===uuid);
+  if(i>=0) a[i]=新しい; else a.push(新しい);
   return tombstonesSave(a); }
 // 完全削除の巻き戻し用（本体の削除保存に失敗したとき、墓標だけ残さない）。成否を返す
-function tombstoneRemove(uuid){ return tombstonesSave(tombstonesList().filter(t=>t.uuid!==uuid)); }
+function tombstoneRemove(uuid){ const a=tombstonesForWrite();
+  if(!a) return false;
+  return tombstonesSave(a.filter(t=>t.uuid!==uuid)); }
 
 /* ---------- 録音・写真・動画の保存（IndexedDB：サイズが大きいためlocalStorageと分離） ---------- */
 /* ストア 'audio' = 録音 / 'media' = 写真・動画 */
@@ -1299,6 +1362,30 @@ function markDirtyIfGuarded(){ if(SCREENS._flLoading) return;
   const cur=STACK[STACK.length-1]||{};
   if(GUARD_SCREENS.indexOf(cur.name)>=0 || (cur.name==='surveyEdit' && SCREENS._editing)) SCREENS._dirty=true;
 }
+// **まだ保存していないものがあるか。** 画面を作り直してよいか、
+// 離れてよいかの判断をここ1か所に集める。render() は書きかけの印と仮記録の印を消し、
+// 録音も止めるので、入力中に走らせてはいけない（2026-08-28 全体監査 Critical）
+function hasUnsaved(){
+  // 録音の開始待ち・保存待ち、写真の取り込み中、保存の後処理中も「まだ終わっていない」。
+  // これを見ないと、添付の最中に再読み込みされて録音・写真を失う（監査8巡目 Critical）
+  if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return true;
+  if(typeof recBusy==='function' && recBusy()) return true;
+  if(typeof mediaBusy==='function' && mediaBusy()) return true;
+  if(REC || (typeof VREC!=='undefined' && VREC) || SCREENS._dirty) return true;
+  const cur=STACK[STACK.length-1]||{};
+  // 複数個体では、**開いている個体もふくめて全部**を見る。
+  // 開いている分を外すと、個体Aを書きかけ→Bを足す→Aに戻る、で見落とす（監査5巡目 Critical）
+  return cur.name==='obsEdit' && typeof BIRDS!=='undefined'
+    && BIRDS.some(b=>b && b.dirty);
+}
+// 裏で終わった処理から画面を作り直すときは、必ずこちらを呼ぶ
+function renderQuiet(){ if(hasUnsaved()) return; render(); }
+// アプリの中の移動だけでなく、**再読み込み・タブを閉じる・ブラウザの戻る**にも備える。
+// 現場でうっかり再読み込みすると、確認も戻す手立ても無く書きかけが消えていた
+window.addEventListener('beforeunload', e=>{
+  if(!hasUnsaved()) return;
+  e.preventDefault(); e.returnValue='';   // 文言はブラウザ既定（差し替えできない）
+});
 function leaveGuardOk(){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY){ toast('保存の処理中です。少し待ってください'); return false; }
   const cur=STACK[STACK.length-1]||{};
@@ -1575,18 +1662,51 @@ SCREENS.home = ()=>{
   };
 };
 // アプリ本体のプログラムだけを最新に読み込み直す（記録データは消さない）
-function forceUpdate(){
+async function forceUpdate(){
   if(!confirm('保存した記録（調査・観察・録音）はそのままで、アプリのプログラムだけを最新に読み込み直します。よろしいですか？')) return;
+  // **新しいプログラムが「入り切る」のを見届けてから読み込み直す。**
+  // 先に控えを消すやり方だと、圏外や電波の悪い所で押したときに
+  // 再読み込みの後アプリが開かなくなる（2026-08-28 全体監査 Major／監査1巡目 Major）。
+  // 取ってくるのはサービスワーカーに任せる（必要な部品が全部そろわなければ失敗する作り）
   const reload=()=>location.reload();
-  const tasks=[];
-  // このアプリのSW・キャッシュだけを対象にする（同一オリジンの別アプリを壊さない）
-  if('serviceWorker' in navigator){ tasks.push(navigator.serviceWorker.getRegistration()
-    .then(r=>r?r.unregister():null).catch(()=>{})); }
-  // bird-map-pack-*（オフライン地図の保存分）は意図的に消さない。利用者が明示的に保存した地図で、
-  // アプリの更新とは無関係のため（消すのは保存画面の「削除」からのみ）
-  if(window.caches){ tasks.push(caches.keys()
-    .then(ks=>Promise.all(ks.filter(k=>k.startsWith('bird-survey-')||k.startsWith('bird-map-tiles-')).map(k=>caches.delete(k)))).catch(()=>{})); }
-  Promise.all(tasks).then(reload, reload);
+  try{
+    if('serviceWorker' in navigator){
+      const reg=await navigator.serviceWorker.getRegistration();
+      if(reg){
+        const 前の=reg.active;
+        await reg.update();   // 取得＋入れ替えの準備。失敗すれば例外になる
+        const sw=reg.installing||reg.waiting||(reg.active!==前の?reg.active:null);
+        // 入れ替えるものが無い＝すでに新しいものが入っている場合。
+        // このとき画面だけ古いままのことがあるので、読み込み直す（監査6巡目 Major）。
+        // 控えは消していないので、圏外でも読み込み直して問題ない
+        if(!sw){ toast('すでに最新のプログラムです。読み込み直します'); reload(); return; }
+        // **入り切ったときだけ先へ進む。** 時間切れや失敗で読み込み直すと、
+        // 取れていない部品があるままアプリが開かなくなる（監査2巡目 Major）
+        if(sw) await new Promise((res,rej)=>{
+          let 済み=false;
+          const 終い=()=>{ 済み=true; clearTimeout(時計); sw.removeEventListener('statechange', 見る); };
+          const 見る=()=>{ if(済み) return;
+            // installed は「入った」だけで、まだ効いていない。効き始めるまで待つ
+            // （旧版のまま読み込み直すと、最新にしたつもりで古い画面が出る。監査4巡目 Major）
+            if(sw.state==='activated' && reg.active===sw){ 終い(); res(); }
+            else if(sw.state==='redundant'){ 終い(); rej(new Error('新しいプログラムを入れられませんでした')); } };
+          const 時計=setTimeout(()=>{ if(済み) return; 終い();
+            rej(new Error('時間内に取り込めませんでした')); }, 20000);
+          sw.addEventListener('statechange', 見る); 見る();
+        });
+        toast('最新のプログラムを取り込みました。読み込み直します'); reload(); return;
+      }
+    }
+    // サービスワーカーが無いときだけ、本体を直に取り直せるか確かめてから読み込み直す
+    const r=await fetch('./bird_survey.html?fu='+Date.now(), {cache:'no-store'});
+    if(!r.ok) throw new Error('status '+r.status);
+    const ct=(r.headers.get('content-type')||'').toLowerCase();
+    const t=await r.text();
+    if(ct.indexOf('html')<0 || t.indexOf('APP_VERSION')<0) throw new Error('取れたのはこのアプリの本体ではありません');
+    reload();
+  }catch(e){
+    toast('いま新しいプログラムを取ってこられません（電波の届く所でもう一度お試しください）。いまのアプリはそのまま使えます', 7000);
+  }
 }
 
 /* ============================================================
@@ -2237,7 +2357,10 @@ function resumeSurvey(u){ const s=DB.survey(u); if(!s) return;
   if(!DB.upsertSurvey(s)) return;
   toast('調査を再開しました'); render(); }
 function startSurvey(u){ if(!writeAllowed()) return; const s=DB.survey(u); if(!s) return;
-  s.status='調査中'; if(!s.start_datetime) s.start_datetime=nowISO(); DB.upsertSurvey(s);
+  s.status='調査中'; if(!s.start_datetime) s.start_datetime=nowISO();
+  // 保存できたときだけ「開始しました」と言う。容量不足で保存できないまま
+  // 現場へ出ると、開始時刻も調査中の状態も残らない（監査 Major）
+  if(!DB.upsertSurvey(s)) return;   // 失敗の断りは DB.save 側が出している
   toast('調査を開始しました'); render(); }
 
 /* GPS状態インジケータ（ヘッダの pill を更新） */
@@ -2656,10 +2779,15 @@ SCREENS.obsEdit = (argStr)=>{
   let revisit = SCREENS._birdKeep===true; SCREENS._birdKeep=false;
   if(!revisit && typeof BIRDS!=='undefined' && BIRDS.some(b=>b&&b.dirty)){
     // 内部フラグの無い再描画（同期後の render など）が書きかけの最中に走っても、
-    // 個体一覧を初期化して入力・仮記録の管理を失わない（切替と同じ復元の道を通す）
-    revisit=true;
+    // 個体一覧を初期化して入力・仮記録の管理を失わない（切替と同じ復元の道を通す）。
+    // ただし**別の調査**を開いたときは引き継がない。引き継ぐと、調査Aで入れた内容が
+    // 調査Bの記録として保存される（2026-08-28 全体監査 Critical）
+    if(SCREENS._birdsSv && SCREENS._birdsSv!==svUuid){
+      try{ toast('別の調査を開いたので、前の調査の書きかけは引き継ぎませんでした', 5000); }catch(_){}
+    } else revisit=true;
   }
   if(!revisit){ BIRDS=[newBird()]; BIRD_IDX=0; }
+  SCREENS._birdsSv=svUuid;   // いまの個体一覧が、どの調査のものかを覚えておく
   let editing = !!arg.id;
   let revisitBird=null;
   if(revisit){
@@ -5531,8 +5659,15 @@ async function rescueQuarantine(){
 // 'changed'=別の書き手が正式な記録に変えている（消さない） / 'fail'=削除・確認に失敗
 // 墓標を外し、外れたことまで確かめる（確かめられなければ false）
 function untombVerified(uuidV){
-  try{ DB._untomb(uuidV); }catch(e){}
-  try{ return !tombstonesList().some(t=>t && (t===uuidV || t.uuid===uuidV)); }catch(e){ return false; }
+  // **寛容な読み方で確かめない。** 壊れていると空配列が返り、外せていないのに
+  // 「外れた」と判定してしまう。その結果、本体と墓標が併存し、
+  // 後日の同期で生きている記録が消える（監査5巡目 Critical）
+  const 前=tombstonesForWrite();
+  if(!前) return false;
+  if(!前.some(t=>t && t.uuid===uuidV)) return true;   // もともと無い＝外れている
+  if(!tombstoneRemove(uuidV)) return false;           // 対象1件だけを外す（他は残す）
+  const 後=tombstonesForWrite();
+  return !!後 && !後.some(t=>t && t.uuid===uuidV);
 }
 function ghostDeleteVerified(key, uuidV, recJson){
   const arr=loadStrict(key);
@@ -7011,6 +7146,11 @@ function saveObs(u, svUuid, editing, cont){
 }
 /* ---------- マイ図鑑（自分の確定記録を種の図鑑に登録） ---------- */
 function myguideList(){ try{ return JSON.parse(localStorage.getItem('bs_myguide')||'[]'); }catch(e){ return []; } }
+// 書き込みのために読むとき用。読めなければ null（呼び出し側は中止する）
+function myguideForWrite(){
+  let a; try{ a=JSON.parse(localStorage.getItem('bs_myguide')||'[]'); }catch(e){ a=undefined; }
+  if(!Array.isArray(a)){ brokenDataWarn('bs_myguide'); return null; }
+  return a; }
 function myguideSave(l){ if(!writeAllowed()) return false;
   try{ localStorage.setItem('bs_myguide', JSON.stringify(l)); return true; }
   catch(e){ try{ toast('⚠ 空き容量不足で図鑑を保存できませんでした'); }catch(_){} return false; } }
@@ -7189,7 +7329,8 @@ function batchSave(svUuid){
   }
   const method=segVal('detection_method')||'目視'; const habitat=otherMerge(segVals('habitat'),'habitat'); const when=nowISO();
   // 配列を一度だけ更新して一括保存する（途中まで保存＝部分保存を避け、全件成功か中止かにする）
-  const arr=DB.load(DB.key.ob);
+  const arr=DB.loadForWrite(DB.key.ob);
+  if(!arr) return;   // 読めないまま保存すると、既存の観察を今回の分だけで置き換えてしまう
   let flagged=0;
   items.forEach(it=>{ const sp=speciesByName(it.name);
     if(!sp) flagged++;
@@ -7335,7 +7476,8 @@ function attachMediaMeta(target, field, meta){
   if(target.uuid && DISCARDED.has(target.uuid)) return false;   // ユーザーが破棄した新規記録には、後から完了した保存分も付けない
   let ok=true;   // 記録への紐付け保存の成否を返す（失敗を成功表示すると、音声・写真が一覧から参照できなくなるため）
   if(target.uuid){ const recKey=target.kind==='flight'?DB.key.fl:DB.key.ob;
-    const list=DB.load(recKey); const i=list.findIndex(x=>x.uuid===target.uuid);
+    const list=DB.loadForWrite(recKey); if(!list) return false;
+    const i=list.findIndex(x=>x.uuid===target.uuid);
     if(i>=0){ list[i][field]=(list[i][field]||[]).concat([meta]);
       ok = target.kind==='flight' ? DB.upsertFlight(list[i]) : DB.upsertObs(list[i]); }
     else{
@@ -7378,7 +7520,8 @@ function detachMediaMeta(target, field, id){
   // 保存の成否を返す（失敗を成功扱いにすると、参照が画面からだけ消えて実体が掃除で失われる）
   let saved=true;
   if(target.uuid){ const recKey=target.kind==='flight'?DB.key.fl:DB.key.ob;
-    const list=DB.load(recKey); const i=list.findIndex(x=>x.uuid===target.uuid);
+    const list=DB.loadForWrite(recKey); if(!list) return false;
+    const i=list.findIndex(x=>x.uuid===target.uuid);
     if(i>=0){ list[i][field]=(list[i][field]||[]).filter(x=>x.id!==id);
       saved = target.kind==='flight' ? !!DB.upsertFlight(list[i]) : !!DB.upsertObs(list[i]);
       if(!saved) return false; } }
@@ -7458,6 +7601,9 @@ function pickMedia(input){
   toast('取り込み中…');
   let ok=0, fail=0;
   const jobs=files.map(f=>{
+    // 中身が空のまま保存すると、参照だけが残って開けない写真になる。
+    // しかも実体があるように見えるので、欠けていることに気づけない（監査 Major）
+    if(!(f.size>0)){ fail++; return Promise.resolve(); }
     const kind=(f.type||'').startsWith('video')?'video':'photo';
     const meta={ id:uuid(), kind, mime:f.type||'', ext:fileExt(f.name,f.type), size:f.size, name:f.name||'', created_at:nowISO() };
     // 1件ずつ、成功したものだけ確実に反映（1件失敗しても成功分は残る）
@@ -10506,7 +10652,8 @@ function packSave(list){ if(!writeAllowed()) return false;
   try{ localStorage.setItem('bs_map_packs', JSON.stringify(list)); return true; }catch(e){ return false; } }
 
 // 保存するタイルの (z,x,y) 一覧。poly の形にかかるマスだけを選ぶ
-function packTiles(area, zmax){
+// cap を渡すと、その枚数に達した時点で数えるのをやめる（どうせ拒否されるため）
+function packTiles(area, zmax, cap){
   const zTop = Math.min(zmax, PACK_MAXZOOM);
   const poly = (area && area.poly && area.poly.length>=3) ? area.poly : null;
   const bb = poly ? polyBounds(poly) : area;
@@ -10516,7 +10663,8 @@ function packTiles(area, zmax){
     const y0=lat2ty(bb.n,z), y1=lat2ty(bb.s,z);
     for(let x=Math.min(x0,x1); x<=Math.max(x0,x1); x++)
       for(let y=Math.min(y0,y1); y<=Math.max(y0,y1); y++)
-        if(!poly || tileHitsPoly(x,y,z,poly)) out.push([z,x,y]);
+        if(!poly || tileHitsPoly(x,y,z,poly)){ out.push([z,x,y]);
+          if(cap && out.length>=cap) return out; }
   }
   return out;
 }
@@ -10529,10 +10677,32 @@ function packTileUrls(area, zmax, layers){
   });
   return urls;
 }
+// 先に**四角のまま枚数だけ**を数える。多角形の当たり判定は1枚ずつで重いので、
+// 明らかに多すぎる範囲では、列挙そのものを始めない（画面が固まる・メモリ不足になる）
+function packTileCountRough(area, zmax){
+  const zTop = Math.min(zmax, PACK_MAXZOOM);
+  const poly = (area && area.poly && area.poly.length>=3) ? area.poly : null;
+  const bb = poly ? polyBounds(poly) : area;
+  let n=0;
+  for(let z=PACK_MINZOOM; z<=zTop; z++){
+    const x0=lon2tx(bb.w,z), x1=lon2tx(bb.e,z);
+    const y0=lat2ty(bb.n,z), y1=lat2ty(bb.s,z);
+    n += (Math.abs(x1-x0)+1)*(Math.abs(y1-y0)+1);
+  }
+  return n;
+}
 // 見積り（枚数と、種類ごとの重みで概算したMB）
 function packEstimate(area, zmax, layers){
-  const tiles = packTiles(area, zmax);
-  const urls = packTileUrls(area, zmax, layers);
+  // 四角の枚数は**暴走止めだけ**に使う。斜めや細長い範囲は四角より実際はずっと少ないので、
+  // これで拒否すると、正当な範囲まで保存できなくなる（監査1巡目 Major）
+  const rough = packTileCountRough(area, zmax) * Math.max(1, (layers||[]).length);
+  if(rough > 2000000) return { count: rough, mb: rough*15/1024, urls: [], tooMany: true };
+  // 実際に重なる枚数で数える。上限を超えた時点で打ち切る（それ以上は拒否されるだけ）
+  const 上限 = Math.ceil(40001 / Math.max(1, (layers||[]).length));
+  const tiles = packTiles(area, zmax, 上限);
+  const urls = [];
+  (layers||[]).forEach(name=>{ const b=PACK_BASEMAPS[name]; if(!b) return;
+    tiles.forEach(([z,x,y])=>urls.push(b.url.replace('{z}',z).replace('{x}',x).replace('{y}',y))); });
   const perZoom={};
   tiles.forEach(([z])=>{ perZoom[z]=(perZoom[z]||0)+1; });
   let kb=0;
@@ -10829,11 +10999,19 @@ function recallPack(id){
 async function deleteMapPack(id){
   if(!writeAllowed()) return;
   const list=packStore(); const p=list.find(x=>x.id===id); if(!p) return;
-  if(!confirm(`「${p.name||'保存範囲'}」の地図（約${(+p.mb).toFixed(0)}MB）を消しますか？\n※範囲が重なっている他の保存分のタイルも一緒に消えることがあります（保存し直せば戻せます）`)) return;
+  if(!confirm(`「${p.name||'保存範囲'}」の地図（約${(+p.mb).toFixed(0)}MB）を消しますか？\n※他の保存範囲でも使っている分は残します`)) return;
   const area = (p.poly && p.poly.length>=3) ? {poly:p.poly} : p.bbox;
+  // **他の保存範囲と重なっている分は消さない。**
+  // 一緒に消すと、残した方の地図に穴が開くのに、一覧は「保存済み」のままになる
+  // （圏外の現場で初めて気づくことになる。2026-08-28 全体監査 Major）
+  const 残す=new Set();
+  list.filter(x=>x.id!==id).forEach(o=>{
+    const oa=(o.poly && o.poly.length>=3) ? {poly:o.poly} : o.bbox;
+    try{ packTileUrls(oa, o.zmax, o.layers||[]).forEach(u=>残す.add(u)); }catch(e){}
+  });
   // タイルの削除が成功したときだけ一覧から外す（失敗時に一覧だけ消すと、消せない隠れタイルが残るため）
   let okDel=false;
-  try{ const r=await swAsk({type:'deletePack', urls:packTileUrls(area, p.zmax, p.layers)});
+  try{ const r=await swAsk({type:'deletePack', urls:packTileUrls(area, p.zmax, p.layers).filter(u=>!残す.has(u))});
     okDel = !!(r && typeof r.deleted==='number'); }catch(e){}
   if(!okDel){ toast('削除に失敗しました（処理が混み合っている可能性）。少し待ってからもう一度お試しください', 4000); return; }
   if(!packSave(list.filter(x=>x.id!==id))){
@@ -11327,7 +11505,7 @@ async function fsPerm(mode){ if(!_fsDir) return 'no';
 async function pickBackupFolder(){
   if(!fsSupported()){ toast('この端末では使えません（PCのChrome/Edgeで）'); return; }
   try{ const h=await window.showDirectoryPicker({mode:'readwrite'}); _fsDir=h; await kvPut('fsdir',h);
-    toast('保存フォルダを設定しました'); await fsBackupRecords(); render();
+    toast('保存フォルダを設定しました'); await fsBackupRecords(); renderQuiet();
   }catch(e){ /* キャンセル等 */ }
 }
 async function clearBackupFolder(){ _fsDir=null; try{ await kvPut('fsdir',null); }catch(e){} toast('フォルダ設定を解除しました'); render(); }
@@ -11371,7 +11549,7 @@ async function fsBackupFullCore(){
 }
 async function fsBackupFull(){ if(!_fsDir){ toast('先に保存フォルダを設定してください'); return; }
   toast('録音・写真を含めてフォルダに保存中…'); const ok=await fsBackupFullCore();
-  toast(ok?'フォルダに保存しました（録音・写真含む）':'保存フォルダの許可が必要です（もう一度お試しを）'); render();
+  toast(ok?'フォルダに保存しました（録音・写真含む）':'保存フォルダの許可が必要です（もう一度お試しを）'); renderQuiet();
 }
 // 録音・写真が増減したら、少し待ってからフォルダへ自動でフル保存（フォルダ設定時のみ）
 let _fullTimer=null;
@@ -11400,14 +11578,16 @@ function cloudPost(kind, dataObj, opts){
       localStorage.setItem('bs_cloud_sent', nowISO()); localStorage.setItem('bs_cloud_last_kind', kind);
     });
 }
-function cloudBackupRecords(){ if(!cloudCfg().url) return Promise.resolve();
+// 戻り値の sent で「本当に送ったか」を伝える。送っていないのに成功表示を出さないため
+function cloudBackupRecords(){ if(!cloudCfg().url) return Promise.resolve({sent:false, why:'未設定'});
   const gen0=BACKUP_GEN;
   let data; try{ data=buildRecordsBackup(); }catch(e){ return Promise.reject(e); }
-  if(gen0!==BACKUP_GEN || backupBlocked()){ _backupPending=true; return Promise.resolve(); }   // 送信直前にも確認
-  return cloudPost('records', data, {noStamp:true}).then(r=>{
-    if(gen0!==BACKUP_GEN){ _backupPending=true; return r; }   // 送信中に取引が始まった＝最新内容の再送を予約（時刻は更新しない）
+  if(gen0!==BACKUP_GEN || backupBlocked()){ _backupPending=true;
+    return Promise.resolve({sent:false, why:'保存中'}); }   // 送信直前にも確認
+  return cloudPost('records', data, {noStamp:true}).then(()=>{
+    if(gen0!==BACKUP_GEN){ _backupPending=true; return {sent:true, stale:true}; }   // 送信中に取引が始まった＝最新内容の再送を予約（時刻は更新しない）
     localStorage.setItem('bs_cloud_sent', nowISO()); localStorage.setItem('bs_cloud_last_kind', 'records');
-    return r;
+    return {sent:true};
   }); }
 async function cloudBackupFull(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
   toast('録音・写真を含めてクラウド送信中…');
@@ -11423,6 +11603,14 @@ let _backupChain=Promise.resolve();
 function backupRun(fn){
   _backupChain=_backupChain.then(()=>fn()).catch(()=>{});
   return _backupChain;
+}
+// **押したときの経路はこちら。** backupRun は列を止めないために失敗を握りつぶすので、
+// その戻り値で成功表示を出すと、圏外でも「送信しました」と言ってしまう
+// （2026-08-28 全体監査 Critical）。列は止めずに、本当の結果だけ呼び出し側へ返す
+function backupRunStrict(fn){
+  const p=_backupChain.then(()=>fn());
+  _backupChain=p.catch(()=>{});
+  return p;
 }
 function autoBackupRecords(){
   return backupRun(async ()=>{
@@ -11447,8 +11635,10 @@ function scheduleCloud(){ if(!backupConfigured()) return;
     autoBackupRecords();
   }, 6000); }
 function cloudSyncNow(){ if(!cloudCfg().url){ toast('先にクラウド保存先を設定してください'); return; }
-  backupRun(()=>cloudBackupRecords())
-    .then(()=>{ toast('記録をクラウドに送信しました（受領確認はできません）'); render(); })
+  backupRunStrict(()=>cloudBackupRecords())
+    .then(r=>{ if(r && r.sent) toast('記録をクラウドに送信しました（受領確認はできません）');
+      else toast('いまは保存の処理中のため送れませんでした。少し待ってからもう一度押してください', 5000);
+      renderQuiet(); })
     .catch(()=>toast('クラウド送信に失敗しました')); }
 function saveCloudCfg(){ const url=(($('#cloudUrl')&&$('#cloudUrl').value)||'').trim();
   const token=(($('#cloudToken')&&$('#cloudToken').value)||'').trim();
@@ -11506,7 +11696,9 @@ function dbSendNow(){
   // 保存の取引中・停止中は送らない（途中の姿を送らないため）
   if(backupBlocked()){ toast('いま記録を保存しています。少し待ってからもう一度押してください', 4000); return; }
   toast('データベースへ送っています…');
-  backupRun(()=>dbSendRecords()).then(()=>render()).catch(()=>{});
+  backupRunStrict(()=>dbSendRecords())
+    .then(()=>renderQuiet())
+    .catch(()=>{});   // 断りは dbSendRecords 側が詳しく出している（二重に出さない）
 }
 function dbSendRecords(){
   const c=dbSendCfg(); if(!c.url) return Promise.resolve(null);
@@ -11704,7 +11896,7 @@ async function gdriveSignIn(){
     gdriveTokenClear();   // 「アカウントを切り替える」で必ず選択画面が出るよう、有効な既存トークンも破棄する
     const token=await gdriveGetToken(true);
     if(!await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗しました。通信環境を確認してもう一度お試しください'); return; }
-    toast('サインインしました'+(GUSER?'：'+GUSER:'')); render();
+    toast('サインインしました'+(GUSER?'：'+GUSER:'')); renderQuiet();
   }catch(e){ toast('サインイン失敗: '+(e.message||e)); }
 }
 function gdriveSignOut(){ gdriveTokenClear(); GUSER=''; localStorage.removeItem('bs_gdrive_user'); toast('サインアウトしました'); render(); }
@@ -11738,7 +11930,7 @@ async function gdriveSyncFull(){
     let msg='同期しました：'+parts.join('／');
     if(miss) msg+=`（未受信${miss}件は相手の端末の同期待ち）`;
     if(pulled && pulled.skipped) msg+=`※${pulled.skipped}ファイルは壊れているためスキップ（保存した端末での点検・修復が必要）`;
-    toast(msg, 4000); render();
+    toast(msg, 4000); renderQuiet();
   }catch(e){ toast('同期に失敗: '+(e.message||e)); }
 }
 async function gdriveBackupFull(){
@@ -11747,10 +11939,10 @@ async function gdriveBackupFull(){
     const wasSignedIn=gdriveSignedIn();
     const token=await gdriveGetToken(true);
     if(!wasSignedIn && !await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗したため中止しました'); return; }
-    await backupRun(async ()=>{   // 同じ列で直列に（データの構築も列内で行う）
+    await backupRunStrict(async ()=>{   // 同じ列で直列に（データの構築も列内で行う）
       const data=await buildFullBackup(); await gdrivePush('full', data, token);
-    });
-    toast('Googleドライブに保存しました（録音・写真含む）'); render();
+    });   // 失敗はここで例外になり、下の成功表示に進まない（監査1巡目 Critical）
+    toast('Googleドライブに保存しました（録音・写真含む）'); renderQuiet();
   }catch(e){ toast('保存に失敗: '+(e.message||e)); }
 }
 
@@ -11922,7 +12114,9 @@ async function gdrivePushMedia(token, opts){
     let done=0, skip=0;
     for(const r of todo){
       const rec=await (r.store==='audio'?AudioDB:PhotoDB).get(r.id).catch(()=>null);
-      if(!rec || !rec.blob){ skip++; continue; }   // 実体がこの端末に無い（別端末で撮影など）は送れないのでスキップ
+      // 中身が0バイトのものも「無い」と同じ扱い。上げてしまうと、
+      // 他の端末が「取得済み」と覚えて、正しい実体を取り直せなくなる（監査1巡目 Major）
+      if(!rec || !rec.blob || !(rec.blob.size>0)){ skip++; continue; }
       const fid=await gdriveUploadBlob(folderId, mediaFileName(r), rec.blob, r.mime||rec.mime, token);
       map[r.store][r.id]=fid;
       await syncMapSave(map);          // 1件成功するごとに控えを保存（途中で切れても続きから再開できる）
@@ -11979,7 +12173,9 @@ async function gdrivePullMedia(token, opts){
   const missing=[];
   for(const r of refs){
     const rec=await (r.store==='audio'?AudioDB:PhotoDB).get(r.id).catch(()=>null);
-    if(!rec || !rec.blob) missing.push(r);
+    // 中身が0バイトのものは「持っていない」と同じ扱い。持っていることにすると、
+    // ドライブにある正しい実体を取り直せなくなる（監査5巡目 Major）
+    if(!rec || !rec.blob || !(rec.blob.size>0)) missing.push(r);
   }
   if(!missing.length) return {done:0, miss:0};
   const byName=await gdriveListMediaFiles(token);
@@ -11990,6 +12186,7 @@ async function gdrivePullMedia(token, opts){
     if(!fid){ miss++; continue; }                    // 相手の端末がまだアップロードしていない
     let blob=null;
     try{ blob=await (await gdriveFetchRaw('drive/v3/files/'+fid+'?alt=media', token)).blob(); }catch(e){ miss++; continue; }
+    if(!blob || !(blob.size>0)){ miss++; continue; }   // 中身の無いファイルは取り込まない（開けない実体を正常として固定してしまう）
     const m=r.meta||{};
     const rec={ id:r.id, blob, mime:m.mime||blob.type, ext:m.ext, size:m.size||blob.size, created_at:m.created_at,
       obs_uuid: r.ownerType==='obs'?r.ownerUuid:'', flight_uuid: r.ownerType==='flight'?r.ownerUuid:'' };
@@ -12019,7 +12216,10 @@ function mergeRemoteRecords(d){
   // 完全削除の記録（墓標）を合体。墓標より古いレコードは両端末から取り除かれる（削除の伝搬）。
   // 墓標より新しい updated_at を持つレコード（削除後に作り直された等）は残す
   const ts=Object.create(null);
-  tombstonesList().forEach(t=>{ ts[t.uuid]=t.at; });
+  // 読めない墓標のまま合体すると、空の墓標で原本を上書きしてしまう（監査1巡目 Critical）
+  const 今の墓標=tombstonesForWrite();
+  if(!今の墓標) throw new Error('この端末の削除記録を読み取れないため、同期を中止しました');
+  今の墓標.forEach(t=>{ ts[t.uuid]=t.at; });
   (Array.isArray(d.tombstones)?d.tombstones:[]).forEach(t=>{
     if(t && typeof t.uuid==='string' && t.uuid && typeof t.at==='string' && t.at){
       if(!ts[t.uuid] || String(t.at)>String(ts[t.uuid])) ts[t.uuid]=t.at; } });
@@ -12123,7 +12323,7 @@ async function gdriveStartupCheck(){
             +(r.skipped?`（${r.skipped}ファイルは壊れているためスキップ。保存した端末での点検・修復が必要です）`:''), r.skipped?6000:4000);
           pulledNow=true;
           // 取り込み中に入力・録音・音声認識を始めていたら画面を作り直さない（未保存の内容・聞き取りが消えるため）
-          if(!SCREENS._dirty && !REC && !VREC) reset('home');
+          if(!hasUnsaved()) reset('home');   // 開いていない個体の書きかけも見る（監査1巡目 Critical）
         }catch(e){ toast('読み込みに失敗しました: '+(e.message||e)); }
       }else{
         // 既読にはしない（既読は「取り込み済み」の意味。断られた印だけ残す）。
@@ -12136,7 +12336,7 @@ async function gdriveStartupCheck(){
     if(!pulledNow){
       const md=await gdrivePullMedia(token, {}).catch(()=>null);
       if(md && md.done){ toast(`写真・録音${md.done}件を取り込みました`+(md.miss?`（あと${md.miss}件は相手の端末の同期待ち）`:''));
-        if(!SCREENS._dirty && !REC && !VREC) render(); }   // 入力・録音・音声認識中は画面を作り直さない（未保存の内容が消えるため）
+        renderQuiet(); }   // 入力・録音・音声認識中は画面を作り直さない（未保存の内容が消えるため）
     }
   }catch(e){ try{ console.error('sync check failed', e); }catch(_){} }
 }
@@ -12177,7 +12377,7 @@ async function gdriveUploadVideos(){
     if(!wasSignedIn && !await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗したため中止しました'); return; }
     toast('動画をアップロード中…');
     const r=await gdrivePushMedia(token, {videoOnly:true, progress:(d,t)=>toast(`動画をアップロード中… ${d}/${t}`)});
-    toast(r.done?`動画${r.done}件をアップロードしました`:'アップロードする動画はありません'); render();
+    toast(r.done?`動画${r.done}件をアップロードしました`:'アップロードする動画はありません'); renderQuiet();
   }catch(e){ toast('アップロード失敗: '+(e.message||e)); }
 }
 // 動画の手動ダウンロード（別端末で撮影した動画をこの端末に取り込む）
@@ -12190,7 +12390,7 @@ async function gdrivePullVideos(){
     if(!wasSignedIn && !await gdriveConfirmOwner(token)){ toast('アカウントの確認に失敗したため中止しました'); return; }
     toast('動画をダウンロード中…');
     const r=await gdrivePullMedia(token, {videoOnly:true, progress:(d,t)=>toast(`動画をダウンロード中… ${d}/${t}`)});
-    toast(r.done?`動画${r.done}件を取り込みました`:'取り込める動画はありません'); render();
+    toast(r.done?`動画${r.done}件を取り込みました`:'取り込める動画はありません'); renderQuiet();
   }catch(e){ toast('ダウンロード失敗: '+(e.message||e)); }
 }
 
@@ -12343,7 +12543,7 @@ async function gdriveUploadLibrary(){
     else if(r.skip){ msg=`${r.skip}件の実体を確認できなかったため、目録は更新しませんでした`+(r.done?`（${r.done}件はアップロード済み）`:''); }
     else if(r.done){ msg=`図鑑・資料${r.done}件をアップロードしました`+(r.already?`（${r.already}件はアップ済み）`:''); }
     else{ msg='すべてアップロード済みです'; }
-    toast(msg, 4000); render();
+    toast(msg, 4000); renderQuiet();
   }catch(e){ toast('アップロード失敗: '+(e.message||e)); }
 }
 // 手動ダウンロード: 目録を取り込んでから、実体が無い分だけ受け取る
@@ -12392,7 +12592,7 @@ async function gdrivePullLibrary(){
     if(!r){ toast('ドライブに図鑑・資料がまだありません（先に相手の端末でアップロードしてください）', 4000); return; }
     let msg=r.done?`図鑑・資料${r.done}件を取り込みました`:'新しく取り込む図鑑・資料はありません';
     if(r.miss) msg+=`（${r.miss}件は未取得。相手の端末でアップロード後にもう一度）`;
-    toast(msg, 4000); render();
+    toast(msg, 4000); renderQuiet();
   }catch(e){ toast('ダウンロード失敗: '+(e.message||e)); }
 }
 
@@ -12645,17 +12845,92 @@ function doImport(){
   // 読み込む前にファイルの大きさを確認（巨大ファイルの読み込み・解析で画面が固まるのを防ぐ）
   if(f.size>IMPORT_FILE_MAX){ toast('ファイルが大きすぎるため取り込めません（上限1GB）'); return; }
   const rd=new FileReader();
-  rd.onload=async ()=>{ try{
+  rd.onload=async ()=>{
+    // 今回この端末へ新しく入れた実体と、その戻し方。**例外で落ちたときも戻せるよう、
+    // 取り込みの外側に置く**（監査7巡目 Critical）
+    const 足した=[];
+    // 戻せたかどうかを返す。消せなかった分は一覧に残す（成功したことにしない）
+    // 戻す順は**足した順と逆**（同じ番号を複数回さわっていても、いちばん古い姿に戻る）
+    const メディアを戻す=async ()=>{ const 残り=[];
+      for(let i=足した.length-1; i>=0; i--){ const x=足した[i]; try{
+        if(x.元) await x.store.put(x.元);   // 元からあった（壊れていた）分は書き戻す
+        else await x.store.del(x.id);       // 今回はじめて入れた分は消す
+      }catch(e){ 残り.unshift(x); } }   // 消せなかった分は、足した順のまま残す
+      足した.length=0; 足した.push(...残り);
+      return 残り.length===0; };
+    // 取り込みがどこまで進んだか。**例外で落ちたときの戻し方を決めるために外側で持つ**
+    // （監査8巡目 Critical）
+    let 控え=null, 書き始めた=false, 確定した=false;
+    const 戻す=()=>{ if(!控え) return true; let 戻った=true;
+      Object.keys(控え).forEach(k=>{ try{
+        if(控え[k]==null) localStorage.removeItem(k); else localStorage.setItem(k, 控え[k]);
+        const いま=localStorage.getItem(k);
+        if((いま==null?null:いま)!==(控え[k]==null?null:控え[k])) 戻った=false;
+      }catch(e){ 戻った=false; } });
+      return 戻った; };
+    try{
     const d=JSON.parse(rd.result);
     if(!importIdsOk(d)){ toast('このバックアップは形式が不正なため取り込めません'); return; }
+    // **取り込みの間は、ほかの保存・画面移動を止める。**
+    // 読んでから書くまでの間に別の記録が保存されると、古い姿で上書きしてしまう
+    // （2026-08-28 監査7巡目 Critical）。既存の「保存の処理中」の仕組みに相乗りする
+    if(SAVE_BUSY){ toast('保存の処理中です。少し待ってからやり直してください', 5000); return; }
+    SAVE_BUSY=true; saveBusyShow(true);
+    try{
+    // 0) **録音・写真を入れる前に、記録側を読めるか確かめて控える。**
+    //    先に実体を入れてから中止すると、同じ番号の実体だけが入れ替わって戻せない
+    //    （2026-08-28 監査6巡目 Critical）
+    const 区分キー=[DB.key.sv,DB.key.ob,DB.key.nt,DB.key.hy,DB.key.hr,DB.key.fl];
+    const 現在={};
+    for(const key of 区分キー){ const cur=DB.loadForWrite(key);
+      if(!cur){ toast('保存されている記録を読み取れないため、取り込みを中止しました（上書きを避けました）', 8000); return; }
+      現在[key]=cur; }
+    const 今の墓標=tombstonesForWrite();
+    if(!今の墓標){ toast('この端末の削除記録を読み取れないため、取り込みを中止しました', 7000); return; }
+    // **控えに図鑑が入っているかに関わらず、必ず先に読む。**
+    // 読めないまま実体を入れると、壊れた図鑑が指していた写真を上書きしてしまう
+    // （監査7巡目 Critical）
+    const 図鑑あり=Array.isArray(d.myguide) && d.myguide.length>0;
+    const 今の図鑑=myguideForWrite();
+    if(!今の図鑑){ toast('マイ図鑑を読み取れないため、取り込みを中止しました', 7000); return; }
+    // 書き換える前の姿を控える（戻すときに使う）
+    控え={};
+    ['bs_tombstones','bs_myguide',DB.key.recent].concat(区分キー)
+      .forEach(k=>{ 控え[k]=localStorage.getItem(k); });
     // 1) メディアを先に保存し、失敗したidを控える（実体の無い参照を記録に残さないため）
     // **録音と写真で失敗の入れ物を分ける**（2026-08-14 監査4巡目 Major）。
     // 同じIDが両方にあると、片方の実体を見つけて「失敗ではない」と誤判定し、
     // 実体の無い参照が残る
     let ok=0, fail=0, total=0;
     const failedAudio=new Set(), failedMedia=new Set();
-    const putAll=async (arr, storeDB, mk, failed)=>{ for(const it of (arr||[])){ if(!it||!it.b64){ if(it&&it.id) failed.add(it.id); continue; } total++;
-      try{ await storeDB.put(mk(it)); ok++; }catch(e){ fail++; if(it.id) failed.add(it.id); } } };  // b64ToBlobの同期例外もここで捕捉
+    const putAll=async (arr, storeDB, mk, failed)=>{ for(const it of (arr||[])){
+      // 中身が空の分も**失敗として数える**。数えないと、参照だけ外して
+      // 「ぜんぶ取り込みました」と出てしまう（監査13巡目 Major）
+      if(!it||!it.b64){ total++; fail++; if(it&&it.id) failed.add(it.id); continue; }
+      total++;
+      try{
+        // **同じ番号の実体がすでにあるなら、中身によらず触らない。** 番号は作るときに
+        // 一意なので、同じ番号＝同じ中身。上書きすると、取り込みを中止したときに
+        // 元の写真・録音を戻せない（監査7巡目 Critical）。
+        // **「読めなかった」と「無い」も分ける。** 一緒にすると、読めなかっただけの
+        // 実体を上書きし、中止のときに元からあった分まで消す（監査8巡目 Critical）
+        let 手元;
+        try{ 手元=await storeDB.get(it.id); }
+        catch(e){ fail++; if(it.id) failed.add(it.id); continue; }   // 読めない＝触らない
+        if(手元 && 手元.blob && 手元.blob.size>0){ ok++; continue; }   // 正常な実体はそのまま
+        // **壊れている（0バイトの）実体は、正しい控えで直す。** ここを直さないと、
+        // 壊れた写真をバックアップから復旧できなくなる（監査11巡目 Major）
+        const 新しい=mk(it);
+        // 控えの中身が空だった場合、入れ替えても直らないのに成功に数えてしまう
+        if(!新しい || !新しい.blob || !(新しい.blob.size>0)){
+          fail++; if(it.id) failed.add(it.id); continue; }   // 監査12巡目 Major
+        // **書く前に控える。** 逆にすると、書いた直後に落ちたとき戻せない（同 Major）
+        足した.push({store:storeDB, id:it.id, 元:手元||null});
+        // 書けなかったものは**巻き戻しの対象から外す**。残すと、変えていない実体まで
+        // 書き戻し・削除しに行き、その失敗でアプリを止めてしまう（監査13巡目 Major）
+        try{ await storeDB.put(新しい); }catch(e){ 足した.pop(); throw e; }
+        ok++;
+      }catch(e){ fail++; if(it.id) failed.add(it.id); } } };  // b64ToBlobの同期例外もここで捕捉
     await putAll(d.audio, AudioDB, a=>({ id:a.id, blob:b64ToBlob(a.b64,a.mime),
       mime:a.mime, ext:a.ext, dur:a.dur, size:a.size, obs_uuid:a.obs_uuid, flight_uuid:a.flight_uuid, created_at:a.created_at }), failedAudio);
     await putAll(d.media, PhotoDB, m=>({ id:m.id, blob:b64ToBlob(m.b64,m.mime),
@@ -12668,7 +12943,9 @@ function doImport(){
     for(const [failed, storeDB] of [[failedAudio, AudioDB], [failedMedia, PhotoDB]]){
       for(const id of Array.from(failed)){
         const 手元 = await storeDB.get(id).catch(()=>null);
-        if(手元 && 手元.blob) failed.delete(id);
+        // 0バイトは「持っている」に数えない。数えると、開けない実体への参照が残り、
+        // 正しい控えからも取り込めなくなる（監査9巡目 Critical）
+        if(手元 && 手元.blob && 手元.blob.size>0) failed.delete(id);
       }
     }
     const clean=rec=>{ if(!rec) return rec;
@@ -12680,34 +12957,90 @@ function doImport(){
     (d.observations||[]).forEach(clean); (d.flights||[]).forEach(clean);
     // 2.5) 完全削除の記録（墓標）を合体し、墓標より古いレコードは取り込まない・残さない
     //（古いバックアップの取り込みで、完全削除したはずの記録が復活して同期で全端末に広がるのを防ぐ）
-    const ts=Object.create(null); tombstonesList().forEach(t=>{ ts[t.uuid]=t.at; });
+    const ts=Object.create(null);
+    今の墓標.forEach(t=>{ ts[t.uuid]=t.at; });   // 読み取りは 0) で済ませてある
     (Array.isArray(d.tombstones)?d.tombstones:[]).forEach(t=>{
       if(t && typeof t.uuid==='string' && safeId(t.uuid) && typeof t.at==='string'){
         if(!ts[t.uuid] || String(t.at)>String(ts[t.uuid])) ts[t.uuid]=t.at; } });
     const alive=x=>{ const at=x&&ts[x.uuid]; return !(at && String(at)>=String(x.updated_at||x.created_at||'')); };
-    tombstonesSave(Object.keys(ts).map(u=>({uuid:u, at:ts[u]})));
-    // 3) 記録をmerge。byIdは Object.create(null) でプロトタイプ汚染を防ぐ。保存失敗は検知する
-    let saveOk=true;
-    const merge=(key,arr)=>{ const cur=DB.load(key); const byId=Object.create(null);
-      cur.forEach(x=>{ if(x&&x.uuid) byId[x.uuid]=x; });
+    // ---- ここから **全部そろってから一度に書く**（監査5巡目 Critical）----
+    // 途中で失敗して先の分だけ残ると、親だけ消えて子が残るような半端な形が居座る。
+    // 読み取りと控えは 0) で済ませてある
+    const 区分=[[DB.key.sv,d.surveys],[DB.key.ob,d.observations],[DB.key.nt,d.notes],
+                [DB.key.hy,d.hypotheses],[DB.key.hr,d.hyp_results],[DB.key.fl,d.flights]];
+    // 2) 合体の結果をぜんぶ作る（まだ書かない）
+    const 書く={};
+    for(const [key,arr] of 区分){
+      const byId=Object.create(null);
+      現在[key].forEach(x=>{ if(x&&x.uuid) byId[x.uuid]=x; });
       // **古い版のバックアップで、新しい項目を消さない**（2026-08-14 監査2巡目）。
       // v218以前の控えには環境・営巣木の項目そのものが無い。丸ごと入れ替えると、
       // いま持っている写真とメモの参照が消え、掃除で実体まで失われる
       (arr||[]).forEach(x=>{ if(x&&x.uuid)
         byId[x.uuid]=(key===DB.key.ob && byId[x.uuid]) ? keepNewFields(byId[x.uuid], x) : x; });
-      if(!DB.save(key,Object.values(byId).filter(alive))) saveOk=false; };
-    merge(DB.key.sv,d.surveys); merge(DB.key.ob,d.observations); merge(DB.key.nt,d.notes);
-    merge(DB.key.hy,d.hypotheses); merge(DB.key.hr,d.hyp_results); merge(DB.key.fl,d.flights);
-    if(d.recent) DB.save(DB.key.recent, d.recent);
-    if(Array.isArray(d.myguide) && d.myguide.length){
-      const cur=myguideList(); const byId=Object.create(null); cur.forEach(g=>{ if(g&&g.id) byId[g.id]=g; });
-      d.myguide.forEach(g=>{ if(g&&g.id) byId[g.id]=g; }); myguideSave(Object.values(byId));
+      書く[key]=Object.values(byId).filter(alive);
     }
-    if(!saveOk) toast('一部の記録を保存できませんでした（空き容量を確認してください）');
-    else if(fail) toast(`取り込みました（メディア ${ok}/${total}件成功・${fail}件は実体が無いため参照を除外）`);
+    // 3) マイ図鑑も同じ一括の中で作る（別扱いにすると、ここだけ半端に残る）
+    let 図鑑=null;
+    if(図鑑あり){ const byId=Object.create(null);
+      今の図鑑.forEach(g=>{ if(g&&g.id) byId[g.id]=g; });
+      d.myguide.forEach(g=>{ if(g&&g.id) byId[g.id]=g; });
+      図鑑=Object.values(byId); }
+    // 4) ここから書く。**直前にもう一度、控えたときと同じ姿かを確かめる。**
+    //    途中で別の保存が入っていたら、その分を古い姿で消してしまう
+    const 変わった=Object.keys(控え).some(k=>localStorage.getItem(k)!==控え[k]);
+    if(変わった){
+      if(!await メディアを戻す()){
+        saveFatalHalt('取り込みを中止しましたが、入れた写真・録音を片付けられませんでした。'
+          +'これ以上操作せず、設定の「記録の救出ファイル」を保存してください'); return; }
+      toast('取り込みの途中で記録が変わったため、中止しました。もう一度お試しください', 8000);
+      rescanLocalData(); return; }
+    let saveOk=true;
+    書き始めた=true;   // ここから先で落ちたら、控えへ戻す必要がある
+    if(!tombstonesSave(Object.keys(ts).map(u=>({uuid:u, at:ts[u]})))) saveOk=false;
+    if(saveOk) for(const [key] of 区分){ if(!DB.save(key, 書く[key])){ saveOk=false; break; } }
+    if(saveOk && d.recent && !DB.save(DB.key.recent, d.recent)) saveOk=false;
+    if(saveOk && 図鑑 && !myguideSave(図鑑)) saveOk=false;
+    if(!saveOk){
+      // **どちらも必ず試す。** `&&` で書くと、写真の片付けに失敗したときに
+      // 記録を戻す処理そのものが走らず、半端な姿を確定させてしまう（監査10巡目 Critical）
+      const メ戻せた=await メディアを戻す();   // 今回入れた録音・写真も消す
+      const 記録戻せた=戻す();
+      if(メ戻せた && 記録戻せた){
+        toast('取り込みを中止し、元の状態に戻しました（空き容量を確認してください）', 8000);
+        rescanLocalData(); return; }
+      // **戻せなかったときは、ここで止める。** 覆いを外すと、半端な姿のまま
+      // 保存や同期が再開し、他の保存先まで壊してしまう（監査8巡目 Critical）
+      saveFatalHalt('取り込みに失敗し、元に戻すこともできませんでした。'
+        +'これ以上操作せず、設定の「記録の救出ファイル」を保存してください');
+      return; }
+    if(fail) toast(`取り込みました（メディア ${ok}/${total}件成功・${fail}件は実体が無いため参照を除外）`);
     else toast(total? `取り込みました（記録＋メディア${total}件）` : '取り込みました');
+    確定した=true;   // ここまで来たら取り込みは成立。以後は後片付けだけ
     rescanLocalData();
     reset('home');
+    }catch(e){
+      // **後片付けは、覆いを外す前にここで済ませる。**
+      // 先に覆いを外すと、半端な記録が自動バックアップ・同期へ送られる
+      // （監査9巡目 Critical）
+      if(確定した){
+        // 取り込みは成立していて、画面の更新でつまずいただけ。実体は消さない
+        toast('取り込みは終わりましたが、画面の更新でつまずきました。読み込み直してください', 8000);
+      }else{
+        let 戻せた=true;
+        try{ 戻せた=await メディアを戻す(); }catch(_){ 戻せた=false; }
+        if(書き始めた && !戻す()) 戻せた=false;
+        if(!戻せた){
+          saveFatalHalt('取り込みに失敗し、元に戻すこともできませんでした。'
+            +'これ以上操作せず、設定の「記録の救出ファイル」を保存してください');
+        }else{
+          toast('読み込みに失敗しました（ファイル形式を確認）');
+        }
+      }
+    }finally{
+      // 停止中（戻せなかった）は覆いを外さない
+      if(!SAVE_FATAL){ SAVE_BUSY=false; saveBusyShow(false); }
+    }
   }catch(e){ toast('読み込みに失敗しました（ファイル形式を確認）'); } };
   rd.readAsText(f);
 }

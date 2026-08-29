@@ -1,4 +1,4 @@
-const CACHE = 'bird-survey-v221';
+const CACHE = 'bird-survey-v222';
 // 必須資産（これが揃わないとアプリが成立しない）。install時に全部揃わなければ失敗させ、不完全キャッシュで有効化しない
 const CORE = [
   './bird_survey.html',
@@ -85,11 +85,21 @@ async function handleTile(request){
   const packed = await pack.match(request.url);
   if (packed) return packed;
   const cache = await caches.open(TILE_CACHE);
-  const cached = await cache.match(request);
-  if (cached) return cached;
+  let cached = await cache.match(request);
+  // 前の版が覚えてしまった「画像でないもの」（障害時のHTML等）はここで捨てる。
+  // 新しく取る分だけ直しても、すでに覚えた分は欠けたままになる（監査5巡目 Major）
+  if (cached) {
+    const cct = (cached.headers.get('content-type')||'').toLowerCase();
+    if (cct.startsWith('image/')) return cached;
+    try{ await cache.delete(request); }catch(e){}
+    cached = null;   // 圏外に落ちたときの控えとしても使わない（画像ではないため）
+  }
   try{
     const res = await fetch(request);
-    if (res.ok){
+    // **画像だと分かるものだけを控える。** 地理院側の一時障害でHTMLが200で返ることがあり、
+    // それを覚えると、通信が戻ってもそのタイルだけ欠けたままになる（2026-08-28 全体監査 Major）
+    const ct = (res.headers.get('content-type')||'').toLowerCase();
+    if (res.ok && ct.startsWith('image/')){
       // キャッシュ保存に失敗（容量不足等）しても、取得できたタイルは必ず返す
       try{
         const keys = await cache.keys();
@@ -229,10 +239,32 @@ async function networkFirst(request){
     const cached = await cache.match(request);          // タイムアウト・障害応答(500や認証画面HTML等)→正常なキャッシュを優先
     if (cached) return cached;
     if (r !== 'timeout' && r) return r;                 // キャッシュが無ければ障害応答でもそのまま返す
-    return await netP;                                  // タイムアウトかつキャッシュ無し→ネット完了を待つ
+    // タイムアウトかつキャッシュ無し。**ここで無期限に待たない。**
+    // 弱い電波で通信が固まると、控えがあっても起動できなくなる（2026-08-28 全体監査 Major）。
+    // 締切は networkFirst に入ってから12秒（最初の3.5秒を含む）
+    const hard = new Promise(resolve => setTimeout(() => resolve('timeout'), 8500));
+    const r2 = await Promise.race([netP, hard]);
+    if (r2 !== 'timeout' && r2) return r2;
+    // HTMLの代わりを返してよいのは、画面そのものの要求だけ。
+    // manifest.json にHTMLを返すと、ホーム画面への追加や更新が壊れる（監査1巡目 Major）
+    if (request.mode === 'navigate' || isHtmlShell(request.url)) {
+      if (!request.url.endsWith('/manifest.json')) {
+        const shell = await cache.match('./bird_survey.html');
+        if (shell) return shell;
+      }
+    }
+    return Response.error();
   }catch(e){
     const cached = await cache.match(request);
-    return cached || cache.match('./bird_survey.html');
+    if (cached) return cached;
+    // HTMLの代わりを返してよいのは画面そのものの要求だけ。manifest.json にHTMLを返すと、
+    // ホーム画面への追加や更新が壊れる（監査2巡目 Major。時間切れの経路と同じ扱いにする）
+    if ((request.mode === 'navigate' || isHtmlShell(request.url))
+        && !request.url.endsWith('/manifest.json')) {
+      const shell = await cache.match('./bird_survey.html');
+      if (shell) return shell;
+    }
+    return Response.error();
   }
 }
 
