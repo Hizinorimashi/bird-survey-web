@@ -1,0 +1,13 @@
+{
+ "generated": "2026-11-07T15:03:55",
+ "source_db": "bird_database.db species_listing HOKKAIDO5（北海道鳥類目録）",
+ "sql": "select m.species_id, m.japanese_name, l.listed_name, m.scientific_name, e.residency_hokkaido\n  from species_listing l join species_master m using(species_id) left join ecology e using(species_id)\n  where l.list_code='HOKKAIDO5' order by l.list_seq",
+ "rule": "自動対応=学名一致かつ和名一致先が食い違わない／承認済み対応=hokkaido_alias.json／それ以外=BirdNET該当なし",
+ "labels_sha256": "8e58f903069c06185c05d050cc498bf21bec8c27fd7094947fd1e065014eec38",
+ "counts": {
+  "auto": 449,
+  "approved": 10,
+  "none": 46
+ },
+ "total": 505
+}

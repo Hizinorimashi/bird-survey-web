@@ -1,6 +1,6 @@
 // 鳴き声AI判別 試作ページ専用の圏外対策（このフォルダ内だけで働く）
 // 保存領域名は本体アプリ(sw.js)の掃除対象 "bird-survey-*" と重ならない名前にする
-const CACHE = 'birdnet-proto-v6';
+const CACHE = 'birdnet-proto-v7';
 
 // AI本体の置き場（birdnet-worker.js の MODEL_BASE と同じ規則）
 const MODEL_BASE = self.location.hostname.endsWith('github.io')
@@ -18,6 +18,8 @@ const PRECACHE = [
   './birdnet-worker.js',
   './tf.min.js',
   './eval_list.json',
+  './hokkaido_list.json',
+  './hokkaido_alias.json',
   './survey_mode.js',
   './pcm-recorder.js',
   './models/birdnet/labels/en_us.txt',
@@ -38,7 +40,7 @@ self.addEventListener('activate', e => {
 });
 
 // 画面・判別プログラムはネット優先（更新を拾う）、だめなら保存分。AI本体は保存分優先。
-const NET_FIRST = ['birdnet_test.html', 'birdnet-worker.js', 'eval_list.json', 'survey_mode.js', 'pcm-recorder.js'];
+const NET_FIRST = ['birdnet_test.html', 'birdnet-worker.js', 'eval_list.json', 'hokkaido_list.json', 'hokkaido_alias.json', 'survey_mode.js', 'pcm-recorder.js'];
 
 self.addEventListener('fetch', e => {
   const req = e.request;

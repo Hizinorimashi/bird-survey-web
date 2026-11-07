@@ -24,7 +24,7 @@
 
 <h2>1. 判別してみる</h2>
 <div>
-  <label><input type="checkbox" id="optHokkaido" checked> アプリの北海道188種に絞る</label>
+  <label><input type="checkbox" id="optHokkaido" checked> 北海道の鳥に絞る（北海道鳥類目録505種）</label>
   <label><input type="checkbox" id="optArea"> 場所と時期で絞る</label>
 </div>
 <div id="areaBox" style="margin:4px 0">
@@ -33,7 +33,7 @@
   <button id="btnGps">現在地</button>
 </div>
 <div>
-  <input type="file" id="fileInput" accept="audio/*">
+  <input type="file" id="fileInput" accept="audio/*" disabled>
   <button id="btnRec" disabled>録音（10秒）</button>
 </div>
 <div id="result"></div>
@@ -63,7 +63,7 @@
   <label>手帳を読み込む <input type="file" id="importInput" accept=".json,application/json"></label>
 </div>
 
-<h2>2. 答え合わせ（アプリ内の鳴き声188種）</h2>
+<h2>2. 答え合わせ（アプリ内の鳴き声188種の音源で）</h2>
 <div>
   <p style="font-size:0.9em">※188種の音声をネットから取得します（Wi-Fi推奨・圏外では不可）。</p>
   先頭 <input id="capSec" size="4" value="60"> 秒まで使う
@@ -85,9 +85,13 @@ const $ = id => document.getElementById(id);
 // 画面に文字を埋め込むときは必ず無害化する（手帳の読み込みファイル等、外から来た文字が入るため）
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let labels = [];          // [{sci, ja, en}]
-let sciIndex = {};        // 学名 → 番号
+let sciIndex = Object.create(null);   // 学名 → 番号（継承プロパティの無い辞書。constructor 等を実在の学名と取り違えない）
 let evalList = [];        // 正解表
-let hokkaidoIdx = null;   // 北海道188種のAI内番号の集合
+let hokkaidoIdx = null;   // 北海道目録の種に対応するAI内番号の集合
+let hkSpecies = [];       // 北海道目録505種（hokkaido_list.json）
+const idxName = new Map();    // AI内番号 → 表示名（目録掲載名）
+const nameCanon = new Map();  // いろいろな呼び名 → 表示名（承認済み・自動対応の種だけ。推測では統合しない）
+let prepError = null;     // 準備（一覧の読み込み・検査）の失敗
 let areaScores = null;
 let evalRows = [];
 let reqId = 0;
@@ -122,11 +126,15 @@ function setStatus(t) { $('status').textContent = t; }
 
 async function loadText(url) { const r = await fetch(url); if (!r.ok) throw new Error(url); return r.text(); }
 
+async function loadJson(url) { const r = await fetch(url); if (!r.ok) throw new Error(url + ' を読めません（' + r.status + '）'); return r.json(); }
+
 async function prepare() {
-  const [en, ja, ev] = await Promise.all([
+  const [en, ja, ev, hk, al] = await Promise.all([
     loadText('models/birdnet/labels/en_us.txt'),
     loadText('models/birdnet/labels/ja.txt'),
-    fetch('eval_list.json').then(r => r.json())
+    loadJson('eval_list.json'),
+    loadJson('hokkaido_list.json'),
+    loadJson('hokkaido_alias.json')
   ]);
   const enL = en.split('\n'), jaL = ja.split('\n');
   labels = enL.filter(l => l.trim()).map((l, i) => {
@@ -136,20 +144,53 @@ async function prepare() {
   });
   labels.forEach((b, i) => sciIndex[b.sci] = i);
   evalList = ev;
-  hokkaidoIdx = new Set(ev.filter(e => e.sci && sciIndex[e.sci] !== undefined).map(e => sciIndex[e.sci]));
-  // 正解表の和名を優先表示用に
-  ev.forEach(e => { if (e.sci && sciIndex[e.sci] !== undefined) labels[sciIndex[e.sci]].appJa = e.ja; });
-  // 「その他」で選べる種名一覧: アプリの北海道188種（BirdNETが知らない8種も含む）を五十音順に
-  const names = ev.map(e => e.ja).sort((a, b) => a.localeCompare(b, 'ja'));
-  $('regSelect').innerHTML = '<option value="">― 一覧から選ぶ（五十音順）―</option>' +
+  // ---- 北海道目録の一覧と対応表の検査（おかしければ準備失敗として止める）----
+  const bad = m => { throw new Error('北海道の種の一覧が壊れています: ' + m); };
+  const isLabel = x => typeof x === 'string' && Object.prototype.hasOwnProperty.call(sciIndex, x) && Number.isInteger(sciIndex[x]) && sciIndex[x] >= 0 && sciIndex[x] < labels.length;
+  if (!hk || hk.format !== 'hokkaido-list' || hk.version !== 1 || !Array.isArray(hk.species)) bad('形式');
+  if (!al || al.format !== 'hokkaido-alias' || al.version !== 1 || !al.alias || typeof al.alias !== 'object' || Array.isArray(al.alias)) bad('対応表の形式');
+  const ids = new Set();
+  for (const sp of hk.species) {
+    const okStr = v => typeof v === 'string' && v.length > 0 && v.length <= 60;
+    if (!sp || !okStr(sp.id) || !okStr(sp.list_ja) || !okStr(sp.master_ja) || !okStr(sp.sci) || ids.has(sp.id)) bad('種の行 ' + JSON.stringify(sp && sp.id));
+    if (!Array.isArray(sp.birdnet) || !sp.birdnet.every(isLabel)) bad('対応先 ' + sp.id);
+    ids.add(sp.id);
+  }
+  if (hk.species.length !== 505) bad('種数が505ではありません（' + hk.species.length + '）');
+  for (const [id, arr] of Object.entries(al.alias)) {
+    if (!ids.has(id) || !Array.isArray(arr) || !arr.length || !arr.every(isLabel)) bad('承認済み対応 ' + id);
+  }
+  hkSpecies = hk.species;
+  hokkaidoIdx = new Set();
+  for (const sp of hkSpecies) {
+    const targets = sp.birdnet.length ? sp.birdnet : (al.alias[sp.id] || []);
+    sp.mapped = targets.map(x => sciIndex[x]);
+    for (const i of sp.mapped) {
+      if (idxName.has(i) && idxName.get(i) !== sp.list_ja) bad('同じ分類に2つの種が対応しています ' + labels[i].sci);
+      hokkaidoIdx.add(i); idxName.set(i, sp.list_ja);
+    }
+    for (const n of [sp.list_ja, sp.master_ja]) nameCanon.set(n, sp.list_ja);
+    for (const i of sp.mapped) nameCanon.set(labels[i].ja, sp.list_ja);
+  }
+  // 旧188種の名前も、同じAI内番号に対応していれば同じ種として読み替える
+  for (const e of ev) if (e.sci && idxName.has(sciIndex[e.sci])) nameCanon.set(e.ja, idxName.get(sciIndex[e.sci]));
+  // 「その他」で選べる種名一覧: 北海道目録505種（BirdNET未対応の種も含む）を五十音順に
+  const names = [...new Set(hkSpecies.map(sp => sp.list_ja))].sort((a, b) => a.localeCompare(b, 'ja'));
+  $('regSelect').innerHTML = '<option value="">― 一覧から選ぶ（北海道目録・五十音順）―</option>' +
     names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('') +
     '<option value="__free__">一覧にない種（自分で入力）</option>';
+  renderNotebook();
+  if (window.SURVEY && SURVEY.render) SURVEY.render();
 }
+// 呼び名を表示名にそろえる（承認済み・自動対応だけ。知らない名前はそのまま）
+function canonName(n) { return nameCanon.get(n) || n; }
 
 async function onLoaded(backend) {
   await ready;
+  if (prepError) { setStatus('準備に失敗しました（判別は使えません）: ' + prepError.message); return; }
   setStatus(`準備完了（${labels.length}種・計算方式: ${backend}）`);
   $('btnRec').disabled = false;
+  $('fileInput').disabled = false;
   $('btnEval').disabled = false;
   if (window.SURVEY) SURVEY.setModelReady();   // 連続モードの開始は前回の調査の読み込みも済んでから
 }
@@ -194,7 +235,12 @@ function rankList(scores, { hokkaido, area }) {
   return list;
 }
 
-function nameOf(i) { const b = labels[i]; return b.appJa || b.ja; }
+// AI内番号の表示名。北海道目録の種は目録掲載名。それ以外で北海道の種と名前がかぶる別種には学名を添えて区別する
+function nameOf(i) {
+  if (idxName.has(i)) return idxName.get(i);
+  const b = labels[i];
+  return nameCanon.has(b.ja) ? `${b.ja}（別種 ${b.sci}）` : b.ja;
+}
 
 // ---- 手帳（教えた声の指紋）----
 const NB_T0 = 0.6;          // 似ている度の基準（科博データで検証した値）
@@ -242,7 +288,8 @@ function notebookSims(frames) {
     let best = -1, bestEntry = null;
     for (const en of nbEntries) for (const e of en.embs) { const s = dot(f.e, e); if (s > best) { best = s; bestEntry = en; } }
     if (!bestEntry || bestEntry.kind === 'noise') continue;
-    if (!(bestEntry.ja in sims) || best > sims[bestEntry.ja]) sims[bestEntry.ja] = best;
+    const k = canonName(bestEntry.ja);   // 手帳の古い呼び名（エゾフクロウ/フクロウ等）も同じ種にそろえる
+    if (!(k in sims) || best > sims[k]) sims[k] = best;
   }
   return sims;
 }
@@ -279,6 +326,8 @@ function renderResult() {
 }
 
 async function judge(arrayBuffer) {
+  await ready;
+  if (prepError || !hokkaidoIdx) { setStatus('準備に失敗しているため判別できません'); return; }   // どの経路から呼ばれても準備失敗なら止める
   setStatus('判別中…');
   await updateArea();
   const { pcm, sec } = await decodeToPcm(arrayBuffer, 120);
@@ -308,7 +357,7 @@ async function register(ja, kind) {
   const entry = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 8), ja: kind === 'noise' ? NOISE : ja, kind, date: new Date().toISOString(), embs: frames.map(f => f.e) };
   await idbPut(entry);
   nbEntries.push(entry);
-  const n = nbEntries.filter(e => e.ja === entry.ja).length;
+  const n = nbEntries.filter(e => canonName(e.ja) === canonName(entry.ja)).length;
   $('regMsg').textContent = `「${entry.ja}」として登録しました（この種は${n}件目）`;
   renderNotebook();
   renderResult();
@@ -316,7 +365,7 @@ async function register(ja, kind) {
 
 function renderNotebook() {
   const groups = Object.create(null);
-  for (const e of nbEntries) (groups[e.ja] = groups[e.ja] || []).push(e);
+  for (const e of nbEntries) { const k = canonName(e.ja); (groups[k] = groups[k] || []).push(e); }   // 古い呼び名も同じ種にまとめて表示（保存値は書き換えない）
   const names = Object.keys(groups).sort((a, b) => (a === NOISE) - (b === NOISE) || a.localeCompare(b, 'ja'));
   if (!names.length) { $('nbSummary').innerHTML = '<p>まだ何も登録されていません。</p>'; return; }
   $('nbSummary').innerHTML = '<table><tr><th>種名</th><th>件数</th><th>登録日時（×で消す）</th></tr>' +
@@ -443,7 +492,9 @@ async function runEval() {
         if (e.sci && sciIndex[e.sci] !== undefined) {
           const ci = sciIndex[e.sci];
           row[key + '_rank_all'] = all.findIndex(t => t.i === ci) + 1;
-          row[key + '_rank_hk'] = hk.findIndex(t => t.i === ci) + 1;
+          const rk = hk.findIndex(t => t.i === ci) + 1;
+          row[key + '_rank_hk'] = rk;              // 0 = 北海道の絞り込みで正解の種が候補から外れた
+          row.hk_excluded = rk === 0;
           row[key + '_conf'] = (scores[ci] * 100).toFixed(1);
         }
       }
@@ -456,30 +507,40 @@ async function runEval() {
   $('btnEval').disabled = false; $('btnCsv').disabled = false;
 }
 
+// 分母は「BirdNETに正解の種がある音源」（旧版で評価できた180種）で固定する。
+// 絞り込みで外れた・取得や推論に失敗した行も分母に残し、不正解として数える（成績を良く見せないため）
 function summarize(rows, key, scope) {
-  const target = rows.filter(r => r[key + '_rank_' + scope]);
-  const n = target.length;
-  const c1 = target.filter(r => r[key + '_rank_' + scope] === 1).length;
-  const c5 = target.filter(r => r[key + '_rank_' + scope] <= 5).length;
-  return { n, c1, c5 };
+  const target = rows.filter(r => r.sci && sciIndex[r.sci] !== undefined);
+  const rank = r => r[key + '_rank_' + scope] || 0;
+  return {
+    n: target.length,
+    c1: target.filter(r => rank(r) === 1).length,
+    c5: target.filter(r => rank(r) >= 1 && rank(r) <= 5).length,
+    excluded: scope === 'hk' ? target.filter(r => !r.error && rank(r) === 0).length : 0,
+    failed: target.filter(r => r.error).length
+  };
 }
 
 function renderEval() {
   const pct = (a, n) => n ? (a / n * 100).toFixed(1) + '%' : '-';
-  let html = '<table><tr><th>判定の仕方</th><th>候補の範囲</th><th>対象種数</th><th>1位で正解</th><th>5位以内に正解</th></tr>';
+  let html = '<table><tr><th>判定の仕方</th><th>候補の範囲</th><th>対象種数</th><th>1位で正解</th><th>5位以内に正解</th><th>うち絞り込みで除外</th><th>うち取得・推論の失敗</th></tr>';
   for (const [key, kname] of [['max', '区間の最大'], ['pool', '全体のまとめ値']]) {
-    for (const [scope, sname] of [['all', '世界6,522種'], ['hk', '北海道188種']]) {
+    for (const [scope, sname] of [['all', '世界6,522種'], ['hk', `北海道目録（BirdNET対応${hokkaidoIdx.size}分類）`]]) {
       const s = summarize(evalRows, key, scope);
-      html += `<tr><td>${kname}</td><td>${sname}</td><td>${s.n}</td><td>${s.c1}（${pct(s.c1, s.n)}）</td><td>${s.c5}（${pct(s.c5, s.n)}）</td></tr>`;
+      html += `<tr><td>${kname}</td><td>${sname}</td><td>${s.n}</td><td>${s.c1}（${pct(s.c1, s.n)}）</td><td>${s.c5}（${pct(s.c5, s.n)}）</td><td>${s.excluded}</td><td>${s.failed}</td></tr>`;
     }
   }
-  html += '</table><p>※AIが知らない種（8種）は対象種数から除外。</p>';
+  const noModel = evalRows.filter(r => !r.sci || sciIndex[r.sci] === undefined).map(r => r.ja);
+  const excl = evalRows.filter(r => r.hk_excluded).map(r => r.ja);
+  html += `</table><p>※分母は「BirdNETに正解の種がある音源」で固定。絞り込みで外れた正解・取得や推論の失敗は不正解として数えています。<br>` +
+    `BirdNET未対応で分母に入らない種（${noModel.length}）: ${esc(noModel.join('、'))}<br>` +
+    `北海道の絞り込みで正解が候補から外れた種（${excl.length}）: ${esc(excl.join('、') || 'なし')}</p>`;
   $('evalSummary').innerHTML = html;
   $('evalTable').innerHTML = '<table><tr><th>正解</th><th>秒</th><th>北海道内1位</th><th>北海道内順位</th><th>正解の確からしさ</th></tr>' +
     evalRows.map(r => {
       const rk = r.max_rank_hk;
       const cls = !r.sci ? 'na' : rk === 1 ? 'ok' : 'ng';
-      return `<tr class="${cls}"><td>${esc(r.ja)}</td><td>${esc(r.sec || '')}</td><td>${esc(r.max_top1_hk || r.error || '')}</td><td>${r.sci ? rk : '対象外'}</td><td>${r.max_conf ?? ''}</td></tr>`;
+      return `<tr class="${cls}"><td>${esc(r.ja)}</td><td>${esc(r.sec || '')}</td><td>${esc(r.max_top1_hk || r.error || '')}</td><td>${!r.sci ? '対象外' : r.hk_excluded ? '絞り込みで除外' : rk}</td><td>${r.max_conf ?? ''}</td></tr>`;
     }).join('') + '</table>';
 }
 
@@ -495,7 +556,7 @@ $('btnCsv').onclick = () => {
 };
 
 $('date').valueAsDate = new Date();
-const ready = prepare().catch(err => setStatus('準備エラー: ' + err));
+const ready = prepare().catch(err => { prepError = err; setStatus('準備に失敗しました（判別は使えません）: ' + err.message); });
 loadNotebook().catch(err => { $('nbSummary').textContent = '手帳を読み込めませんでした: ' + err; });
 
 // ---- 圏外対策（AI一式をスマホに保存）----
@@ -508,8 +569,8 @@ async function checkOffline() {
     const keys = await caches.keys();
     const name = keys.find(k => k.startsWith('birdnet-proto-'));
     const n = name ? (await (await caches.open(name)).keys()).length : 0;
-    el.textContent = n >= 25 ? '圏外での利用: 準備OK（AI一式を保存済み）' : `圏外での利用: 保存中…（${n}/25）`;
-    if (n < 25) setTimeout(checkOffline, 3000);
+    el.textContent = n >= 27 ? '圏外での利用: 準備OK（AI一式を保存済み）' : `圏外での利用: 保存中…（${n}/27）`;
+    if (n < 27) setTimeout(checkOffline, 3000);
   } catch (err) { el.textContent = '圏外での利用: 準備失敗 ' + err; }
 }
 checkOffline();

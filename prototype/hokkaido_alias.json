@@ -1,0 +1,40 @@
+{
+ "format": "hokkaido-alias",
+ "version": 1,
+ "approved_at": "2026-11-07",
+ "approved_by": "user",
+ "alias": {
+  "BD010": [
+   "Anser cygnoides"
+  ],
+  "BD011": [
+   "Anser serrirostris",
+   "Anser fabalis"
+  ],
+  "BD141": [
+   "Charadrius morinellus"
+  ],
+  "BD227": [
+   "Larus argentatus"
+  ],
+  "BD448": [
+   "Parus minor"
+  ],
+  "BD453": [
+   "Calandrella dukhunensis",
+   "Calandrella brachydactyla"
+  ],
+  "BD479": [
+   "Phylloscopus plumbeitarsus"
+  ],
+  "BD494": [
+   "Helopsaltes certhiola"
+  ],
+  "BD495": [
+   "Helopsaltes ochotensis"
+  ],
+  "BD634": [
+   "Emberiza spodocephala"
+  ]
+ }
+}

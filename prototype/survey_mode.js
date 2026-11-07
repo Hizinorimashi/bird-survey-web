@@ -15,6 +15,7 @@
   const GAP_MERGE = 5;                     // 同じ種の検出をまとめる間隔（窓数＝15秒）
   const HUMAN_THR = 0.3;                   // 人の声とみなす値
   const POS_MAX_AGE = 60000;               // 位置を使ってよい時間差（ms）
+  const MAX_SPECIES_PER_WIN = 3;           // 1つの3秒区間で記録する種の上限（同時に鳴く複数種）
   const NONBIRD_SCI = ['Dog', 'Engine', 'Environmental', 'Fireworks', 'Gun', 'Human non-vocal', 'Human vocal',
     'Human whistle', 'Noise', 'Power tools', 'Siren'];
 
@@ -150,35 +151,41 @@
     if (S.running && gen === S.gen) setTimeout(pump, 0);
   }
 
+  // 3秒区間ごとの判定。鳥以外を除いたうえで、基準以上（thr以上）の種を上位から最大 MAX_SPECIES_PER_WIN 種まで記録する
+  // （BirdNETは種ごとに独立した確からしさを出すので、同時に鳴いた複数種を扱える）。まとめ・切り出し・人の声の判定は種ごとに独立
   function handleWindow(ws, row, frame, seg) {
     if (humanIdx !== undefined && row[humanIdx] >= HUMAN_THR) S.humanWins.add(ws);
     const opt = { hokkaido: $('optHokkaido').checked, area: $('optArea').checked };
-    const list = combinedList({ frames: [frame], maxv: row }, opt).filter(x => !nonBirdNames.has(x.ja));
-    const top = list[0];
     const thr = parseFloat($('smThr').value) || 0.3;
-    if (!top || top.score < thr) return;
-    const src = top.nb > top.bn ? '手帳' : 'BirdNET';
+    const hits = combinedList({ frames: [frame], maxv: row }, opt)
+      .filter(x => !nonBirdNames.has(x.ja) && x.score >= thr)
+      .slice(0, MAX_SPECIES_PER_WIN);
     const tw = tOfSeg(seg, ws);
-    // 同じ種が続いていれば1件にまとめる
-    let ev = S.events.find(e => e.ja === top.ja && !e.closed && e.seg === seg.id && ws - e.endS <= GAP_MERGE * WIN);
-    if (!ev) {
-      const posOk = S.pos && Math.abs(S.pos.t - tw) <= POS_MAX_AGE;
-      ev = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), ja: top.ja, startS: ws, endS: ws + WIN, seg: seg.id,
-        t0: tw, t1: tOfSeg(seg, ws + WIN), count: 0, hits: [], max: 0, bestS: ws, src,
-        lat: posOk ? S.pos.lat : null, lng: posOk ? S.pos.lng : null, acc: posOk ? S.pos.acc : null, clip: null, note: '' };
-      S.events.push(ev);
-    }
-    ev.count++; ev.hits.push(tw); ev.endS = ws + WIN; ev.t1 = tOfSeg(seg, ws + WIN);
-    if (top.score > ev.max) {
-      ev.max = top.score; ev.bestS = ws; ev.src = src; ev.emb = frame.e;
-      // 一番よく聞こえた窓の前後を、その範囲の窓がすべて判別し終わった時点で切り出す
-      const pad = parseFloat($('smPad').value) || 5;
-      const a = Math.max(0, ws - pad * SR), b = ws + WIN + pad * SR;
-      S.pendingClips = S.pendingClips.filter(p => p.ev !== ev);
-      S.pendingClips.push({ ev, a, b, need: Math.ceil(b / WIN) * WIN, seg, gen: S.gen });
+    for (const top of hits) {
+      const src = top.nb > top.bn ? '手帳' : 'BirdNET';
+      // 同じ種が続いていれば1件にまとめる
+      let ev = S.events.find(e => e.ja === top.ja && !e.closed && e.seg === seg.id && ws - e.endS <= GAP_MERGE * WIN);
+      if (!ev) {
+        const posOk = S.pos && Math.abs(S.pos.t - tw) <= POS_MAX_AGE;
+        ev = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), ja: top.ja, startS: ws, endS: ws + WIN, seg: seg.id,
+          t0: tw, t1: tOfSeg(seg, ws + WIN), count: 0, hits: [], max: 0, bestS: ws, src,
+          lat: posOk ? S.pos.lat : null, lng: posOk ? S.pos.lng : null, acc: posOk ? S.pos.acc : null, clip: null, note: '',
+          multi: false };
+        S.events.push(ev);
+      }
+      ev.count++; ev.hits.push(tw); ev.endS = ws + WIN; ev.t1 = tOfSeg(seg, ws + WIN);
+      if (hits.length > 1) ev.multi = true;   // 他の種と同じ区間で検出された（手帳に教えるときの注意表示に使う）
+      if (top.score > ev.max) {
+        ev.max = top.score; ev.bestS = ws; ev.src = src; ev.emb = frame.e; ev.embMulti = hits.length > 1;
+        // 一番よく聞こえた窓の前後を、その範囲の窓がすべて判別し終わった時点で切り出す
+        const pad = parseFloat($('smPad').value) || 5;
+        const a = Math.max(0, ws - pad * SR), b = ws + WIN + pad * SR;
+        S.pendingClips = S.pendingClips.filter(p => p.ev !== ev);
+        S.pendingClips.push({ ev, a, b, need: Math.ceil(b / WIN) * WIN, seg, gen: S.gen });
+      }
     }
     for (const e of S.events) if (!e.closed && e.seg === seg.id && ws - e.endS > GAP_MERGE * WIN) e.closed = true;
-    saveSessionSoon();
+    if (hits.length) saveSessionSoon();
   }
 
   // 音の保存は1本の列で順に（同時に走ると上限の判定がずれるため）
@@ -390,7 +397,7 @@
     // 時刻順の一覧（新しい順）。停止区間も混ぜる
     const rows = S.events.map(e => ({ t: e.t0, html:
       `<tr class="${e.review === 'ok' ? 'ok' : e.review === 'ng' ? 'ng' : e.review === 'fixed' ? 'fx' : ''}">` +
-      `<td>${hms(e.t0)}〜${hms(e.t1)}</td><td>${esc(e.ja)}</td><td>${e.count}</td><td>${(e.max * 100).toFixed(0)}%</td><td>${esc(e.src)}</td>` +
+      `<td>${hms(e.t0)}〜${hms(e.t1)}</td><td>${esc(canonName(e.ja))}</td><td>${e.count}</td><td>${(e.max * 100).toFixed(0)}%</td><td>${esc(e.src)}</td>` +
       `<td>${e.clip ? `<button class="smPlay" data-id="${esc(e.clip)}">▶</button>` : ''}<span style="font-size:0.8em">${esc(e.note)}</span></td>` +
       `<td>${reviewCell(e)}</td>` +
       `<td>${e.lat != null ? e.lat.toFixed(4) + ',' + e.lng.toFixed(4) : ''}</td></tr>` }))
@@ -403,11 +410,12 @@
   }
 
   // ---- 判定（正解・不正解・訂正）----
-  const confirmedJa = e => e.review === 'ok' ? e.ja : e.review === 'fixed' ? e.fixedJa : '';
+  // 表示・書き出しの種名は読み替え後の名前（保存値は書き換えない）
+  const confirmedJa = e => canonName(e.review === 'ok' ? e.ja : e.review === 'fixed' ? e.fixedJa : '') ;
   function reviewCell(e) {
     const btn = (act, label) => `<button class="smRv" data-id="${esc(e.id)}" data-act="${act}">${label}</button>`;
     if (!e.review) return btn('ok', '○正解') + btn('ng', '×不正解') + btn('fix', '種を直す');
-    const label = e.review === 'ok' ? '○正解' : e.review === 'ng' ? '×不正解' : '→' + esc(e.fixedJa);
+    const label = e.review === 'ok' ? '○正解' : e.review === 'ng' ? '×不正解' : '→' + esc(canonName(e.fixedJa));
     const teach = e.review !== 'ng' && e.emb ? (e.taught ? ' 手帳に登録済み' : btn('teach', '手帳に教える')) : '';
     return `<b>${label}</b> ${btn('undo', '取消')}${teach}`;
   }
@@ -420,10 +428,11 @@
       const v = (prompt('正しい種名を入力してください（例: ' + names.slice(0, 3).join('、') + '）', '') || '').trim();
       if (!v) return;
       if (v.length > 40) { alert('種名が長すぎます'); return; }
-      if (!names.includes(v) && !confirm(`「${v}」は北海道の188種の一覧にありません。このまま使いますか？`)) return;
-      e.review = 'fixed'; e.fixedJa = v;
+      if (!names.includes(canonName(v)) && !confirm(`「${v}」は北海道鳥類目録（505種）にありません。このまま使いますか？`)) return;
+      e.review = 'fixed'; e.fixedJa = canonName(v);
     } else if (act === 'teach') {
       const ja = confirmedJa(e); if (!ja || !e.emb) return;
+      if (e.embMulti && !confirm('この声は他の種と同じ3秒の中で聞こえていました。別の種の声が混ざって覚える可能性があります。手帳に教えますか？')) return;
       const entry = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 8), ja, kind: 'bird', date: new Date().toISOString(), embs: [e.emb] };
       await idbPut(entry); nbEntries.push(entry); renderNotebook();
       e.taught = true;
@@ -440,7 +449,7 @@
     const t1 = Math.max(S.running ? Date.now() : 0, ...S.events.map(e => e.t1));
     const cols = []; for (let t = t0; t <= t1; t += bin) cols.push(t);
     const evs = S.events.filter(e => e.review !== 'ng');
-    const nm = e => e.review === 'fixed' ? e.fixedJa : e.ja;
+    const nm = e => canonName(e.review === 'fixed' ? e.fixedJa : e.ja);
     const cnt = new Map();
     for (const e of evs) {
       if (!cnt.has(nm(e))) cnt.set(nm(e), new Map());
@@ -517,11 +526,11 @@
       if (e.clip) {
         const c = await sget('clips', e.clip);
         if (c) {
-          fn = hms(e.t0).replace(/:/g, '') + '_' + safeName(e.ja) + '_' + Math.round(e.max * 100) + '.wav';
+          fn = hms(e.t0).replace(/:/g, '') + '_' + safeName(canonName(e.ja)) + '_' + Math.round(e.max * 100) + '.wav';
           files.push({ name: fn, data: wav(c.pcm) });
         }
       }
-      lines.push([hms(e.t0), hms(e.t1), e.ja, rvName[e.review] || '未判定', confirmedJa(e), e.count, (e.max * 100).toFixed(1), e.src,
+      lines.push([hms(e.t0), hms(e.t1), canonName(e.ja), rvName[e.review] || '未判定', confirmedJa(e), e.count, (e.max * 100).toFixed(1), e.src,
         e.lat ?? '', e.lng ?? '', e.acc != null ? Math.round(e.acc) : '', fn, e.clipT0 ? hms(e.clipT0) : '', e.note]);
     }
     for (const g of S.gaps) lines.push([hms(g.from), g.to ? hms(g.to) : '', '（録音停止）', '', '', '', '', '', '', '', '', '', '', g.reason || '画面が消えた・別アプリ']);
