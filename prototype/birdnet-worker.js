@@ -12,7 +12,7 @@ importScripts('tf.min.js');
 // GitHub Pages に約60MBのモデルを載せると公開処理が時間切れで失敗するため（2026-11-07）。
 // 手元での試験時は prototype/models/ を使う。
 const MODEL_BASE = self.location.hostname.endsWith('github.io')
-  ? 'https://raw.githubusercontent.com/Hizinorimashi/bird-survey-web/models/birdnet'
+  ? 'https://raw.githubusercontent.com/Hizinorimashi/bird-survey-web/7e1e996105e4d2bfdf1cf9e84c5c5d3d715513b5/birdnet'
   : 'models/birdnet';
 const MODEL_PATH = MODEL_BASE + '/model.json';
 const AREA_MODEL_PATH = MODEL_BASE + '/area-model/model.json';

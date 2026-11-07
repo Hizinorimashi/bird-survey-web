@@ -236,7 +236,7 @@ async function loadNotebook() { nbEntries = await idbAll(); renderNotebook(); }
 
 // 区間ごとに手帳で一番近い登録を探し、種ごとの最大の近さを返す（一番近いのが「雑音」の区間は数えない）
 function notebookSims(frames) {
-  const sims = {};
+  const sims = Object.create(null);   // 種名をキーにする辞書は継承プロパティの無い形にする（__proto__ 等の種名対策）
   if (!nbEntries.length) return sims;
   for (const f of frames) {
     let best = -1, bestEntry = null;
@@ -249,7 +249,7 @@ function notebookSims(frames) {
 
 // BirdNETと手帳を合わせた候補一覧
 function combinedList(rec, opt) {
-  const byName = {};
+  const byName = Object.create(null);
   for (const t of rankList(rec.maxv, opt)) {
     const ja = nameOf(t.i);
     if (!byName[ja] || t.s > byName[ja].bn) byName[ja] = { ja, bn: t.s, nb: 0, sim: null };
@@ -315,7 +315,7 @@ async function register(ja, kind) {
 }
 
 function renderNotebook() {
-  const groups = {};
+  const groups = Object.create(null);
   for (const e of nbEntries) (groups[e.ja] = groups[e.ja] || []).push(e);
   const names = Object.keys(groups).sort((a, b) => (a === NOISE) - (b === NOISE) || a.localeCompare(b, 'ja'));
   if (!names.length) { $('nbSummary').innerHTML = '<p>まだ何も登録されていません。</p>'; return; }
@@ -357,6 +357,7 @@ $('btnExport').onclick = () => {
 
 $('importInput').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
+  if (f.size > 50 * 1024 * 1024) { alert('ファイルが大きすぎます（50MBまで）'); e.target.value = ''; return; }
   try {
     const data = JSON.parse(await f.text());
     if (!data || data.format !== 'birdnet-notebook' || data.version !== 1 || !Array.isArray(data.entries)) throw new Error('手帳のファイルではありません');
@@ -375,6 +376,7 @@ $('importInput').onchange = async e => {
         try {
           embs = x.embs.map(b64ToF32);
           if (!embs.every(v => v.length === 1024 && v.every(Number.isFinite))) embs = null;
+          else embs = embs.map(l2);   // 大きさを揃え直す（極端な値で似ている度を水増しさせない）
         } catch (err) { embs = null; }
       }
       if (!ok || !embs) { bad++; continue; }

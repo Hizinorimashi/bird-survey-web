@@ -1,10 +1,10 @@
 // 鳴き声AI判別 試作ページ専用の圏外対策（このフォルダ内だけで働く）
 // 保存領域名は本体アプリ(sw.js)の掃除対象 "bird-survey-*" と重ならない名前にする
-const CACHE = 'birdnet-proto-v5';
+const CACHE = 'birdnet-proto-v6';
 
 // AI本体の置き場（birdnet-worker.js の MODEL_BASE と同じ規則）
 const MODEL_BASE = self.location.hostname.endsWith('github.io')
-  ? 'https://raw.githubusercontent.com/Hizinorimashi/bird-survey-web/models/birdnet'
+  ? 'https://raw.githubusercontent.com/Hizinorimashi/bird-survey-web/7e1e996105e4d2bfdf1cf9e84c5c5d3d715513b5/birdnet'
   : './models/birdnet';
 const MODEL_FILES = [
   'model.json',
@@ -44,8 +44,8 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.href.startsWith('https://raw.githubusercontent.com/')) {   // AI本体: 保存分優先
-    e.respondWith(caches.match(req.url).then(c => c || fetch(req)));
+  if (url.href.startsWith(MODEL_BASE + '/')) {   // AI本体（版を固定したアドレスのみ）: 保存分優先
+    e.respondWith(caches.open(CACHE).then(c => c.match(req.url)).then(c => c || fetch(req)));
     return;
   }
   const inScope = url.href.startsWith(self.registration.scope);
