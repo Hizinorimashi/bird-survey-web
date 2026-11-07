@@ -8,8 +8,14 @@
 
 importScripts('tf.min.js');
 
-const MODEL_PATH = 'models/birdnet/model.json';
-const AREA_MODEL_PATH = 'models/birdnet/area-model/model.json';
+// 公開版（github.io）は公開対象外の棚(modelsブランチ)から読み込む。
+// GitHub Pages に約60MBのモデルを載せると公開処理が時間切れで失敗するため（2026-11-07）。
+// 手元での試験時は prototype/models/ を使う。
+const MODEL_BASE = self.location.hostname.endsWith('github.io')
+  ? 'https://raw.githubusercontent.com/Hizinorimashi/bird-survey-web/models/birdnet'
+  : 'models/birdnet';
+const MODEL_PATH = MODEL_BASE + '/model.json';
+const AREA_MODEL_PATH = MODEL_BASE + '/area-model/model.json';
 const SAMPLE_RATE = 48000;
 const WINDOW_SAMPLES = 144000; // 3秒
 const BATCH_FRAMES = 8;        // 一度にAIへ渡す3秒区間の数（メモリ節約）
