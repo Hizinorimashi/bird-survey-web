@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>鳴き声AI判別 試作（BirdNET）</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 12px; max-width: 900px; }
+  h1 { font-size: 1.2em; }
+  h2 { font-size: 1.05em; margin-top: 1.5em; border-bottom: 1px solid #ccc; }
+  button { font-size: 1em; padding: 8px 14px; margin: 4px 4px 4px 0; }
+  #status { padding: 6px; background: #eef; }
+  table { border-collapse: collapse; font-size: 0.9em; }
+  td, th { border: 1px solid #ccc; padding: 3px 6px; }
+  .ok { background: #dfd; } .ng { background: #fdd; } .na { background: #eee; }
+  .credit { font-size: 0.8em; color: #555; margin-top: 2em; }
+  label { margin-right: 1em; }
+</style>
+</head>
+<body>
+<h1>鳴き声AI判別 試作（BirdNET）</h1>
+<div id="status">AIを読み込み中…</div>
+<div id="offline" style="font-size:0.9em;color:#555;margin-top:4px">圏外での利用: 確認中…</div>
+
+<h2>1. 判別してみる</h2>
+<div>
+  <label><input type="checkbox" id="optHokkaido" checked> アプリの北海道188種に絞る</label>
+  <label><input type="checkbox" id="optArea"> 場所と時期で絞る</label>
+</div>
+<div id="areaBox" style="margin:4px 0">
+  緯度 <input id="lat" size="8" value="43.06"> 経度 <input id="lng" size="8" value="141.35">
+  日付 <input id="date" type="date">
+  <button id="btnGps">現在地</button>
+</div>
+<div>
+  <input type="file" id="fileInput" accept="audio/*">
+  <button id="btnRec" disabled>録音（10秒）</button>
+</div>
+<div id="result"></div>
+
+<h2>2. 答え合わせ（アプリ内の鳴き声188種）</h2>
+<div>
+  <p style="font-size:0.9em">※188種の音声をネットから取得します（Wi-Fi推奨・圏外では不可）。</p>
+  先頭 <input id="capSec" size="4" value="60"> 秒まで使う
+  <button id="btnEval" disabled>答え合わせ開始</button>
+  <button id="btnCsv" disabled>結果CSV保存</button>
+</div>
+<div id="evalSummary"></div>
+<div id="evalTable"></div>
+
+<div class="credit">
+  判別AI: BirdNET（Cornell Lab of Ornithology / Chemnitz University of Technology）, CC BY-SA 4.0。
+  動作部分は BirdNET Live（MIT License）を元に作成。
+</div>
+
+<script>
+'use strict';
+const SR = 48000;
+const $ = id => document.getElementById(id);
+let labels = [];          // [{sci, ja, en}]
+let sciIndex = {};        // 学名 → 番号
+let evalList = [];        // 正解表
+let hokkaidoIdx = null;   // 北海道188種のAI内番号の集合
+let areaScores = null;
+let evalRows = [];
+let reqId = 0;
+const pending = {};
+
+const worker = new Worker('birdnet-worker.js');
+worker.onmessage = ({ data }) => {
+  if (data.message === 'progress') setStatus(`AIを読み込み中… ${data.progress}%`);
+  else if (data.message === 'loaded') onLoaded(data.backend);
+  else if (data.message === 'warn') console.warn(data.text);
+  else if (data.message === 'error') {
+    setStatus('エラー: ' + data.text);
+    if (data.id && pending[data.id]) { pending[data.id].reject(new Error(data.text)); delete pending[data.id]; }
+  }
+  else if (data.message === 'predict_progress') {
+    if (pending[data.id] && pending[data.id].onProgress) pending[data.id].onProgress(data.done, data.total);
+  }
+  else if (data.message === 'predicted' || data.message === 'area') {
+    if (pending[data.id]) { pending[data.id].resolve(data); delete pending[data.id]; }
+  }
+};
+
+function ask(msg, transfer, onProgress) {
+  const id = ++reqId;
+  return new Promise((resolve, reject) => {
+    pending[id] = { resolve, reject, onProgress };
+    worker.postMessage({ ...msg, id }, transfer || []);
+  });
+}
+
+function setStatus(t) { $('status').textContent = t; }
+
+async function loadText(url) { const r = await fetch(url); if (!r.ok) throw new Error(url); return r.text(); }
+
+async function prepare() {
+  const [en, ja, ev] = await Promise.all([
+    loadText('models/birdnet/labels/en_us.txt'),
+    loadText('models/birdnet/labels/ja.txt'),
+    fetch('eval_list.json').then(r => r.json())
+  ]);
+  const enL = en.split('\n'), jaL = ja.split('\n');
+  labels = enL.filter(l => l.trim()).map((l, i) => {
+    const [sci, enName] = l.trim().split('_');
+    const jaName = (jaL[i] || '').trim().split('_')[1] || enName;
+    return { sci, en: enName, ja: jaName };
+  });
+  labels.forEach((b, i) => sciIndex[b.sci] = i);
+  evalList = ev;
+  hokkaidoIdx = new Set(ev.filter(e => e.sci && sciIndex[e.sci] !== undefined).map(e => sciIndex[e.sci]));
+  // 正解表の和名を優先表示用に
+  ev.forEach(e => { if (e.sci && sciIndex[e.sci] !== undefined) labels[sciIndex[e.sci]].appJa = e.ja; });
+}
+
+async function onLoaded(backend) {
+  await ready;
+  setStatus(`準備完了（${labels.length}種・計算方式: ${backend}）`);
+  $('btnRec').disabled = false;
+  $('btnEval').disabled = false;
+}
+
+// BirdNETの週番号（1か月を4週とし1〜48）
+function birdnetWeek(d) {
+  return (d.getMonth()) * 4 + Math.min(4, Math.ceil(d.getDate() / 7));
+}
+
+async function updateArea() {
+  if (!$('optArea').checked) { areaScores = null; return; }
+  const d = $('date').value ? new Date($('date').value) : new Date();
+  const res = await ask({ message: 'area', lat: parseFloat($('lat').value), lng: parseFloat($('lng').value), week: birdnetWeek(d) });
+  areaScores = res.scores;
+}
+
+// 音声ファイル（Blob/ArrayBuffer）→ 48kHz・モノラルの数値列
+async function decodeToPcm(arrayBuffer, capSec) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SR });
+  try {
+    const buf = await ctx.decodeAudioData(arrayBuffer);
+    let len = buf.length;
+    if (capSec) len = Math.min(len, Math.round(capSec * SR));
+    const out = new Float32Array(len);
+    for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+      const d = buf.getChannelData(ch);
+      for (let i = 0; i < len; i++) out[i] += d[i] / buf.numberOfChannels;
+    }
+    return { pcm: out, sec: buf.duration };
+  } finally { ctx.close(); }
+}
+
+// 判定結果を順位付きの一覧に（絞り込み条件を反映）
+function rankList(scores, { hokkaido, area }) {
+  const list = [];
+  for (let i = 0; i < scores.length; i++) {
+    if (hokkaido && !hokkaidoIdx.has(i)) continue;
+    if (area && areaScores && areaScores[i] < 0.03) continue;   // BirdNET標準の場所しきい値
+    list.push({ i, s: scores[i] });
+  }
+  list.sort((a, b) => b.s - a.s);
+  return list;
+}
+
+function nameOf(i) { const b = labels[i]; return b.appJa || b.ja; }
+
+async function judge(arrayBuffer) {
+  setStatus('判別中…');
+  await updateArea();
+  const { pcm, sec } = await decodeToPcm(arrayBuffer, 120);
+  const t0 = performance.now();
+  const res = await ask({ message: 'predict', pcm }, [pcm.buffer]);
+  const ms = performance.now() - t0;
+  const opt = { hokkaido: $('optHokkaido').checked, area: $('optArea').checked };
+  const top = rankList(res.maxv, opt).slice(0, 10);
+  $('result').innerHTML = `<p>録音 ${sec.toFixed(1)}秒 / 判定 ${(ms / 1000).toFixed(1)}秒</p>` +
+    '<table><tr><th>順位</th><th>種名</th><th>確からしさ（区間の最大）</th><th>全体のまとめ値</th></tr>' +
+    top.map((t, k) => `<tr><td>${k + 1}</td><td>${nameOf(t.i)}</td><td>${(t.s * 100).toFixed(1)}%</td><td>${(res.pooled[t.i] * 100).toFixed(1)}%</td></tr>`).join('') +
+    '</table>';
+  setStatus('判別完了');
+}
+
+$('fileInput').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try { await judge(await f.arrayBuffer()); } catch (err) { setStatus('エラー: ' + err); }
+};
+
+$('btnRec').onclick = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    const rec = new MediaRecorder(stream);
+    const chunks = [];
+    rec.ondataavailable = ev => chunks.push(ev.data);
+    const done = new Promise(r => rec.onstop = r);
+    rec.start();
+    let left = 10;
+    setStatus(`録音中… ${left}秒`);
+    const timer = setInterval(() => { left--; setStatus(`録音中… ${left}秒`); }, 1000);
+    await new Promise(r => setTimeout(r, 10000));
+    clearInterval(timer);
+    rec.stop(); await done;
+    stream.getTracks().forEach(t => t.stop());
+    await judge(await new Blob(chunks).arrayBuffer());
+  } catch (err) { setStatus('録音エラー: ' + err); }
+};
+
+$('btnGps').onclick = () => {
+  navigator.geolocation.getCurrentPosition(p => {
+    $('lat').value = p.coords.latitude.toFixed(4); $('lng').value = p.coords.longitude.toFixed(4);
+  }, err => setStatus('現在地エラー: ' + err.message));
+};
+
+// ---- 答え合わせ ----
+async function runEval() {
+  $('btnEval').disabled = true;
+  const capSec = parseFloat($('capSec').value) || 60;
+  evalRows = [];
+  const t0 = performance.now();
+  for (let k = 0; k < evalList.length; k++) {
+    const e = evalList[k];
+    setStatus(`答え合わせ中 ${k + 1}/${evalList.length}：${e.ja}`);
+    const row = { ja: e.ja, file: e.file, cty: e.cty, sci: e.sci || '' };
+    try {
+      const ab = await (await fetch('../assets/calls/' + e.file)).arrayBuffer();
+      const { pcm, sec } = await decodeToPcm(ab, capSec);
+      row.sec = Math.min(sec, capSec).toFixed(1);
+      const res = await ask({ message: 'predict', pcm }, [pcm.buffer]);
+      for (const [key, scores] of [['max', res.maxv], ['pool', res.pooled]]) {
+        const all = rankList(scores, { hokkaido: false });
+        const hk = rankList(scores, { hokkaido: true });
+        row[key + '_top1'] = nameOf(all[0].i);
+        row[key + '_top1_hk'] = nameOf(hk[0].i);
+        if (e.sci && sciIndex[e.sci] !== undefined) {
+          const ci = sciIndex[e.sci];
+          row[key + '_rank_all'] = all.findIndex(t => t.i === ci) + 1;
+          row[key + '_rank_hk'] = hk.findIndex(t => t.i === ci) + 1;
+          row[key + '_conf'] = (scores[ci] * 100).toFixed(1);
+        }
+      }
+    } catch (err) { row.error = String(err); }
+    evalRows.push(row);
+    if (k % 10 === 9 || k === evalList.length - 1) renderEval();
+  }
+  window.__evalDone = true;
+  setStatus(`答え合わせ完了（${((performance.now() - t0) / 1000).toFixed(0)}秒）`);
+  $('btnEval').disabled = false; $('btnCsv').disabled = false;
+}
+
+function summarize(rows, key, scope) {
+  const target = rows.filter(r => r[key + '_rank_' + scope]);
+  const n = target.length;
+  const c1 = target.filter(r => r[key + '_rank_' + scope] === 1).length;
+  const c5 = target.filter(r => r[key + '_rank_' + scope] <= 5).length;
+  return { n, c1, c5 };
+}
+
+function renderEval() {
+  const pct = (a, n) => n ? (a / n * 100).toFixed(1) + '%' : '-';
+  let html = '<table><tr><th>判定の仕方</th><th>候補の範囲</th><th>対象種数</th><th>1位で正解</th><th>5位以内に正解</th></tr>';
+  for (const [key, kname] of [['max', '区間の最大'], ['pool', '全体のまとめ値']]) {
+    for (const [scope, sname] of [['all', '世界6,522種'], ['hk', '北海道188種']]) {
+      const s = summarize(evalRows, key, scope);
+      html += `<tr><td>${kname}</td><td>${sname}</td><td>${s.n}</td><td>${s.c1}（${pct(s.c1, s.n)}）</td><td>${s.c5}（${pct(s.c5, s.n)}）</td></tr>`;
+    }
+  }
+  html += '</table><p>※AIが知らない種（8種）は対象種数から除外。</p>';
+  $('evalSummary').innerHTML = html;
+  $('evalTable').innerHTML = '<table><tr><th>正解</th><th>秒</th><th>北海道内1位</th><th>北海道内順位</th><th>正解の確からしさ</th></tr>' +
+    evalRows.map(r => {
+      const rk = r.max_rank_hk;
+      const cls = !r.sci ? 'na' : rk === 1 ? 'ok' : 'ng';
+      return `<tr class="${cls}"><td>${r.ja}</td><td>${r.sec || ''}</td><td>${r.max_top1_hk || r.error || ''}</td><td>${r.sci ? rk : '対象外'}</td><td>${r.max_conf ?? ''}</td></tr>`;
+    }).join('') + '</table>';
+}
+
+$('btnEval').onclick = () => runEval().catch(err => setStatus('エラー: ' + err));
+
+$('btnCsv').onclick = () => {
+  const cols = ['ja', 'sci', 'file', 'cty', 'sec', 'max_top1', 'max_rank_all', 'max_top1_hk', 'max_rank_hk', 'max_conf',
+    'pool_top1', 'pool_rank_all', 'pool_top1_hk', 'pool_rank_hk', 'pool_conf', 'error'];
+  const csv = '﻿' + cols.join(',') + '\n' + evalRows.map(r => cols.map(c => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = 'birdnet_eval.csv'; a.click();
+};
+
+$('date').valueAsDate = new Date();
+const ready = prepare().catch(err => setStatus('準備エラー: ' + err));
+
+// ---- 圏外対策（AI一式をスマホに保存）----
+async function checkOffline() {
+  const el = $('offline');
+  if (!('serviceWorker' in navigator)) { el.textContent = '圏外での利用: このブラウザは非対応'; return; }
+  try {
+    await navigator.serviceWorker.register('./sw.js');
+    await navigator.serviceWorker.ready;
+    const keys = await caches.keys();
+    const name = keys.find(k => k.startsWith('birdnet-proto-'));
+    const n = name ? (await (await caches.open(name)).keys()).length : 0;
+    el.textContent = n >= 23 ? '圏外での利用: 準備OK（AI一式を保存済み）' : `圏外での利用: 保存中…（${n}/23）`;
+    if (n < 23) setTimeout(checkOffline, 3000);
+  } catch (err) { el.textContent = '圏外での利用: 準備失敗 ' + err; }
+}
+checkOffline();
+</script>
+</body>
+</html>
