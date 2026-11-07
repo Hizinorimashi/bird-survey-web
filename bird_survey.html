@@ -256,6 +256,7 @@
   .galaudio{width:100%; height:100%; display:flex; flex-direction:column; align-items:center;
     justify-content:center; gap:4px; font-size:26px; color:var(--muted);}
   /* 保存バー（長いフォームでも保存ボタンが常に画面下に見える） */
+  [data-seg="age_class"] button[data-abbr]::after{content:" " attr(data-abbr); font-size:.85em; opacity:.8;}
   .savebar{position:sticky; bottom:0; z-index:60; padding:10px 0 calc(8px + env(safe-area-inset-bottom, 0px));
     background:linear-gradient(to top, var(--bg) 70%, transparent);}
   details.fold summary{cursor:pointer; padding:12px; background:var(--panel2);
@@ -313,7 +314,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v225（2026-11-07 地図の長押しで線・点を選んで直す／入力欄の並べ替え／保存ボタンを常に表示／複数羽の入口をなくす）';
+const APP_VERSION = 'v226（2026-11-07 行動の欄を1つに／線ごとに種名・齢・個体名／齢を A・SA・J で表示／図鑑・鳴き声をメディアへ／線の途中に◎／P が無くても確認を出さない）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -752,6 +753,13 @@ function callsTotalBytes(){ let t=0; for(const jp in CALLS) t+=(CALLS[jp].sz||0)
    飛翔経路と同じ入れ物で、面（旋回上昇の円・行動範囲・推定営巣範囲）も扱う。
    面は**閉じた線**なので、保存・同期・削除・まとめは今までの仕組みがそのまま効く。 */
 const SHAPE_LINE='線', SHAPE_AREA='面';
+// 行動の選択肢（観察の行動＋飛翔の行動。重なりは1つ、「その他」は最後）。OPT より後で作る
+let BEH_ALL=null;
+// 齢の略号（表示だけに使う。保存する値は和名のまま）
+const AGE_ABBR={'成鳥':'A','亜成鳥':'SA','幼鳥':'J'};
+// 線の途中の◎の大きさ（半径m）。初期値は中
+const SOAR_SIZES=[{name:'小 20m', r:20},{name:'中 30m', r:30},{name:'大 60m', r:60}];
+const SOAR_R0=30, SOAR_HIT_PX=20;
 // 面の種類。実務の結果図の凡例に合わせた（藻琴・斜里・陸志別・福島で共通）
 const AREA_TYPES=['旋回上昇','大まかな確認範囲','概略行動範囲','推定営巣範囲','その他'];
 // 面のうち、個体数として数えないもの。
@@ -772,7 +780,7 @@ const OPT = {
   habitat:['河畔林','森林','草地','農耕地','開放地','水域','市街地','その他'],
   // 齢は観察・飛翔で語彙をそろえる（2026-08-05）。以前の観察は 成/若/幼 で保存されているが、
   // 表示・集計・書き出しは ageNorm() を通すので、現場から古い語彙は見えない
-  obsAge:['成鳥','亜成鳥','幼鳥','幼綿羽','不明'],
+  obsAge:['成鳥','亜成鳥','幼鳥','幼綿羽','不明'],   // 表示では AGE_ABBR の略号を添える
   sex:['♀','♂','不明'],
   distBand:['〜25m','〜50m','50m超','不明'],
   direction:['北','北東','東','南東','南','南西','西','北西'],
@@ -801,6 +809,8 @@ const OPT = {
   perchSize:['高木','亜高木','低木','その他'],
   perchClass:['針葉樹','広葉樹','枯木','その他'],
 };
+BEH_ALL=OPT.behavior.filter(x=>x!=='その他')
+  .concat(OPT.flightBehavior.filter(x=>x!=='その他' && !OPT.behavior.includes(x))).concat(['その他']);
 
 /* ---------- 種名マスタ（日本の一般的な鳥類 和名） ---------- */
 const SPECIES = `
@@ -2950,11 +2960,13 @@ SCREENS.obsEdit = (argStr)=>{
   // 単一選択のプルダウン版（画面をすっきりさせたい項目用）。値の読み取りは segVal が SELECT にも対応
   // 保存済みの値が選択肢に無い場合（旧データ等）はその値の選択肢を足して黙って変わるのを防ぐ。
   // 必須項目でも既存値が空なら「未設定」を足す（先頭の選択肢が黙って選ばれて保存が変わるのを防ぐ。監査Major対応）
+  // 齢は「成鳥 A」のように略号を添えて出す。値（value）は今までどおり（2026-11-07 ユーザー要望）
+  const segLabel_=(field,x)=>esc(x)+((field==='age_class' && AGE_ABBR[x])?' '+AGE_ABBR[x]:'');
   const segSelect=(field,opts,allowEmpty)=>`<select data-seg="${field}">
     ${allowEmpty?`<option value="" ${!o[field]?'selected':''}>なし</option>`:''}
     ${(!allowEmpty && !o[field])?`<option value="" selected>未設定</option>`:''}
     ${(o[field]&&!opts.includes(o[field]))?`<option value="${esc(o[field])}" selected>${esc(o[field])}</option>`:''}
-    ${opts.map(x=>`<option value="${esc(x)}" ${o[field]===x?'selected':''}>${esc(x)}</option>`).join('')}</select>`;
+    ${opts.map(x=>`<option value="${esc(x)}" ${o[field]===x?'selected':''}>${segLabel_(field,x)}</option>`).join('')}</select>`;
   // 複数選択の折りたたみ版。閉じたままでも選択中の内容が見える（toggleMulti が segsum-* を更新）
   const segFold=(field,label,opts)=>`<div class="field"><details class="fold">
     <summary><span class="lab" style="display:inline; margin:0;">${esc(label)}</span>
@@ -2997,7 +3009,22 @@ SCREENS.obsEdit = (argStr)=>{
                 ${OPT.flightHeight.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}
               </select></label>
           </div>
-          <div id="flBehWrap">${segFold('fl_behavior','行動（複数選択可）',OPT.flightBehavior)}</div>
+          <!-- 線の行動は種情報の「行動」1つにまとめた（2026-11-07）。この欄は使わない -->
+          <div id="flBehWrap" style="display:none;">${segFold('fl_behavior','行動（複数選択可）',OPT.flightBehavior)}</div>
+          <!-- 線ごとの種名・齢・個体名（2026-11-07 ユーザー要望）。空欄は上の種名・齢・個体名を使う。
+               値は線そのもの（seg.fl.sp_name など）に持たせ、入れた瞬間に控える -->
+          <details class="fold" id="flWhoWrap" style="margin-top:6px;">
+            <summary><span class="lab" style="display:inline; margin:0;">この線だけ違う鳥</span>
+              <span class="small muted" id="flWhoSum">上と同じ</span></summary>
+            <div class="row" style="gap:6px; flex-wrap:wrap; align-items:center;">
+              <input id="flSp" list="flSpList" autocomplete="off" placeholder="種名（空欄＝上の種名）" style="flex:1 1 160px;" oninput="flWhoInput()">
+              <select id="flAge" onchange="flWhoInput()" style="width:auto;"><option value="">齢（上と同じ）</option>
+                ${OPT.obsAge.map(x=>`<option value="${esc(x)}">${esc(x)}${AGE_ABBR[x]?' '+AGE_ABBR[x]:''}</option>`).join('')}</select>
+              <input id="flLbl" autocomplete="off" placeholder="個体名（空欄＝上と同じ）" style="flex:1 1 120px;" oninput="flWhoInput()">
+            </div>
+            <datalist id="flSpList">${SPECIES.map(sp=>`<option value="${esc(sp.japanese_name)}"></option>`).join('')}</datalist>
+            <div class="tiny muted">種や個体名が上と違う線は、P の鳥とは別の鳥として数えます</div>
+          </details>
         </div>
         <!-- くるくるは**線の属性ではなく描き方**なので、L の欄の外に置く。
              中に置くと、線が2本以上あって選んでいないとき（＝新しいLを押した直後）に
@@ -3038,6 +3065,10 @@ SCREENS.obsEdit = (argStr)=>{
           <div class="tiny" id="segEditMsg" style="margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
           <div class="row" style="gap:8px; align-items:center;">
             <button type="button" class="btn ghost" id="segFlMore" style="display:none; width:auto; padding:6px 10px;" onclick="segFlOpen()">🎤📷 この経路の添付・メモ</button>
+            <button type="button" class="btn ghost" id="soarPlaceBtn" style="display:none; width:auto; padding:6px 10px;" onclick="soarPlaceStart()">◎ ここに旋回上昇</button>
+            <span id="soarEditWrap" style="display:none;">
+              <span class="seg" id="soarSizeSeg">${SOAR_SIZES.map(z=>`<button type="button" data-r="${z.r}" onclick="soarSize(${z.r})">${esc(z.name)}</button>`).join('')}</span>
+            </span>
             <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="segEditDone()">やめる</button>
             <button type="button" class="btn danger" style="width:auto; padding:6px 10px;" onclick="segEditDelete()">✕ 消す</button>
           </div>
@@ -3052,7 +3083,6 @@ SCREENS.obsEdit = (argStr)=>{
             placeholder="和名で検索…" oninput="spSearch(this.value); indLabelChips()">
           <div id="spSuggest"></div>
           <div class="chips" id="spQuick"></div>
-          <div class="chips" id="spRefLinks"></div>
         </label>
         <label class="field" id="noteField"><span class="lab">観察メモ</span>
           <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
@@ -3076,7 +3106,8 @@ SCREENS.obsEdit = (argStr)=>{
             <label class="field"><span class="lab">同定状態</span>${segSelect('identification_status',OPT.idStatus)}</label>
           </div>
           <div id="idHint" class="note" style="display:none; margin:2px 0 10px;"></div>
-          <div class="obs-only">${segFold('behavior','行動（複数選択可）',OPT.behavior)}</div>
+          <!-- 行動は1つの欄（2026-11-07）。線を選んでいればその線の行動、それ以外は観察の行動（behSwitch） -->
+          <div id="behWrap">${segFold('behavior','行動（複数選択可）',BEH_ALL)}</div>
           <!-- 飛翔の行動・高度は**地図のすぐ下（#flAttrRow）**に移した。
                L ごとの属性なので、地図で L を選んだその場で入れられる方がよい -->
           <div id="breedHint" class="note" style="display:none; margin:2px 0 10px;"></div>
@@ -3180,6 +3211,8 @@ SCREENS.obsEdit = (argStr)=>{
             <span class="small muted">写真・録音・動画</span></summary>
           <div class="field"><span class="lab">録音メモ（鳴き声など）</span><div id="recPanel"></div></div>
           <div class="field"><span class="lab">写真・動画</span><div id="mediaPanel"></div></div>
+          <!-- 図鑑・鳴き声のリンク（種名から作る）。2026-11-07 種名の下からメディアの中へ移した -->
+          <div class="field"><span class="lab">図鑑・鳴き声</span><div class="chips" id="spRefLinks"></div></div>
         </details>
 
         <details class="fold obs-only" id="foldReg">
@@ -3297,6 +3330,7 @@ SCREENS.obsEdit = (argStr)=>{
               fl:{height:f.height_class||'', behavior:f.behavior||'',
                   // 形も引き継ぐ。引き継がないと、開いて保存し直すだけで面が線に戻る
                   shape:shapeOf(f), area_type:f.area_type||''},
+              soars:soarSpotsOf(f),   // 線の途中の◎（項目が無い古い記録は◎なし）
               // 開いたときの形を控える。**形を変えたら「触った」扱いにする**ため
               //（控えないと、2点の線を面に変えても検査を素通りする）
               shape0:shapeOf(f),
@@ -3329,6 +3363,7 @@ SCREENS.obsEdit = (argStr)=>{
               fl:{height:f.height_class||'', behavior:f.behavior||'',
                   // 形も引き継ぐ。引き継がないと、開いて保存し直すだけで面が線に戻る
                   shape:shapeOf(f), area_type:f.area_type||''},
+              soars:soarSpotsOf(f),   // 線の途中の◎（項目が無い古い記録は◎なし）
               // 開いたときの形を控える。**形を変えたら「触った」扱いにする**ため
               //（控えないと、2点の線を面に変えても検査を素通りする）
               shape0:shapeOf(f),
@@ -3374,6 +3409,7 @@ SCREENS.obsEdit = (argStr)=>{
       // 入力欄への読み込みは今すぐ行う。地図の用意（60ms待ち）を待つと、
       // その前に保存された場合に空の入力欄で既存の値を上書きしてしまう
       SCREENS._obsOnlyInit=null;
+      SCREENS._behT=null; SCREENS._obsBeh=behVal();   // 行動の欄は観察を指した状態から始める
       pfSyncFlightFields(); perchTabs(); perchLoad(); segChips(); nestLabelSync();
       obsOnlyCapture();   // ここまでが「最初の状態」
       // 個体数を利用者が触ったかを見分ける（巣だけの記録で、初期値の1羽を勝手に数えないため）。
@@ -3490,7 +3526,13 @@ function otherParse(v){ v=String(v||''); const m=v.match(/その他（([^）]*)�
   return m? {v:v.replace(m[0],'その他'), other:m[1]} : {v, other:''}; }
 function otherBox(field, other, show){
   return `<input data-other="${field}" value="${esc(other||'')}" placeholder="「その他」の内容を記入（任意）"
-    style="margin-top:6px;${show?'':'display:none;'}">`; }
+    style="margin-top:6px;${show?'':'display:none;'}" oninput="otherInput('${field}')">`; }
+// 「その他」の記入: 行動の欄は、記入した瞬間に今の対象（線／観察）へ控える（↶ や切り替えで失わないように。監査 Major）
+function otherInput(field){
+  if(SCREENS._flLoading) return;
+  SCREENS._dirty=true;
+  if(field==='behavior' && typeof behStoreCur==='function') behStoreCur();
+}
 function otherMerge(val, field){
   const inp=document.querySelector(`[data-other="${field}"]`);
   const t=inp?inp.value.trim():''; if(!t) return val;
@@ -3505,7 +3547,7 @@ function toggleMulti(btn){ btn.classList.toggle('on');
   // 飛翔の行動は、押した瞬間に対象の経路へ控える（↶や切り替えで入力を失わないように）
   if(seg && seg.dataset.seg==='fl_behavior' && !SCREENS._flLoading
     && typeof flStoreInto==='function' && SCREENS._flSeg) flStoreInto(SCREENS._flSeg);
-  if(seg && seg.dataset.seg==='behavior') updateBreedHint(); }
+  if(seg && seg.dataset.seg==='behavior'){ if(!SCREENS._flLoading) behStoreCur(); updateBreedHint(); } }
 // 折りたたみ式の複数選択で、閉じたままでも選択中の内容が見えるように見出しの表示を更新する
 //（要素が無い画面＝飛翔経路の行動・とまり木の項目では何もしない）
 function segSumUpdate(field){ const el=document.getElementById('segsum-'+field); if(el) el.textContent=segVals(field)||'未選択'; }
@@ -4522,6 +4564,7 @@ function birdGhostPurgeToast(res){
 function birdStash(){
   if(typeof spiralReset==='function') spiralReset();   // 押している状態を持ち越さない
   if(typeof flStoreInto==='function' && SCREENS._flSeg) flStoreInto(SCREENS._flSeg);
+  if(typeof behSwitch==='function') behSwitch(null);   // 行動の欄を観察の値に戻してから写す（線の行動は線に控え済み）
   CUR().form=formSnapshot(document.getElementById('obForm'));
   CUR().dirty=!!SCREENS._dirty;
 }
@@ -4685,6 +4728,8 @@ function obsOnlyEls(){
 }
 function obsOnlyVals(){
   const parts=[];
+  // 行動の欄は線と共用になったが、観察の行動は観察にしか残せない。欄が線を指していても控えた値で比べる
+  if(typeof behObsValue==='function' && document.getElementById('behWrap')) parts.push('beh:'+behObsValue());
   document.querySelectorAll('.obs-only').forEach(box=>{
     box.querySelectorAll('input,select,textarea').forEach(el=>{
       parts.push(el.type==='checkbox' ? (el.checked?'1':'0') : String(el.value||''));
@@ -5081,17 +5126,25 @@ function segEditBar(){
   if(more){ const sg=PF_SEGS[PF_SEL];
     // 軸として開いている経路自身は統合画面が受け持つ。それ以外の保存済み経路に出す
     more.style.display=(sg && sg.t==='F' && sg.srcUuid && sg.srcUuid!==SCREENS._flAnchorUuid)?'':'none'; }
+  { const sgN=PF_SEGS[PF_SEL]; const isL=!!(sgN && sgN.t==='F' && segShape(sgN)!==SHAPE_AREA);
+    const ss=SCREENS._soarSel && SCREENS._soarSel.seg===sgN ? SCREENS._soarSel : null;
+    const pb=$('#soarPlaceBtn'); if(pb){ pb.style.display=(isL && !ss)?'':'none'; pb.classList.toggle('on', !!SCREENS._soarPlace); }
+    const ew=$('#soarEditWrap'); if(ew) ew.style.display=ss?'':'none';
+    if(ss){ const r=(sgN.soars[ss.k]||{}).r; document.querySelectorAll('#soarSizeSeg button').forEach(b=>b.classList.toggle('on', Number(b.dataset.r)===r)); } }
   if(msg){
     // **短く1行で**。長い説明は狭い画面で3行にも折り返し、地図を押し下げる
     //（2026-08-13 実機で指摘）。やり方は下のボタンと地図の案内で分かる
     if(PF_SEL===-2) msg.textContent='巣を直し中（タップで移動）';
     else if(PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='P') msg.textContent=segLabel(PF_SEL)+' を直し中（タップで移動）';
-    else msg.textContent=segLabel(PF_SEL)+' を直し中（タップで描き足す）';
+    else if(SCREENS._soarSel && SCREENS._soarSel.seg===PF_SEGS[PF_SEL]) msg.textContent=segLabel(PF_SEL)+' の◎を直し中';
+    else if(SCREENS._soarPlace) msg.textContent='◎を置く場所を線の上でタップ';
+    else msg.textContent=segLabel(PF_SEL)+' を直し中（なぞると引き直し）';   // 20字以内（狭い画面で折り返さない）
   }
 }
 function segPick(i, force){
   if(typeof perchStore==='function') perchStore();
   PF_SEL=(PF_SEL===i && !force)?-1:i;   // もう一度押したら選択を外す（地図の長押しでは外さない）
+  SCREENS._soarSel=null; SCREENS._soarPlace=false;
   if(PF_SEL===-1) PF_NEWLINE=true;   // 「新しく落とす」に戻ったら、次の線も新しく始める
   PF_STROKE_SEG=null;
   // L を選んだら経路モードにする。pfSet('F') は選択を外すので使わず、表示だけ合わせる。
@@ -5108,8 +5161,12 @@ function segPick(i, force){
   }
   segChips(); pfRedraw(); pfInfo();
 }
-function segEditDone(){ PF_SEL=-1; PF_NEWLINE=true; PF_STROKE_SEG=null; segChips(); pfRedraw(); pfInfo(); pfSyncFlightFields(); }
+function segEditDone(){ PF_SEL=-1; PF_NEWLINE=true; PF_STROKE_SEG=null; SCREENS._soarSel=null; SCREENS._soarPlace=false; segChips(); pfRedraw(); pfInfo(); pfSyncFlightFields(); }
 function segEditDelete(){
+  const ss=SCREENS._soarSel;
+  if(ss && PF_SEGS.includes(ss.seg) && Array.isArray(ss.seg.soars) && ss.seg.soars[ss.k]){
+    pfSnap(); ss.seg.soars.splice(ss.k,1); SCREENS._soarSel=null; SCREENS._dirty=true;
+    pfRedraw(); pfInfo(); segChips(); return; }
   if(PF_SEL===-2){
     if(!confirm('巣の位置を消しますか？')) return;
     pfSnap();
@@ -5200,12 +5257,14 @@ function pfPaths(){ return PF_SEGS.filter(x=>x.t==='F' && segEnough(x)); }
 function flStoreInto(seg){
   if(!seg || seg.t!=='F') return;
   const shape=(segVal('fl_shape')===SHAPE_AREA)?SHAPE_AREA:SHAPE_LINE;
-  seg.fl={
+  // 作り直すときも、線ごとの種名・齢・個体名・◎などは引き継ぐ（計画レビュー: 属性の控えで消えないように）
+  seg.fl=Object.assign({}, seg.fl||{}, {
     // 面に飛翔高度の意味は無いので持たせない。線に戻したら面の種類を空にする
     //（残ると書き出しで面として扱われる）
     height:(shape===SHAPE_AREA)?'':(segVal('fl_height')||''),
-    behavior:otherMerge(segVals('fl_behavior'),'fl_behavior')||'',
-    shape, area_type:(shape===SHAPE_AREA)?(segVal('fl_area_type')||''):'' };
+    // 行動は1つの欄。欄がこの線を指しているときだけ欄から読む（観察を指しているときは線の値のまま）
+    behavior:(SCREENS._behT===seg) ? behVal() : ((seg.fl&&seg.fl.behavior)||''),
+    shape, area_type:(shape===SHAPE_AREA)?(segVal('fl_area_type')||''):'' });
 }
 // 形の欄を触ったとき。控え→地図の描き直し→欄の出し入れ、の順で合わせる
 function flShapePick(){
@@ -5213,6 +5272,11 @@ function flShapePick(){
   SCREENS._dirty=true;
   const seg=SCREENS._flSeg;
   if(seg && seg.t==='F'){
+    // ◎（旋回上昇）が付いた線は面にしない（◎の位置を勝手に消さないため）
+    if(segVal('fl_shape')===SHAPE_AREA && Array.isArray(seg.soars) && seg.soars.length){
+      segSet('fl_shape', SHAPE_LINE);
+      toast('この線には◎（旋回上昇）があります。面にするときは、先に◎を長押しして消してください', 5000);
+      flShapeSyncUI(); return; }
     if(segVal('fl_shape')===SHAPE_AREA){
       // 囲めない形（旋回の輪を含む線など）は、その場で線へ戻して**理由を言う**。
       // 保存のときまで黙っていると「点を足すか消して」としか出ず、
@@ -5261,6 +5325,70 @@ function flShapeSyncUI(){
 // 経路の高度・行動を画面へ読み込む。
 // 「その他（記入内容）」は標準の「その他」ボタン＋記入欄に分解して出す。
 // 選択肢に無いそれ以外の値は、印付きのボタンをその場で足して見せる（読み込み前に前回の分は片付ける）
+// 線ごとの種名・齢・個体名。入れた瞬間に、いま欄が指している線へ控える
+function flWhoInput(){
+  const seg=SCREENS._flSeg; if(!seg || seg.t!=='F') return;
+  const n=(($('#flSp')||{}).value||'').trim();
+  const sp=n ? speciesByName(n) : null;
+  seg.fl=Object.assign({}, seg.fl||{}, { sp_name:n, sp_id:sp?sp.species_id:'',
+    age:(($('#flAge')||{}).value||''), ind_label:(($('#flLbl')||{}).value||'').trim() });
+  SCREENS._dirty=true; flWhoSumSync(); pfRedraw();
+}
+function flWhoSumSync(){
+  const seg=SCREENS._flSeg, el=$('#flWhoSum'); if(!el) return;
+  const fl=(seg&&seg.fl)||{};
+  const parts=[fl.sp_name, fl.age?(fl.age+(AGE_ABBR[fl.age]?' '+AGE_ABBR[fl.age]:'')):'', fl.ind_label].filter(Boolean);
+  el.textContent=parts.length?parts.join('・'):'上と同じ';
+}
+function flWhoLoad(seg){
+  const fl=(seg&&seg.fl)||{};
+  const a=$('#flSp'), b=$('#flAge'), c=$('#flLbl');
+  if(a) a.value=fl.sp_name||''; if(b) b.value=fl.age||''; if(c) c.value=fl.ind_label||'';
+  flWhoSumSync();
+}
+// 複数選択の欄に値（「その他（記入）」を含む）を入れ直す
+function multiLoad(field, value){
+  const segEl=document.querySelector(`[data-seg="${field}"]`); if(!segEl) return;
+  const was=SCREENS._flLoading; SCREENS._flLoading=true;
+  try{
+    [...segEl.querySelectorAll('button[data-dyn]')].forEach(b=>b.remove());
+    const parsed=otherParse(value||'');
+    const want=String(parsed.v||'').split('・').filter(Boolean);
+    const inp=document.querySelector(`[data-other="${field}"]`);
+    if(inp) inp.value=parsed.other||'';
+    [...segEl.querySelectorAll('button.on')].forEach(b=>b.classList.remove('on'));
+    want.forEach(vv=>{
+      let b=[...segEl.querySelectorAll('button')].find(x=>x.textContent===vv);
+      if(!b){ const sample=segEl.querySelector('button');
+        if(sample){ b=sample.cloneNode(false); b.textContent=vv; b.classList.remove('on'); b.setAttribute('data-dyn','1'); segEl.appendChild(b); } }
+      if(b) b.classList.add('on');
+    });
+    syncOther(field); segSumUpdate(field);
+  } finally { SCREENS._flLoading=was; }
+}
+/* 行動の欄の対象（2026-11-07 ユーザー決定「1つの欄、線を選べば線の行動」）。
+   SCREENS._behT … いま欄が指している線（null は観察）。観察の行動は、線を指している間は SCREENS._obsBeh に持つ。
+   対象を変えるときは、いまの値を元の対象へ控えてから次の対象の値を読み込む */
+function behVal(){ return otherMerge(segVals('behavior'),'behavior')||''; }
+function behStoreCur(){
+  const t=SCREENS._behT;
+  if(t){ if(PF_SEGS.includes(t)){ t.fl=Object.assign({}, t.fl||{}, {behavior:behVal()}); } }
+  else SCREENS._obsBeh=behVal();
+}
+function behSwitch(next){
+  next=next||null;
+  if(next!==(SCREENS._behT||null)){
+    if(SCREENS._behT===undefined) SCREENS._behT=null;
+    behStoreCur();
+    SCREENS._behT=next;
+    multiLoad('behavior', next ? ((next.fl&&next.fl.behavior)||'') : (SCREENS._obsBeh||''));
+    if(typeof updateBreedHint==='function') updateBreedHint();
+  }
+  const lab=document.querySelector('#behWrap .lab');
+  if(lab){ const i=next?PF_SEGS.indexOf(next):-1; lab.textContent='行動（'+(next?(i>=0?segLabel(i):'線'):'観察')+'）'; }
+}
+// 保存に使う観察の行動（欄が線を指している間は控えておいた値）
+function behObsValue(){ return SCREENS._behT ? (SCREENS._obsBeh||'') : behVal(); }
 function flLoadFrom(seg){
   SCREENS._flLoading=true;
   try{
@@ -5270,6 +5398,7 @@ function flLoadFrom(seg){
     segSet('fl_shape', shape);
     segSet('fl_area_type', (shape===SHAPE_AREA)?(fl.area_type||''):'');
     segSet('fl_height', fl.height||'');
+    flWhoLoad(seg);
     const segEl=document.querySelector('[data-seg="fl_behavior"]');
     if(segEl){
       [...segEl.querySelectorAll('button[data-dyn]')].forEach(b=>b.remove());   // 前の経路で足したボタンを片付ける
@@ -5312,6 +5441,11 @@ function pfSyncFlightFields(){
   if(prev && prev!==one && PF_SEGS.includes(prev)) flStoreInto(prev);   // 隠す前に、いままでの経路へ控える
   if(one!==prev && one) flLoadFrom(one);
   SCREENS._flSeg=one;
+  // 行動の欄の対象: P を選んでいれば観察、L を選んでいればその線。何も選んでいないときは、
+  // なぞった直後の線→線が1本で P が無いときはその線→それ以外は観察（計画レビュー Major 1）
+  { const selP=(PF_SEL===-2) || !!(selSeg && selSeg.t==='P');
+    const viaSingle=!(selSeg && selSeg.t==='F') && !drawing && fls.length===1;
+    behSwitch((!one || selP || (viaSingle && pfPoints().length>0)) ? null : one); }
   const on=!!one;
   // 形・面の種類・飛翔高度・L番号の出し入れは1か所（flShapeSyncUI）に任せる。
   // 行動は線でも面でも同じ場所（#flAttrRow の中）にあるので、別に出し入れしない
@@ -5356,6 +5490,7 @@ function pfInfo(){
 const PF_CLOSE_PX = 28;   // 始点の印（22px）より少し広め
 function pfTryClose(sg,lat,lon){
   if(!sg || sg.t!=='F' || segShape(sg)===SHAPE_AREA) return false;
+  if(Array.isArray(sg.soars) && sg.soars.length) return false;   // ◎が付いた線は面にしない（始点を押しても描き足しになる）
   // 「くるくる」を押している間は閉じない。閉じ判定は**画面の28px**なので、
   // 広い縮尺だと、離れた場所への旋回タップまで閉じ操作に取られ、
   // 同じ操作なのに縮尺で結果が変わる（2026-08-13 監査）
@@ -5392,6 +5527,8 @@ function pfDrop(lat,lon){
     nestTouch(); nestSync();
     SCREENS._dirty=true; pfRedraw(); pfInfo(); segChips(); return;
   }
+  if(PF_SEL>=0 && SCREENS._soarPlace && PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='F'){ soarPlaceAt(lat, lon); return; }
+  if(PF_SEL>=0 && SCREENS._soarSel){ return; }   // ◎を選んでいる間のタップでは線を伸ばさない
   if(PF_SEL>=0){
     const sg=PF_SEGS[PF_SEL];
     if(sg){
@@ -5455,6 +5592,8 @@ function pfDrop(lat,lon){
 function obsMapUndo(){
   // この画面でした操作を1つ戻す。開いただけの状態より前には戻さない
   if(!PF_HIST.length){ toast('戻せる操作はありません'); return; }
+  if(typeof behStoreCur==='function') behStoreCur();   // 行動の欄の今の値を、置き換える前の線へ控える（あとで重ね直す）
+  if(typeof flStoreInto==='function' && SCREENS._flSeg && PF_SEGS.includes(SCREENS._flSeg)) flStoreInto(SCREENS._flSeg);
   // 戻すのは地図の操作（位置・経路・巣）だけ。あとから書いた「止まっていたもの」や
   // 飛翔の時刻まで巻き戻すと、気づかないうちに入力が消える（2026-08-06 監査）
   const cur=new Map(); PF_SEGS.forEach(sg=>{ if(sg.id!=null) cur.set(sg.id, sg); });
@@ -5523,8 +5662,8 @@ function pfRedraw(){
     iconSize:[16,16], iconAnchor:[8,8]});
   const numIcon=(t,col)=>L.divIcon({className:'',
     html:'<div style="font-size:12px;font-weight:800;color:'+col
-      +';text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;white-space:nowrap">'+t+'</div>',
-    iconSize:[26,16], iconAnchor:[-7,17]});
+      +';text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;white-space:nowrap">'+esc(t)+'</div>',   // 種名は自由入力。文字として出す（監査 Major）
+    iconSize:[90,16], iconAnchor:[-7,17]});
   if(PF_NEST){
     L.marker(PF_NEST,{icon:badge('巣', PF_SEL===-2?'#6a4fb0':'#8a6fd0', PF_SEL===-2?34:26)}).addTo(pfLayer);   // 直し中は大きく
   }
@@ -5575,6 +5714,8 @@ function pfRedraw(){
         // 線・面そのものも**タップを遮らない**。押しても何も起きない飾りなのに、
         // 上を狙ったタップが地図に届かず、描き足せなくなる（2026-08-13 監査）
         if(seg.pts.length>1) L.polyline(seg.pts,{color:lineCol,weight:selL?7:4,opacity:.95,interactive:false}).addTo(pfLayer);
+        (seg.soars||[]).forEach((sp,k)=>drawSoarSpot(pfLayer, sp, '#9b59b6',
+          !!(SCREENS._soarSel && SCREENS._soarSel.seg===seg && SCREENS._soarSel.k===k)));
         // 向きは**矢印**で示す。「始」「終」の丸い印はやめた（2026-08-13 指摘）。
         // 続けて描いたLは前の終点から始まるので、終と始の印が近くに並び、
         // 「この間は何？」と見えてしまっていた。報告書の結果図も矢印と点だけ
@@ -5586,8 +5727,9 @@ function pfRedraw(){
         // 番号と「押すと閉じる点」はその次（＝最初にタップした点）に置く。
         // ここに置かないと、囲みにするとき押すべき点と印がずれる
         const sIdx=segContOffset(seg);
-        if(nLines>1)
-          L.marker(seg.pts[sIdx],{icon:numIcon(segLabel(segIdx),selL?'#b07800':'#8a6400'), interactive:false}).addTo(pfLayer);
+        const _spTag=(seg.fl&&seg.fl.sp_name)?(' '+seg.fl.sp_name):'';   // 種が違う線は種名を添える
+        if(nLines>1 || _spTag)
+          L.marker(seg.pts[sIdx],{icon:numIcon(segLabel(segIdx)+_spTag,selL?'#b07800':'#8a6400'), interactive:false}).addTo(pfLayer);
         // **始点の点そのものを押しても閉じられるようにする。**
         // Leaflet の印の上のタップは地図へ伝わらないので、点に付けないと
         // 「始点をもう一度タップ」がいちばん自然な操作（点を狙って押す）で効かない
@@ -5718,6 +5860,18 @@ const PF_HIT_PX=14;
 function pfLongPress(cp){
   if(!mapObj || (typeof SAVE_BUSY!=='undefined' && SAVE_BUSY)) return false;
   const C=ll=>mapObj.latLngToContainerPoint(L.latLng(ll[0], ll[1]));
+  // 線の途中の◎を先に見る（中心から外側の輪まで、または 14px 以内）
+  try{
+    for(let i=0;i<PF_SEGS.length;i++){ const sg=PF_SEGS[i]; if(sg.t!=='F' || !Array.isArray(sg.soars)) continue;
+      for(let k=0;k<sg.soars.length;k++){ const sp=sg.soars[k];
+        const q=C([sp.lat, sp.lon]);
+        const e=mapObj.latLngToContainerPoint(L.latLng(sp.lat, sp.lon).toBounds(sp.r*2).getNorthEast());
+        const rpx=Math.max(PF_HIT_PX, Math.abs(e.x-q.x));
+        if(Math.hypot(cp.x-q.x, cp.y-q.y)<=rpx){
+          segPick(i, true); SCREENS._soarSel={seg:sg, k}; pfRedraw(); segEditBar();
+          let at=null; try{ at=mapObj.containerPointToLatLng(cp); }catch(e2){}
+          tabletPanel(true, '#segEditBar', at); return true; } } }
+  }catch(e){}
   let best=null, bd=Infinity;
   const take=(i, dist)=>{ if(dist<=PF_HIT_PX && dist<bd){ bd=dist; best=i; } };
   try{
@@ -5737,6 +5891,43 @@ function pfLongPress(cp){
   tabletPanel(true, '#segEditBar', at);   // タブレット表示なら小窓を開いて「直し中」の帯を見せる
   return true;
 }
+// ◎を置く準備（次の線の上のタップで置く）
+function soarPlaceStart(){
+  const sg=PF_SEGS[PF_SEL]; if(!sg || sg.t!=='F') return;
+  SCREENS._soarPlace=!SCREENS._soarPlace; segEditBar();
+}
+// 線の上のいちばん近い点（画面上の距離）。遠ければ null
+function soarNearestOnLine(sg, cp){
+  if(!mapObj || !sg.pts || sg.pts.length<2) return null;
+  const ps=sg.pts.map(p=>mapObj.latLngToContainerPoint(L.latLng(p[0],p[1])));
+  let best=null, bd=Infinity;
+  for(let k=0;k+1<ps.length;k++){
+    const a=ps[k], b=ps[k+1], dx=b.x-a.x, dy=b.y-a.y, l2=dx*dx+dy*dy;
+    let t=l2? ((cp.x-a.x)*dx+(cp.y-a.y)*dy)/l2 : 0; t=Math.max(0,Math.min(1,t));
+    const q=L.point(a.x+t*dx, a.y+t*dy), d=Math.hypot(cp.x-q.x, cp.y-q.y);
+    if(d<bd){ bd=d; best=q; }
+  }
+  if(!best || bd>SOAR_HIT_PX) return null;
+  const ll=mapObj.containerPointToLatLng(best); return [ll.lat, ll.lng];
+}
+// 線の上に◎を置く（pfDrop から）。置けたら true
+function soarPlaceAt(lat, lon){
+  const sg=PF_SEGS[PF_SEL]; if(!sg || sg.t!=='F') return false;
+  let cp=null; try{ cp=mapObj.latLngToContainerPoint(L.latLng(lat,lon)); }catch(e){ return false; }
+  const at=soarNearestOnLine(sg, cp);
+  if(!at){ toast('線の近くをタップしてください', 3000); return true; }   // 遠いタップでは置かない（新しい点も置かない）
+  pfSnap();
+  sg.soars=(Array.isArray(sg.soars)?sg.soars:[]).concat([{lat:at[0], lon:at[1], r:SOAR_R0}]);
+  SCREENS._soarPlace=false; SCREENS._dirty=true;
+  pfRedraw(); pfInfo(); segChips();
+  return true;
+}
+function soarSize(r){
+  const ss=SCREENS._soarSel; if(!ss || !PF_SEGS.includes(ss.seg) || !ss.seg.soars || !ss.seg.soars[ss.k]) return;
+  if(ss.seg.soars[ss.k].r===r) return;
+  pfSnap(); ss.seg.soars[ss.k]=Object.assign({}, ss.seg.soars[ss.k], {r});
+  SCREENS._dirty=true; pfRedraw(); segEditBar();
+}
 // なぞり直しの時刻。観察した時刻を、直した時刻に変えない（元の最初と最後の時刻の間に割り振る）
 function pfRedrawTimes(old, n, fresh){
   const a=old[0]||'', b=old[old.length-1]||a;
@@ -5752,6 +5943,10 @@ function pfAddStroke(ll, tt){
   pfSnap();
   let target=null;
   if(PF_SEL>=0){ const sg=PF_SEGS[PF_SEL]; if(sg && sg.t==='F') target=sg; else PF_SEL=-1; }   // P を選んでいても、なぞりは線として扱う
+  // ◎が付いた線は引き直さない（観察した◎の位置を勝手に動かしたり消したりしないため）
+  if(target && Array.isArray(target.soars) && target.soars.length){
+    PF_HIST.pop();   // 上で積んだ控えを戻す（何も変えない）
+    toast('この線には◎（旋回上昇）があります。引き直すときは、先に◎を長押しして消してください', 5000); return; }
   if(target){
     // **選んだ線はなぞり直しで置き換える**（2026-11-07 実機の要望「描いた線を直したい」）。
     // 同じ線（id・srcUuid）のまま、高度・行動・添付・メモは残す。時刻は元の範囲のまま。
@@ -5850,6 +6045,35 @@ function setObsPos(lat,lon){
   SCREENS._dirty=true;                 // 地図タップはinput監視に乗らないため明示
   obsPosMarkerUpdate(lat,lon);
 }
+// 線ごとの「どの鳥か」を決める（保存の直前）。
+// 何も入れていない線・齢だけ違う線は今までどおり観察と同じ鳥。種か個体名が上と違う線は別の鳥:
+//   個体名があれば「同じ調査・同じ種・同じ個体名」の目印にまとめ、名前なしは線ごとの目印
+function lineWho(seg, svUuid, name, ageCls, indKey, indLabel, snapFl, memo){
+  const fl=seg.fl||{};
+  const nm=String(fl.sp_name||'').trim(), lb=String(fl.ind_label||'').trim();
+  const age=fl.age||'';
+  const diffSp=!!nm && nm!==String(name||'');
+  const diffLb=!!lb && lb!==String(indLabel||'');
+  if(!diffSp && !diffLb) return { separate:false, name, age:age||ageCls, ageSet:!!age, key:indKey, label:undefined, spId:null };
+  const nm2=nm||name||'';
+  const cur=seg.srcUuid ? ((snapFl||[]).find(x=>x&&x.uuid===seg.srcUuid)) : null;
+  let key='';
+  if(lb){
+    const k=nm2+'\u0001'+lb;
+    key=memo[k]||'';
+    if(!key){
+      const same=x=>x && !x.deleted_at && String(x.species_name_snapshot||'')===nm2 && String(x.individual_label||'')===lb && x.individual_key;
+      const hit=DB.flightsOf(svUuid).find(same) || DB.obsOf(svUuid).find(same);
+      key=hit ? hit.individual_key : uuid();
+    }
+    memo[k]=key;
+  } else {
+    // 名前なしの別の鳥: 前に保存した自分の目印があればそのまま（保存のたびに変えない）
+    key=(cur && cur.individual_key && cur.individual_key!==indKey) ? cur.individual_key : uuid();
+  }
+  const sp=nm ? (fl.sp_id || (speciesByName(nm)||{}).species_id || '') : null;
+  return { separate:true, name:nm2, age:age||ageCls, ageSet:!!age, key, label:lb, spId:sp };
+}
 // 経路1本から飛翔レコードを作る。検査に落ちたら null を返す（保存は始めない）
 function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsReview, override, useForm, indLabel, snapFlArr){
   // 2点未満は原則保存しないが、既存で触っていない経路は元のままの姿で書き戻す（共有項目だけそろえる）
@@ -5862,7 +6086,10 @@ function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsRev
     if(pair[0] && !okStamp(pair[0])){ toast('飛翔の'+pair[1]+'が正しくありません'); return null; }
   }
   if(st && en && en<st){ toast('飛翔の終了時刻が開始時刻より前です'); return null; }
-  const spId = name ? (SCREENS._chosenId||(speciesByName(name)||{}).species_id||'') : '';
+  const _who=seg._who||null;   // 線ごとの種名・齢（lineWho）
+  const spId = name ? ((_who && _who.spId!=null) ? _who.spId : (SCREENS._chosenId||(speciesByName(name)||{}).species_id||'')) : '';
+  // 線の途中の◎（旋回上昇）。線の付属情報として持つ（独立した記録は作らない）。古い記録で未設定なら元のまま
+  const soarSpots = Array.isArray(seg.soars) ? seg.soars.map(x=>({lat:x.lat, lon:x.lon, r:x.r})) : undefined;
   // 高度・行動は経路そのもの（seg.fl）から。画面の欄は写しにすぎない
   const heightRaw = (seg.fl&&seg.fl.height)||'';
   const behaviorNew = (seg.fl&&seg.fl.behavior)||'';
@@ -5885,7 +6112,8 @@ function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsRev
       start_time:st, end_time:en,
       // 既存の記録では、空は空のまま残す（触っていない項目を「不明」に化けさせない）。
       // 齢は画面で触ったときだけそろえる（触っていないのに観察の齢で埋めない）
-      age_class:(SCREENS._ageTouched ? ageCls : (cur.age_class||'')), count:count, individual_key:indKey||'',
+      age_class:((SCREENS._ageTouched || (_who && _who.ageSet)) ? ageCls : (cur.age_class||'')), count:count, individual_key:indKey||'',
+      soar_spots: soarSpots!==undefined ? soarSpots : (Array.isArray(cur.soar_spots) ? cur.soar_spots : []),
       // 同じ鳥の呼び名は観察と飛翔でそろえる。ただし個体名の欄を触っていない空欄では
       // 元の名前を保つ（開いて保存しただけで経路の名前が消えるのを防ぐ）
       individual_label:(indLabel===undefined ? (cur.individual_label||'') : String(indLabel||'')),
@@ -5909,6 +6137,7 @@ function buildFlightRec(seg, svUuid, name, count, ageCls, indKey, memo, needsRev
     behavior:behaviorNew,
     count:count, memo:String(memo||'').trim(), needs_review:!!needsReview,
     individual_key:indKey||'',
+    soar_spots: soarSpots||[],
     audio:[], media:[] };
 }
 let SAVE_BUSY=false;   // 添付の付け替えなど、保存の後処理が終わるまで真
@@ -6636,7 +6865,7 @@ function saveObs(u, svUuid, editing, cont){
     // 種名が空なら種IDも必ず空にする（入力経路によらず「名無しなのに前の鳥のID」を残さない保証）
     species_id: name ? ((speciesByName(name)||{}).species_id || SCREENS._chosenId || '') : '', species_name_snapshot: name,
     count: count, detection_method: segVal('detection_method'),
-    behavior: otherMerge(segVals('behavior'),'behavior'), habitat: otherMerge(segVals('habitat'),'habitat'),
+    behavior: behObsValue(), habitat: otherMerge(segVals('habitat'),'habitat'),
     age_class: segVal('age_class'), sex: segVal('sex'),
     distance_band: segVal('distance_band'), direction: segVal('direction'),
     target_latitude: tlat, target_longitude: tlon,
@@ -6760,9 +6989,8 @@ function saveObs(u, svUuid, editing, cont){
     // 気づかず失うより、止めて選んでもらう
     if(obsOnlyChanged()){
       toast('観察にしか残せない項目に入力があります。地図で P（止まっていた場所）を落とすか、その入力を消してから保存してください', 9000); return; }
-    if(!confirm('止まっていた場所（P）が無いので、飛翔経路だけを保存します。\n\n'
-      +'残るもの：種名・個体数・齢・メモ・飛翔高度・飛翔行動\n\n'
-      +'このまま保存しますか？')) return;
+    // 「P が無いので飛翔経路だけを保存します」の確認は出さない（2026-11-07 ユーザー: 猛禽は P が無いのが普通）。
+    // 入力が消えてしまうときの止め（上の2つ）だけ残す
   }
   // 個体名を付けたら、その名前の目印に合わせる（同じ調査・同じ種の同名は「同じ1羽」）。
   // 名前が無ければ従来どおり（記録が2件以上なら新しい目印で結ぶ）
@@ -6778,11 +7006,20 @@ function saveObs(u, svUuid, editing, cont){
 
   // 飛翔をまとめて組み立てる（1本でも検査に落ちたら何も保存しない）
   const flRecs=[];
+  const _whoKeys=Object.create(null);   // 同じ保存の中で「同じ種・同じ個体名」の線は同じ目印にする
+  const _whoSep=new Set();   // 線ごとの値で別の鳥になった経路（あとで上段の個体名で上書きしない）
   for(const seg of paths){
     // 個体名を触っていない空欄なら undefined を渡す＝既存の経路の名前はそのまま
     const _flLbl=(indLabel || SCREENS._indLabelTouched) ? indLabel : undefined;
-    const fr=buildFlightRec(seg, svUuid, name, rec.count, rec.age_class, indKey, g('note'), flReview, seg.ov||null, paths.length===1, _flLbl, snapFl);
+    // 線ごとの種名・齢・個体名（2026-11-07）。種か個体名が上と違う線は、観察の鳥と別の鳥（目印を共有しない）
+    const who=lineWho(seg, svUuid, name, rec.age_class, indKey, indLabel, snapFl, _whoKeys);
+    seg._who=who;
+    const fr=buildFlightRec(seg, svUuid, who.name, rec.count, who.age, who.key, g('note'),
+      who.separate ? ((!who.name) || !speciesByName(who.name) || flReview) : flReview,
+      seg.ov||null, paths.length===1, who.separate ? who.label : _flLbl, snapFl);
+    delete seg._who;
     if(!fr) return;
+    if(who.separate) _whoSep.add(fr.uuid);
     flRecs.push(fr);
   }
   // 観察をまとめて組み立てる（1つ目は rec、2つ目以降は場所と時刻だけ差し替えた写し）
@@ -6921,7 +7158,8 @@ function saveObs(u, svUuid, editing, cont){
       fr.media=(SCREENS._media||[]).slice();
       fr.memo=String(g('note')||'').trim();
       fr.needs_review=!!($('#needsReview') && $('#needsReview').checked);
-      fr.individual_label=String(indLabel||'');   // 個体名の欄は種名の下の1つだけ（食い違いを作らない）
+      // 個体名の欄は種名の下の1つだけ（食い違いを作らない）。ただし「この線だけ違う鳥」で決めた名前は残す（監査 Major）
+      if(!_whoSep.has(fr.uuid)) fr.individual_label=String(indLabel||'');
     }
   }
   // 飛翔だけの保存で写真・録音があれば、書き込む前に、その1本の経路の記録へ付ける。
@@ -8509,6 +8747,7 @@ let flightShape=SHAPE_LINE;
 function flightIsArea(){ return flightShape===SHAPE_AREA; }
 // 形の欄を触ったとき。描き方（閉じて塗る／矢印を出さない）と欄の出し入れを合わせる
 function flightShapePick(){
+  if(segVal('shape')===SHAPE_AREA && flSoarBlocked()){ segSet('shape', SHAPE_LINE); return; }   // ◎付きは面にしない
   flightShape=(segVal('shape')===SHAPE_AREA)?SHAPE_AREA:SHAPE_LINE;
   SCREENS._dirty=true;
   flightShapeSyncUI(); redrawFlight();
@@ -8560,7 +8799,7 @@ SCREENS.flightEdit = (argStr)=>{
     // 保存値を onclick の文字列へ埋め込まない（属性の復号でスクリプトとして動き得るため）。
     // pickObs はボタンの表示テキストから値を読むので、引数は要素と項目名だけでよい
     return `<div class="seg" data-seg="${field}">${list.map(o=>
-    `<button type="button" class="${f[field]===o?'on':''}" onclick="pickObs(this,'${field}')">${esc(o)}</button>`).join('')}</div>`; };
+    `<button type="button" class="${f[field]===o?'on':''}"${(field==='age_class' && AGE_ABBR[o])?` data-abbr="${AGE_ABBR[o]}"`:''} onclick="pickObs(this,'${field}')">${esc(o)}</button>`).join('')}</div>`; };
   // 保存済みの時刻がタイムゾーン付き（取込データ等）だと、そのままでは欄に出ず空になる。
   // ブラウザが受け付ける形（YYYY-MM-DDTHH:mm）に直して出す。
   // 元の文字列と表示した値は控えておき、触っていない保存では元の文字列を完全に保つ
@@ -9152,13 +9391,23 @@ function addFlightCrosshair(m){
                            :'タップで点を追加するモードに戻しました', 2600); });
     L.DomEvent.on(add,'click',L.DomEvent.stop).on(add,'click',()=>{
       try{ m.stop(); }catch(e){}   // 慣性移動を止めてから中心を読む（観察位置マップと同じ）
+      if(flSoarBlocked()) return;
       const c=m.getCenter(); flightPath.push([c.lat,c.lng]); flightOps.push(1); SCREENS._dirty=true; redrawFlight(); });
     sync(); flightCrossSync=sync;
     return box; }});
   new C({position:'bottomleft'}).addTo(m);
 }
+// 飛翔画面で開いている経路の◎（線の途中の旋回上昇）。◎付きの経路は、ここでは経路と形を変えない
+function flSoarBlocked(){
+  if(SCREENS._flSoars && SCREENS._flSoars.length){
+    toast('この経路には◎（旋回上昇）があります。経路や形を変えるときは、観察の画面で先に◎を消してください', 5000);
+    return true; }
+  return false;
+}
 function initFlightMap(){
   const el=$('#fmap'); if(!el) return;
+  { const self=(SCREENS._flightSelf && SCREENS._flightSv) ? DB.flightsOf(SCREENS._flightSv).find(x=>x.uuid===SCREENS._flightSelf) : null;
+    SCREENS._flSoars = (self && SCREENS._flightEditing!==false && !(SCREENS._ftracks && SCREENS._ftracks.length>1)) ? soarSpotsOf(self) : []; }
   let center=[43.06,141.35], zoom=13;
   if(flightPath.length){ center=flightPath[0]; zoom=15; }
   else if(lastFix){ center=[lastFix.lat,lastFix.lon]; zoom=15; }
@@ -9166,12 +9415,13 @@ function initFlightMap(){
   // 十字モード中はタップでの追加を止める（地図を動かして狙う操作中の誤タップで点が増えないように）
   mapObj.on('click', e=>{ if(flightCrossMode) return;
     if(drawClickBlocked()) return;   // なぞり終えた直後の click で点が二重に入らないように
+    if(flSoarBlocked()) return;
     flightPath.push([e.latlng.lat, e.latlng.lng]); flightOps.push(1); SCREENS._dirty=true; redrawFlight(); });
   addFlightCrosshair(mapObj);
   // 描くモード: なぞった線を1回の操作として加える（小窓は付けない）
   drawAttach(mapObj, {
-    onCommit:(ll)=>{ ll.forEach(p=>flightPath.push([p[0],p[1]])); flightOps.push(ll.length); SCREENS._dirty=true; redrawFlight(); },
-    onTap:(la, lo)=>{ if(flightCrossMode) return; flightPath.push([la, lo]); flightOps.push(1); SCREENS._dirty=true; redrawFlight(); },
+    onCommit:(ll)=>{ if(flSoarBlocked()) return; ll.forEach(p=>flightPath.push([p[0],p[1]])); flightOps.push(ll.length); SCREENS._dirty=true; redrawFlight(); },
+    onTap:(la, lo)=>{ if(flightCrossMode) return; if(flSoarBlocked()) return; flightPath.push([la, lo]); flightOps.push(1); SCREENS._dirty=true; redrawFlight(); },
     onToggle:(on)=>{ if(on && flightCrossMode){ flightCrossMode=false;
       try{ localStorage.setItem('bs_flight_cross','0'); }catch(e){}
       if(flightCrossSync) flightCrossSync();
@@ -9198,6 +9448,7 @@ function redrawFlight(){
   if(!mapObj) return;
   if(flightLayer){ try{ mapObj.removeLayer(flightLayer); }catch(e){} }
   flightLayer=L.layerGroup().addTo(mapObj);
+  (SCREENS._flSoars||[]).forEach(sp=>drawSoarSpot(flightLayer, sp, '#9b59b6'));   // 線の途中の◎
   // 複数羽トレース: アクティブ以外のトラックを各色の実線で描く（薄い既存経路より目立ち、アクティブより控えめ）
   if(SCREENS._ftracks && SCREENS._ftracks.length>1){
     SCREENS._ftracks.forEach((tr,i)=>{ if(i===SCREENS._ftIdx) return;
@@ -9252,12 +9503,13 @@ function redrawFlight(){
 }
 function flightUndo(){
   if(!flightPath.length) return;
+  if(flSoarBlocked()) return;
   // 最後の1操作ぶんを戻す。履歴が点の数と食い違っていたら（開いたときから有る点など）1点だけ戻す
   let n=1;
   if(flightOps.length){ const k=flightOps[flightOps.length-1]; if(k>=1 && k<=flightPath.length){ n=k; flightOps.pop(); } else flightOps=[]; }
   flightPath.splice(flightPath.length-n, n); SCREENS._dirty=true; redrawFlight();
 }
-function flightClear(){ if(!flightPath.length) return; if(!confirm('描いた線を全部消しますか？')) return; flightPath=[]; flightOps=[]; SCREENS._dirty=true; redrawFlight(); }
+function flightClear(){ if(!flightPath.length) return; if(flSoarBlocked()) return; if(!confirm('描いた線を全部消しますか？')) return; flightPath=[]; flightOps=[]; SCREENS._dirty=true; redrawFlight(); }
 function saveFlight(u,svUuid,editing,cont){
   // 録音中に保存→遷移すると離脱確認と衝突して履歴・録音状態が崩れるため、先に停止してもらう。
   // 録音本体の保存待ち・写真動画の取り込み待ちの間も始めない
@@ -10042,6 +10294,7 @@ function drawMap(obs,notes,flights,targets,route,nests){
       if(pg) pg.bindPopup(`${head}<br>${esc(f.area_type||'面')} ・ 面積 約${m.text}<br>${esc(indCount(f.count))}個体<br>${esc(f.behavior||'')}<br>${fmtTime(f.start_time)}`);
     } else {
       const disp=smoothPath(path);   // 線・矢印とも表示用の滑らか経路に載せる（ズレると矢印が線から浮く）
+      soarSpotsOf(f).forEach(sp=>drawSoarSpot(mapObj, sp, col));   // 線の途中の◎
       const kind=lineKind(f);
       // 同じ図に歩行があるときだけ、飛翔を点線にして分ける（タンチョウの図の流儀）。
       // 常に点線にすると、猛禽だけの図（飛翔が実線）と食い違う
@@ -10253,6 +10506,18 @@ function soarCircle(path){
   const a=pathArea((path||[]).filter(validPathPt));
   if(!(a>0)) return null;
   return { c, r:Math.sqrt(a/Math.PI) };
+}
+// 線の途中の◎（中心と半径m）。保存の項目 soar_spots を読む。壊れた値は捨てる
+function soarSpotsOf(f){
+  const a=Array.isArray(f&&f.soar_spots) ? f.soar_spots : [];
+  return a.filter(x=>x && validPathPt([Number(x.lat), Number(x.lon)]) && Number(x.r)>0)
+    .map(x=>({lat:Number(x.lat), lon:Number(x.lon), r:Number(x.r)}));
+}
+function drawSoarSpot(layer, sp, color, sel){
+  try{
+    L.circle([sp.lat, sp.lon],{radius:sp.r, color, weight:sel?4:2.5, opacity:.95, fill:false, interactive:false}).addTo(layer);
+    L.circle([sp.lat, sp.lon],{radius:sp.r*0.55, color, weight:sel?3:2, opacity:.95, fill:false, interactive:false}).addTo(layer);
+  }catch(e){}
 }
 // 地図に ◎ を描く（外側と内側の2本）。描けたら true
 function drawSoar(layer, path, opt){
@@ -11861,6 +12126,8 @@ function flightFeature(s,f,path){
       shape:shapeOf(f), area_type:area?(f.area_type||''):'',
       // 1点目が前の経路の終点から続けて描いた点か（つなぎ目の「終」を出すかの判断に使う）
       continued_start: (!area && isTrueFlag(f.continued_start)) ? 'TRUE' : 'FALSE',
+      // 線の途中の◎（旋回上昇）。[{lat,lon,r_m}] を文字にしたもの。無ければ空
+      soar_spots: area ? '' : (soarSpotsOf(f).length ? JSON.stringify(soarSpotsOf(f).map(x=>({lat:x.lat, lon:x.lon, r_m:x.r}))) : ''),
       length_m: area?'':m.length_m,
       area_m2: area?m.area_m2:'',
       audio_file:(f.audio||[]).map((a,i)=>flightAudioFilename(f,i,a)).join(';'),
