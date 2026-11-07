@@ -176,6 +176,44 @@
   .map-full .leaflet-bottom{margin-bottom:calc(env(safe-area-inset-bottom, 0px) + var(--tools-h, 0px));}
   .north-needle{display:inline-block; line-height:1.05; font-size:13px; font-weight:700; transition:transform .15s;}
 
+  /* ---------- タブレット表示（2026-11 試験版。設定で手動オン） ----------
+     観察記録の地図だけを画面いっぱいの層 #tabMapLayer へ移し、入力欄を含む画面の中身（.app）は
+     その場に置いたまま、地図の上に浮かぶ小窓として見せる。**入力欄は1つも動かさない**
+     （保存・個体の退避・変更の見張りは #obForm の中を読むため。計画レビュー M1）。
+     重なり順: 地図の層 1000 ／ 小窓 1100 ／ 小窓の帯 1101 ／ 音声ドック 1150（地図に隠さない）／
+     写真拡大 1500・通知 2000・保存中の操作禁止 99997 は既存のまま手前 */
+  #tabMapLayer{position:fixed; inset:0; z-index:1000; background:var(--bg);}
+  #tabMapLayer > #obsPosMap{width:100%; height:100% !important; border-radius:0 !important; border:0 !important;}
+  body.tab-obs{overflow:hidden;}
+  body.tab-obs .app{position:fixed; top:8px; bottom:8px; right:8px; left:auto; margin:0;
+    width:min(440px, 46vw); max-width:none; overflow-y:auto; -webkit-overflow-scrolling:touch;
+    z-index:1100; background:var(--bg); border:1px solid var(--line); border-radius:14px;
+    box-shadow:0 6px 24px rgba(0,0,0,.45); padding-top:52px; box-sizing:border-box;}
+  body.tab-obs.tab-left .app{right:auto; left:8px;}
+  body.tab-obs.tab-collapsed .app{display:none;}
+  /* 小窓が開いている側の地図のボタン（P/L/N・ズーム・↶・描く）を小窓の外へずらす（小窓で隠さない） */
+  body.tab-obs:not(.tab-collapsed):not(.tab-left) #tabMapLayer .leaflet-right{right:calc(min(440px, 46vw) + 8px);}
+  body.tab-obs.tab-left:not(.tab-collapsed) #tabMapLayer .leaflet-left{left:calc(min(440px, 46vw) + 8px);}
+  #tabBar{position:fixed; top:14px; right:16px; z-index:1101; min-height:44px; padding:8px 14px;
+    border-radius:22px; border:1px solid var(--line); background:var(--accent); color:#fff;
+    font-size:15px; font-weight:700; box-shadow:0 2px 8px rgba(0,0,0,.4);}
+  body.tab-left #tabBar{right:auto; left:16px;}
+  body:not(.tab-collapsed) #tabBar{background:var(--panel); color:var(--fg);}
+  body.tab-obs #voiceDock{z-index:1150 !important;}
+  /* タブレット表示では「⛶ 大きく」は使わない（地図は最初から全面） */
+  body.tab-obs .map-full-btn{display:none !important;}
+  /* 地図上のボタンを押しやすい大きさに（44px以上） */
+  body.tab-obs #tabMapLayer .leaflet-bar a{width:44px !important; height:44px !important; line-height:44px !important;}
+  body.tab-obs #tabMapLayer .locate-btn,
+  body.tab-obs #tabMapLayer .map-drop-btn,
+  body.tab-obs #tabMapLayer .map-undo-btn,
+  body.tab-obs #tabMapLayer .draw-btn{min-width:44px; min-height:44px;}
+  /* 描くモードのボタン（観察・飛翔の地図） */
+  .draw-btn{min-height:40px; padding:6px 12px; border-radius:20px; border:1px solid var(--line);
+    background:var(--panel); color:var(--fg); font-size:14px; font-weight:700; box-shadow:0 1px 4px rgba(0,0,0,.4);}
+  .draw-btn.on{background:#e0a030; color:#111; border-color:#e0a030;}
+  .leaflet-container.drawing-on{cursor:crosshair;}
+
   /* 集計テーブル */
   table{width:100%; border-collapse:collapse; font-size:14px;}
   th,td{text-align:left; padding:8px 6px; border-bottom:1px solid var(--line);}
@@ -268,7 +306,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v222（2026-08-28 全体監査：記録の取り違え・見せかけの保存成功・書きかけの消失・圏外の詰まりを直す）';
+const APP_VERSION = 'v223（2026-11-07 タブレット表示（試験版・設定で手動オン）と描くモード（なぞって線を描く）を追加）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2928,6 +2966,8 @@ SCREENS.obsEdit = (argStr)=>{
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapUndo()" title="1つ戻す">↶</button>
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapClear()" title="全部消す">🗑</button>
         </div>
+        <div class="row" style="margin-top:4px;"><button type="button" class="btn ghost small" id="tabToggle" style="width:auto; padding:4px 10px;"
+          onclick="tabletSet(!tabletOn())" title="iPadなど画面の大きい端末向け（試験版）">📱 タブレット表示</button></div>
         <!-- **いま選んでいるトレース（L）の属性を、地図のすぐ下に1行でまとめる。**
              報告書の記号（◎旋回上昇・↠急降下）は L ごとの属性で決まるので、
              線でも面でも同じ場所で選べないと図が作れない。
@@ -3532,6 +3572,8 @@ let _compassEvName='deviceorientation';   // 登録したイベント名（同�
 let _compassReq=0;        // 許可待ちの世代番号。地図破棄で++して、遅れて届いた許可が古い地図を回すのを防ぐ
 // 地図の破棄はこの1本に集約（render・対象位置地図の開閉から使う）。コンパス監視・許可待ちも道連れで無効化
 function destroyMap(){
+  if(typeof drawDetach==='function') drawDetach();        // 描くモードの見張り（地図の要素に付けたもの）を外す
+  if(typeof tabletRelease==='function') tabletRelease();  // タブレット表示の層から地図を目印の位置へ戻す
   if(typeof mapFullOff==='function') mapFullOff(true);   // 全画面のまま破棄すると固定表示が画面に残るので先に戻す
   if(mapObj){ try{ mapObj.remove(); }catch(e){} mapObj=null; }
   // 地図上のマーカー参照もここでまとめて破棄する（古い参照が残ると、次に開いた別の地図と取り違える温床になる）
@@ -3628,6 +3670,7 @@ function mapFullToggle(m,btn){
 }
 // 現在の枠 → 画面いっぱい
 function mapFullOn(m,btn){
+  if(document.body.classList.contains('tab-obs')) return;   // タブレット表示中は地図が最初から全面
   if(_mapFull){ if(_mapFull.closing) mapFullExpand(_mapFull); return; }
   let el=null; try{ el=m.getContainer(); }catch(e){}
   if(!el || !el.parentNode) return;
@@ -3842,6 +3885,232 @@ function compassToggle(btn){
 const CROSS_SVG='<svg width="33" height="33" viewBox="0 0 33 33">'
   +'<g fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"><path d="M16.5 3v9.5M16.5 20.5V30M3 16.5h9.5M20.5 16.5H30"/></g>'
   +'<g fill="none" stroke="#111" stroke-width="1.6" stroke-linecap="round"><path d="M16.5 3v9.5M16.5 20.5V30M3 16.5h9.5M20.5 16.5H30"/></g></svg>';
+/* ---------- タブレット表示（2026-11 試験版） ----------
+   設定 bs_tablet: 'on' のときだけ有効（試験版の間は既定オフ。実機で確かめてから「幅768px以上は既定オン」にする。
+   計画レビュー m1/m2）。観察記録の地図の要素だけを body 直下の層へ移し、元の場所には目印を置く。
+   **入力欄は動かさない**。戻すときは必ず目印の位置へ（「元の親・次の兄弟」では戻さない）。 */
+function tabletOn(){ try{ return localStorage.getItem('bs_tablet')==='on'; }catch(e){ return false; } }
+function tabletSet(on){
+  try{ localStorage.setItem('bs_tablet', on?'on':'off'); }catch(e){}
+  if(!on){ tabletRelease(); try{ mapObj && mapObj.invalidateSize(); }catch(e){} }
+  else if($('#obsPosMap') && mapObj){ tabletAttach(); }
+  tabletToggleSync();
+  toast(on?'タブレット表示にしました（試験版）。地図が画面いっぱいになり、入力は小窓で行います'
+          :'タブレット表示をやめました', 3500);
+}
+function tabletToggleSync(){
+  const b=$('#tabToggle'); if(!b) return;
+  b.textContent = tabletOn() ? '📱 タブレット表示：オン' : '📱 タブレット表示：オフ';
+}
+let _tab=null;   // {el, mark, layer}。同時に1つ（地図が1枚のため）
+function tabletAttach(){
+  const el=$('#obsPosMap'); if(!el || !mapObj) return;
+  if(_tab && _tab.el===el && el.parentNode===_tab.layer) return;   // もう移してある
+  tabletRelease();
+  // 旧来の全画面が開いていれば先に閉じ終える（二つの方式が同じ地図を同時に扱わない。計画レビュー Minor）
+  if(typeof mapFullOff==='function') mapFullOff(true);
+  const mark=document.createElement('div'); mark.id='tabMapMark'; mark.style.display='none';
+  el.parentNode.insertBefore(mark, el);
+  const layer=document.createElement('div'); layer.id='tabMapLayer';
+  document.body.appendChild(layer);
+  layer.appendChild(el);
+  let bar=$('#tabBar');
+  if(!bar){ bar=document.createElement('button'); bar.id='tabBar'; bar.type='button';
+    bar.addEventListener('click', ()=>tabletPanel(document.body.classList.contains('tab-collapsed')));
+    document.body.appendChild(bar); }
+  _tab={el, mark, layer};
+  document.body.classList.add('tab-obs','tab-collapsed');   // 既定は畳んだ帯（地図を広く）
+  document.body.classList.remove('tab-left');
+  tabletBarSync();
+  mapUndoBtnSync(true, el);   // 「↶ 1つ戻す」を地図の上に出す（地図の下の ↶ は小窓の中にある）
+  if(typeof pfNewLineSync==='function') pfNewLineSync();   // 「✎ この線で入力」の出し入れを合わせる
+  try{ mapObj.invalidateSize(); }catch(e){}
+  setTimeout(()=>{ try{ mapObj && mapObj.invalidateSize(); }catch(e){} }, 250);
+}
+// 地図の要素を目印の位置へ戻し、層・帯・印を片付ける。目印が文書に無ければ（画面ごと消えた）層ごと捨てる
+function tabletRelease(){
+  document.body.classList.remove('tab-obs','tab-collapsed','tab-left');
+  const bar=$('#tabBar'); if(bar) bar.remove();
+  if(!_tab){ const ly=$('#tabMapLayer'); if(ly) ly.remove(); return; }
+  const {el, mark, layer}=_tab; _tab=null;
+  try{
+    if(mark && mark.isConnected){ mark.parentNode.insertBefore(el, mark); mapUndoBtnSync(false, el); }
+    if(mark) mark.remove();
+  }catch(e){}
+  try{ layer.remove(); }catch(e){}
+  if(typeof pfNewLineSync==='function') pfNewLineSync();   // オフにしたら「✎ この線で入力」を隠す
+}
+function tabletBarSync(){
+  const bar=$('#tabBar'); if(!bar) return;
+  bar.textContent = document.body.classList.contains('tab-collapsed') ? '📝 入力を開く ▲' : '▼ 地図を広く';
+}
+/* 小窓を開く／畳む。target … 開いたときに寄せて見せる欄（P:止まり情報 / N:巣 / L:線の属性）。
+   at … いま置いた・描いた地点。地図の右半分なら小窓を左へ寄せて、描いた場所を隠さない */
+function tabletPanel(open, target, at){
+  if(!document.body.classList.contains('tab-obs')) return;
+  document.body.classList.toggle('tab-collapsed', !open);
+  if(open && at && mapObj){
+    try{ const p=mapObj.latLngToContainerPoint(at); document.body.classList.toggle('tab-left', p.x > window.innerWidth/2); }catch(e){}
+  }
+  tabletBarSync();
+  if(open && target){
+    const el=$(target);
+    if(el){ if(el.tagName==='DETAILS') el.open=true;
+      setTimeout(()=>{ try{ el.scrollIntoView({block:'start', behavior:'smooth'}); }catch(e){} }, 30); }
+  }
+}
+window.addEventListener('resize', ()=>{ if(_tab && mapObj){ try{ mapObj.invalidateSize(); }catch(e){} } });
+
+/* ---------- 描くモード（✏ 描く）。観察の地図・飛翔の地図で共用 ----------
+   状態: 'idle'（待機）／'draw'（1本のペン・指でなぞっている）／'gesture'（2本指の操作中）。
+   - 描くモード中は地図のドラッグ移動・2本指回転・ダブルタップ拡大を止める（オフで**開始前の状態に**戻す）
+   - 2本目の接触で描きかけを捨てて 'gesture' へ。拡大縮小は Leaflet に任せ、全部離れるまで点を足さない
+   - なぞり終えた直後の click は点の追加に使わない（同じ操作が二重に入らない）
+   - 地図上のボタン（.leaflet-control）からは描き始めない
+   - 確定は onCommit(latlngs, times) に一括で渡す（呼び出し側が履歴を1件だけ積む） */
+const DRAW_MIN_PX=3, DRAW_TOL_PX=2.5, DRAW_MAX_PTS=300, DRAW_COLLECT_MAX=4000, DRAW_MIN_LEN_PX=10;
+let _draw=null;   // {m, el, on, state, pts, times, pid, pointers:Set, tmp, prev:{...}, btn, onCommit, onToggle, blockClickUntil, handlers}
+function drawClickBlocked(){ return !!(_draw && Date.now() < _draw.blockClickUntil); }
+function drawIsOn(){ return !!(_draw && _draw.on); }
+// 間引き: 形を保ったまま点を減らす（Douglas–Peucker、画面上の距離）。
+// 距離は**線分上の最近点まで**で測る（無限に延びる直線までで測ると、折り返しや、
+// 始点に戻る一周の線が消える。2026-11-07 監査 Major）
+function drawSegDist(p, a, b){
+  const dx=b.x-a.x, dy=b.y-a.y, l2=dx*dx+dy*dy;
+  if(l2===0) return Math.hypot(p.x-a.x, p.y-a.y);   // 両端が同じ点なら端点までの距離
+  let t=((p.x-a.x)*dx+(p.y-a.y)*dy)/l2; t=Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x-(a.x+t*dx), p.y-(a.y+t*dy));
+}
+function drawSimplify(pts, tol){
+  if(pts.length<3) return pts.slice();
+  const keep=new Uint8Array(pts.length); keep[0]=1; keep[pts.length-1]=1;
+  const stack=[[0, pts.length-1]];
+  while(stack.length){
+    const [a,b]=stack.pop(); let idx=-1, dmax=0;
+    for(let i=a+1;i<b;i++){ const d=drawSegDist(pts[i], pts[a], pts[b]); if(d>dmax){ dmax=d; idx=i; } }
+    if(dmax>tol && idx>0){ keep[idx]=1; stack.push([a,idx],[idx,b]); }
+  }
+  return pts.filter((_,i)=>keep[i]);
+}
+function drawAttach(m, opts){
+  drawDetach();
+  const el=m.getContainer();
+  const d={m, el, on:false, state:'idle', pts:[], times:[], pid:null, pointers:new Set(), tmp:null, prev:null,
+    btn:null, onCommit:opts.onCommit, onToggle:opts.onToggle||null, blockClickUntil:0, handlers:{}};
+  _draw=d;
+  const C=L.Control.extend({ onAdd:function(){
+    const b=L.DomUtil.create('button','draw-btn'); b.type='button'; b.id='drawBtn';
+    b.textContent='✏ 描く'; b.title='オンの間は、ペンでも指でもなぞって線を描けます（2本指で拡大縮小）';
+    L.DomEvent.disableClickPropagation(b);
+    L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>drawSet(!d.on));
+    d.btn=b; return b; }});
+  new C({position:'topright'}).addTo(m);
+  const pt=(e)=>{ const r=el.getBoundingClientRect(); return L.point(e.clientX-r.left, e.clientY-r.top); };
+  d.handlers.down=(e)=>{
+    if(!d.on) return;
+    if(e.target && e.target.closest && e.target.closest('.leaflet-control')) return;   // ボタンからは描き始めない
+    d.pointers.add(e.pointerId);
+    if(d.pointers.size>=2){ drawCancel('gesture'); return; }   // 2本目: 描きかけを捨てて地図の操作へ
+    if(d.state!=='idle') return;
+    d.state='draw'; d.pid=e.pointerId; d.pts=[pt(e)]; d.times=[new Date()];
+    try{ el.setPointerCapture && el.setPointerCapture(e.pointerId); }catch(_){}
+    if(e.pointerType!=='touch') e.preventDefault();   // ペン・マウスで文字選択などが起きないように
+  };
+  d.handlers.move=(e)=>{
+    if(!d.on || d.state!=='draw' || e.pointerId!==d.pid) return;
+    const p=pt(e), last=d.pts[d.pts.length-1];
+    if(Math.hypot(p.x-last.x, p.y-last.y) < DRAW_MIN_PX) return;
+    if(d.pts.length>=DRAW_COLLECT_MAX){ drawCancel('idle'); toast('線が長すぎるので取り消しました。何回かに分けて描いてください', 4000); return; }
+    d.pts.push(p); d.times.push(new Date());
+    drawTmpUpdate(d);
+  };
+  d.handlers.up=(e)=>{
+    d.pointers.delete(e.pointerId);
+    if(d.state==='draw' && e.pointerId===d.pid){ drawFinish(d); }
+    if(d.state==='gesture' && d.pointers.size===0){ d.state='idle'; d.blockClickUntil=Date.now()+500; }
+  };
+  d.handlers.cancel=(e)=>{ d.pointers.delete(e.pointerId); drawCancel(d.pointers.size?'gesture':'idle'); };
+  el.addEventListener('pointerdown', d.handlers.down, true);
+  el.addEventListener('pointermove', d.handlers.move, true);
+  el.addEventListener('pointerup', d.handlers.up, true);
+  el.addEventListener('pointercancel', d.handlers.cancel, true);
+  d.handlers.vis=()=>{ if(document.hidden) drawCancel('idle'); };
+  document.addEventListener('visibilitychange', d.handlers.vis);
+  return d;
+}
+function drawTmpUpdate(d){
+  if(d._raf) return;
+  d._raf=requestAnimationFrame(()=>{ d._raf=0;
+    if(!_draw || _draw!==d || d.state!=='draw') return;
+    let ll; try{ ll=d.pts.map(p=>d.m.containerPointToLatLng(p)); }catch(e){ return; }
+    if(!d.tmp) d.tmp=L.polyline(ll,{color:'#e0a030',weight:4,opacity:.85,interactive:false}).addTo(d.m);
+    else d.tmp.setLatLngs(ll);
+  });
+}
+function drawTmpClear(d){ if(d && d.tmp){ try{ d.m.removeLayer(d.tmp); }catch(e){} d.tmp=null; } }
+// 描きかけを捨てる（中断・2本目の指・画面が隠れたとき）。点も履歴も増やさない
+function drawCancel(nextState){
+  const d=_draw; if(!d) return;
+  const wasActive = d.state!=='idle' || d.pts.length>0;   // 描きかけ・2本指の操作があったときだけ直後の click を抑える
+  drawTmpClear(d); d.pts=[]; d.times=[]; d.pid=null;
+  d.state=nextState||'idle';
+  if(wasActive || d.state!=='idle') d.blockClickUntil=Date.now()+500;
+}
+function drawFinish(d){
+  const raw=d.pts, times=d.times; d.pts=[]; d.times=[]; d.pid=null; d.state='idle';
+  drawTmpClear(d);
+  d.blockClickUntil=Date.now()+500;   // なぞり終えた直後の click で点が二重に入らないように
+  let len=0; for(let i=1;i<raw.length;i++) len+=Math.hypot(raw[i].x-raw[i-1].x, raw[i].y-raw[i-1].y);
+  if(raw.length<2 || len<DRAW_MIN_LEN_PX) return;   // 短すぎるなぞりは何もしない（小窓も開かない）
+  // 間引き。上限を超えたら黙って切らず、間引きを強める
+  const idx=raw.map((p,i)=>({x:p.x, y:p.y, i}));
+  let tol=DRAW_TOL_PX, s=drawSimplify(idx, tol);
+  while(s.length>DRAW_MAX_PTS && tol<200){ tol*=1.6; s=drawSimplify(idx, tol); }
+  if(s.length>DRAW_MAX_PTS){ toast('線が複雑すぎるので取り消しました。何回かに分けて描いてください', 4000); return; }
+  let ll; try{ ll=s.map(p=>{ const q=d.m.containerPointToLatLng(L.point(p.x,p.y)); return [q.lat, q.lng]; }); }catch(e){ return; }
+  const tt=s.map(p=>times[p.i]);
+  if(!ll.every(validPathPt)) return;
+  try{ d.onCommit(ll, tt); }catch(e){ console.error(e); toast('線を記録できませんでした: '+(e.message||e), 5000); }
+}
+// 描くモードの切り替え。地図の操作の設定は「開始前の状態」を覚えて戻す（一律オンにしない。計画レビュー M2）
+function drawSet(on){
+  const d=_draw; if(!d) return;
+  if(on===d.on) return;
+  const m=d.m;
+  if(on){
+    d.prev={drag: !!(m.dragging && m.dragging.enabled()), rot: !!(m.touchRotate && m.touchRotate.enabled()),
+            dbl: !!(m.doubleClickZoom && m.doubleClickZoom.enabled())};
+    try{ m.dragging && m.dragging.disable(); }catch(e){}
+    try{ m.touchRotate && m.touchRotate.disable(); }catch(e){}
+    try{ m.doubleClickZoom && m.doubleClickZoom.disable(); }catch(e){}
+    if(typeof compassStop==='function') compassStop();   // 描いている間に地図が回らないように
+    d.on=true; d.el.classList.add('drawing-on');
+  } else {
+    drawCancel('idle');
+    const p=d.prev||{};
+    try{ if(p.drag && m.dragging) m.dragging.enable(); }catch(e){}
+    try{ if(p.rot && m.touchRotate) m.touchRotate.enable(); }catch(e){}
+    try{ if(p.dbl && m.doubleClickZoom) m.doubleClickZoom.enable(); }catch(e){}
+    d.on=false; d.el.classList.remove('drawing-on');
+  }
+  if(d.btn){ d.btn.classList.toggle('on', d.on); d.btn.textContent=d.on?'✏ 描く：オン':'✏ 描く'; }
+  if(d.onToggle) d.onToggle(d.on);
+}
+// 地図を破棄する前に必ず呼ぶ（地図の要素は残ることがあるので、付けた見張りを外す）
+function drawDetach(){
+  const d=_draw; if(!d) return;
+  drawCancel('idle');
+  try{
+    d.el.removeEventListener('pointerdown', d.handlers.down, true);
+    d.el.removeEventListener('pointermove', d.handlers.move, true);
+    d.el.removeEventListener('pointerup', d.handlers.up, true);
+    d.el.removeEventListener('pointercancel', d.handlers.cancel, true);
+    document.removeEventListener('visibilitychange', d.handlers.vis);
+    d.el.classList.remove('drawing-on');
+  }catch(e){}
+  _draw=null;
+}
+
 function makeCrossEl(m){
   const cross=L.DomUtil.create('div','map-cross', m.getContainer());
   cross.innerHTML=CROSS_SVG;
@@ -4271,6 +4540,7 @@ function pfSet(mode){
     else PF_CONT=true;
   }
   if(mode!=='F' && typeof spiralReset==='function') spiralReset();   // 経路以外では使わない
+  if(mode!=='F' && typeof drawIsOn==='function' && drawIsOn()) drawSet(false);   // 描くモードも経路だけ
   // P/F/N を押したら必ず「次は新しく始める」。同じボタンをもう一度押したときも同じ
   //（押し直しても前の線が伸びる、という取り違えを防ぐ）
   PF_NEWLINE=true;
@@ -4500,6 +4770,7 @@ function spiralReset(){
 }
 function spiralToggle(){
   PF_SPIRAL=!PF_SPIRAL;
+  if(PF_SPIRAL && typeof drawIsOn==='function' && drawIsOn()) drawSet(false);   // くるくると描くモードは同時に使わない
   if(PF_SPIRAL && PF_MODE!=='F') pfSet('F');   // 経路にしか入れられない
   spiralInfo(); pfInfo();
   if(PF_SPIRAL) toast(spiralMoves()
@@ -5041,7 +5312,8 @@ function pfDrop(lat,lon){
   if(PF_MODE==='N'){
     PF_NEST=[lat,lon];
     nestTouch(); nestSync();
-    SCREENS._dirty=true; pfRedraw(); pfInfo(); segChips(); return;
+    SCREENS._dirty=true; pfRedraw(); pfInfo(); segChips();
+    tabletPanel(true, '#foldNest', [lat,lon]); return;
   }
   if(PF_MODE==='P'){
     // 位置が無かった古い記録から引き継ぐ止まり木情報があれば、最初の P に移す
@@ -5050,6 +5322,7 @@ function pfDrop(lat,lon){
     PF_SEGS.push({t:'P', id:pfId(), pt:[lat,lon], time:now, perch:_pk});
     PERCH_IDX=pfPoints().length-1;   // 落としたばかりの P を編集対象にする
     perchTabs(); perchLoad();
+    setTimeout(()=>tabletPanel(true, '#foldEnv', [lat,lon]), 0);   // タブレット表示なら止まり情報の欄を開く
   } else {
     const last=PF_SEGS[PF_SEGS.length-1];
     // トレースは**必ず線から始まる**。面にするのは「始点をもう一度タップして閉じる」操作。
@@ -5290,8 +5563,16 @@ function initObsPosMap(){
   mapObj=createBaseMap('obsPosMap', center, zoom, {undoable:true});   // 描く地図なので「↶」を出す
   // 観察の地図は自前の十字ボタンを持つ。飛翔画面の十字モードには影響されない
   //（見ないと、飛翔画面で十字を使った端末では地図タップが全部効かなくなる）
-  mapObj.on('click', e=>{ pfDrop(e.latlng.lat, e.latlng.lng); });
+  mapObj.on('click', e=>{
+    if(drawClickBlocked()) return;   // なぞり終えた直後の click で点が二重に入らないように
+    pfDrop(e.latlng.lat, e.latlng.lng); });
   addPfControl(mapObj);
+  // 描くモード（✏ 描く）: なぞった線を1回の操作としてまとめて L に加える
+  drawAttach(mapObj, {
+    onCommit:(ll, tt)=>pfAddStroke(ll, tt),
+    onToggle:(on)=>{ if(on){ if(PF_MODE!=='F' || PF_SEL===-2) pfSet('F'); if(PF_SPIRAL && typeof spiralToggle==='function') spiralToggle(); } }
+  });
+  addTabLineControl(mapObj);
   addCrosshairControl(mapObj, (la2,lo2)=>pfDrop(la2,lo2), '＋');
   // 同じ調査の他の飛翔経路を薄く重ねる
   const svU=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
@@ -5303,7 +5584,52 @@ function initObsPosMap(){
   pfRedraw(); pfInfo();
   const all=[]; PF_SEGS.forEach(sg=>{ if(sg.t==='P') all.push(sg.pt); else sg.pts.forEach(x=>all.push(x)); });
   if(PF_NEST) all.push(PF_NEST);
+  if(tabletOn()) tabletAttach();   // タブレット表示: 地図を画面いっぱいの層へ（入力欄は動かさない）
   if(all.length>1){ try{ mapObj.fitBounds(all,{padding:[40,40]}); }catch(e){} }
+  tabletToggleSync();
+}
+/* タブレット表示のときだけ出す「✎ この線で入力」。タップで描いた線の属性を入れる小窓を**開くだけ**
+   （保存・新しいL・面への変換はしない。1つの操作に2つの意味を持たせない） */
+function addTabLineControl(m){
+  const C=L.Control.extend({ onAdd:function(){
+    const b=L.DomUtil.create('button','map-drop-btn tab-line-btn');
+    b.type='button'; b.id='tabLineBtn'; b.textContent='✎ この線で入力'; b.style.display='none';
+    L.DomEvent.disableClickPropagation(b);
+    L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>{
+      const sg=lastDrawnFl(); tabletPanel(true, '#flAttrRow', sg&&sg.pts&&sg.pts.length?sg.pts[sg.pts.length-1]:null); });
+    return b; }});
+  new C({position:'bottomright'}).addTo(m);
+}
+/* なぞった線をまとめて L に加える（描くモードの確定）。**履歴は1件だけ**積み、
+   pfDrop を点ごとに呼ばない＝始点付近で「面にする」判定（pfTryClose）を通さない（計画レビュー M3）。
+   追加先・続ける（cont）の決まりは pfDrop の L の分岐と同じ */
+function pfAddStroke(ll, tt){
+  if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;
+  if(!ll || ll.length<2) return;
+  const times=tt.map(d=>localDatetimeValue(d instanceof Date?d:new Date()));
+  pfSnap();
+  let target=null;
+  if(PF_SEL>=0){ const sg=PF_SEGS[PF_SEL]; if(sg && sg.t==='F') target=sg; else PF_SEL=-1; }   // P を選んでいても、なぞりは線として扱う
+  if(target){
+    ll.forEach((p,i)=>{ target.pts.push([p[0],p[1]]); target.times.push(times[i]); });
+    target.edited=true;
+  } else {
+    const last=PF_SEGS[PF_SEGS.length-1];
+    if(PF_NEWLINE || !last || last.t!=='F'){
+      const c=PF_CONT?contFrom():null;
+      const from=(c && !(c.pt[0]===ll[0][0] && c.pt[1]===ll[0][1]))?c:null;
+      const pts=(from?[[from.pt[0],from.pt[1]]]:[]).concat(ll.map(p=>[p[0],p[1]]));
+      const tms=(from?[from.time||times[0]]:[]).concat(times);
+      PF_SEGS.push({t:'F', id:pfId(), pts, times:tms, cont:from?1:0,
+        fl:{height:'',behavior:'',shape:SHAPE_LINE,area_type:''}});
+      PF_NEWLINE=false;
+    } else {
+      ll.forEach((p,i)=>{ last.pts.push([p[0],p[1]]); last.times.push(times[i]); });
+      last.edited=true;
+    }
+  }
+  SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips();
+  tabletPanel(true, '#flAttrRow', ll[ll.length-1]);   // タブレット表示なら線の属性の欄を開く
 }
 // 地図の上の P / F 切替（アイコンのみ・仕様書）
 function addPfControl(m){
@@ -5361,6 +5687,7 @@ function pfNewLineSync(){
   const b=$('#pfNewLine'); if(!b) return;
   const 描いている = PF_MODE==='F' && !!lastDrawnFl();
   b.style.display = 描いている ? '' : 'none';
+  const t=$('#tabLineBtn'); if(t) t.style.display = (描いている && document.body.classList.contains('tab-obs')) ? '' : 'none';
 }
 // 観察者位置マーカー（緑丸）の再描画のみ。値は書き換えない（GPS取得時の精度を消さないため分離）
 function obsPosMarkerUpdate(lat,lon){
@@ -8028,6 +8355,9 @@ function newSurveyFromRoute(u){ if(!writeAllowed()) return; const s=DB.survey(u)
    飛翔経路（地図に線を描いて記録）
    ============================================================ */
 let flightPath=[], flightLayer=null;
+// 飛翔経路の操作の履歴: 1回の操作（タップ1回・十字の追加1回・なぞり1回）で足した点の数を積む。
+// 「1つ戻す」は最後の1操作ぶんを戻す（計画レビュー M4）。履歴の無い点（開いたときから有る点）は1点ずつ戻す
+let flightOps=[];
 // この画面で描いているものの形（線 / 面）。既定は線
 let flightShape=SHAPE_LINE;
 function flightIsArea(){ return flightShape===SHAPE_AREA; }
@@ -8173,6 +8503,8 @@ SCREENS.flightEdit = (argStr)=>{
       ${editing?`<div class="sp"></div><button class="btn danger" onclick="deleteFlight('${f.uuid}')">この飛翔経路を削除</button>`:''}
     `,
     onMount:()=>{ SCREENS._chosenId=f.species_id||''; flightPath=(f.path||[]).slice();
+      { const _tr=(!editing && SCREENS._ftracks)?SCREENS._ftracks[SCREENS._ftIdx]:null;   // 複数羽トレースはトラックの履歴を戻す
+        flightOps=(_tr && Array.isArray(_tr.ops))?_tr.ops.slice():[]; }
       flightShape=shapeOf(f); flightShapeSyncUI();   // 画面をまたいで残らないよう、開くたびに形を入れ直す
       SCREENS._audio=(f.audio||[]).slice(); SCREENS._media=(f.media||[]).slice();
       SCREENS._mediaCtx = multiN>1 ? null : {kind:'flight', uuid:f.uuid, sv:svUuid};   // 複数トレース中はメディアの持ち主を作らない
@@ -8192,6 +8524,7 @@ function stashFlightTrack(){
   const name=(($('#spInput')&&$('#spInput').value)||'').trim();
   const behSet=[...document.querySelectorAll('#flForm [data-seg="behavior"] button.on')].map(b=>b.textContent);
   tr.path=flightPath.slice();
+  tr.ops=flightOps.slice();   // 操作の履歴もトラックと一緒に退避する（切り替えて戻っても1操作ずつ戻せる）
   tr.fields={
     species_id: name ? (SCREENS._chosenId||'') : '', species_name_snapshot: name,
     age_class: segVal('age_class'), individual_label:(g('individual_label')||'').trim(),
@@ -8641,6 +8974,7 @@ function flightColorIndex(mode, value){
 /* 飛翔経路の点の打ち方: タップ追加（速い）⇔ 十字追加（指で目標が隠れず精密）の切り替え。
    経路は連続で何点も打つため、観察位置のような常時十字ではなくモード式にする。選んだモードは端末に記憶 */
 let flightCrossMode=false;
+let flightCrossSync=null;   // 十字モードの表示を今の状態に合わせる（描くモードから十字をやめるときに使う）
 try{ flightCrossMode = localStorage.getItem('bs_flight_cross')==='1'; }catch(e){}
 function addFlightCrosshair(m){
   const cross=makeCrossEl(m);
@@ -8665,14 +8999,15 @@ function addFlightCrosshair(m){
     L.DomEvent.disableClickPropagation(box);
     L.DomEvent.on(tg,'click',L.DomEvent.stop).on(tg,'click',()=>{
       flightCrossMode=!flightCrossMode;
+      if(flightCrossMode && typeof drawIsOn==='function' && drawIsOn()) drawSet(false);   // 十字と描くモードは同時に使わない
       try{ localStorage.setItem('bs_flight_cross', flightCrossMode?'1':'0'); }catch(e){}
       sync();
       toast(flightCrossMode?'十字モード: 地図を動かして「点を追加」で打ちます（タップでは追加されません）'
                            :'タップで点を追加するモードに戻しました', 2600); });
     L.DomEvent.on(add,'click',L.DomEvent.stop).on(add,'click',()=>{
       try{ m.stop(); }catch(e){}   // 慣性移動を止めてから中心を読む（観察位置マップと同じ）
-      const c=m.getCenter(); flightPath.push([c.lat,c.lng]); SCREENS._dirty=true; redrawFlight(); });
-    sync();
+      const c=m.getCenter(); flightPath.push([c.lat,c.lng]); flightOps.push(1); SCREENS._dirty=true; redrawFlight(); });
+    sync(); flightCrossSync=sync;
     return box; }});
   new C({position:'bottomleft'}).addTo(m);
 }
@@ -8684,8 +9019,17 @@ function initFlightMap(){
   mapObj=createBaseMap('fmap', center, zoom, {});
   // 十字モード中はタップでの追加を止める（地図を動かして狙う操作中の誤タップで点が増えないように）
   mapObj.on('click', e=>{ if(flightCrossMode) return;
-    flightPath.push([e.latlng.lat, e.latlng.lng]); SCREENS._dirty=true; redrawFlight(); });
+    if(drawClickBlocked()) return;   // なぞり終えた直後の click で点が二重に入らないように
+    flightPath.push([e.latlng.lat, e.latlng.lng]); flightOps.push(1); SCREENS._dirty=true; redrawFlight(); });
   addFlightCrosshair(mapObj);
+  // 描くモード: なぞった線を1回の操作として加える（小窓は付けない）
+  drawAttach(mapObj, {
+    onCommit:(ll)=>{ ll.forEach(p=>flightPath.push([p[0],p[1]])); flightOps.push(ll.length); SCREENS._dirty=true; redrawFlight(); },
+    onToggle:(on)=>{ if(on && flightCrossMode){ flightCrossMode=false;
+      try{ localStorage.setItem('bs_flight_cross','0'); }catch(e){}
+      if(flightCrossSync) flightCrossSync();
+      toast('十字モードをやめて、描くモードにしました', 2500); } }
+  });
   // 同じ調査の他の飛翔経路を薄く重ねる（1画面で何本も見えるように）
   if(SCREENS._flightSv){ DB.flightsOf(SCREENS._flightSv).forEach(of=>{
     if(of.uuid===SCREENS._flightSelf) return;
@@ -8759,8 +9103,14 @@ function redrawFlight(){
           ? `まだ点がありません。地図を動かして「点を追加」で${flightIsArea()?'囲んで':'描いて'}ください。`
           : `まだ点がありません。地図をタップして${flightIsArea()?'囲んで':'描いて'}ください。`)+multi; }
 }
-function flightUndo(){ if(!flightPath.length) return; flightPath.pop(); SCREENS._dirty=true; redrawFlight(); }
-function flightClear(){ if(!flightPath.length) return; if(!confirm('描いた線を全部消しますか？')) return; flightPath=[]; SCREENS._dirty=true; redrawFlight(); }
+function flightUndo(){
+  if(!flightPath.length) return;
+  // 最後の1操作ぶんを戻す。履歴が点の数と食い違っていたら（開いたときから有る点など）1点だけ戻す
+  let n=1;
+  if(flightOps.length){ const k=flightOps[flightOps.length-1]; if(k>=1 && k<=flightPath.length){ n=k; flightOps.pop(); } else flightOps=[]; }
+  flightPath.splice(flightPath.length-n, n); SCREENS._dirty=true; redrawFlight();
+}
+function flightClear(){ if(!flightPath.length) return; if(!confirm('描いた線を全部消しますか？')) return; flightPath=[]; flightOps=[]; SCREENS._dirty=true; redrawFlight(); }
 function saveFlight(u,svUuid,editing,cont){
   // 録音中に保存→遷移すると離脱確認と衝突して履歴・録音状態が崩れるため、先に停止してもらう。
   // 録音本体の保存待ち・写真動画の取り込み待ちの間も始めない
