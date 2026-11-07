@@ -224,14 +224,45 @@
       `検出 ${S.events.length}件　保存した音 ${clips}件（${mb.toFixed(1)}MB）`;
     // 時刻順の一覧（新しい順）。停止区間も混ぜる
     const rows = S.events.map(e => ({ t: e.t0, html:
-      `<tr><td>${hms(e.t0)}〜${hms(e.t1)}</td><td>${e.ja}</td><td>${e.count}</td><td>${(e.max * 100).toFixed(0)}%</td><td>${e.src}</td>` +
+      `<tr class="${e.review === 'ok' ? 'ok' : e.review === 'ng' ? 'ng' : e.review === 'fixed' ? 'fx' : ''}">` +
+      `<td>${hms(e.t0)}〜${hms(e.t1)}</td><td>${e.ja}</td><td>${e.count}</td><td>${(e.max * 100).toFixed(0)}%</td><td>${e.src}</td>` +
       `<td>${e.clip ? `<button class="smPlay" data-id="${e.clip}">▶</button>` : ''}<span style="font-size:0.8em">${e.note}</span></td>` +
+      `<td>${reviewCell(e)}</td>` +
       `<td>${e.lat != null ? e.lat.toFixed(4) + ',' + e.lng.toFixed(4) : ''}</td></tr>` }))
-      .concat(S.gaps.map(g => ({ t: g.from, html: `<tr class="na"><td>${hms(g.from)}〜${g.to ? hms(g.to) : ''}</td><td colspan="6">録音停止（画面が消えた・別アプリ）</td></tr>` })))
+      .concat(S.gaps.map(g => ({ t: g.from, html: `<tr class="na"><td>${hms(g.from)}〜${g.to ? hms(g.to) : ''}</td><td colspan="7">録音停止（画面が消えた・別アプリ）</td></tr>` })))
       .sort((a, b) => b.t - a.t);
-    $('smList').innerHTML = '<table><tr><th>時刻</th><th>種名</th><th>回数</th><th>最大</th><th>根拠</th><th>音</th><th>位置</th></tr>' + rows.map(r => r.html).join('') + '</table>';
+    $('smList').innerHTML = '<table><tr><th>時刻</th><th>種名</th><th>回数</th><th>最大</th><th>根拠</th><th>音</th><th>判定</th><th>位置（調査員）</th></tr>' + rows.map(r => r.html).join('') + '</table>';
     document.querySelectorAll('.smPlay').forEach(b => b.onclick = () => play(b.dataset.id));
+    document.querySelectorAll('.smRv').forEach(b => b.onclick = () => review(b.dataset.id, b.dataset.act));
     renderBins();
+  }
+
+  // ---- 判定（正解・不正解・訂正）----
+  const confirmedJa = e => e.review === 'ok' ? e.ja : e.review === 'fixed' ? e.fixedJa : '';
+  function reviewCell(e) {
+    const btn = (act, label) => `<button class="smRv" data-id="${e.id}" data-act="${act}">${label}</button>`;
+    if (!e.review) return btn('ok', '○正解') + btn('ng', '×不正解') + btn('fix', '種を直す');
+    const label = e.review === 'ok' ? '○正解' : e.review === 'ng' ? '×不正解' : '→' + e.fixedJa;
+    const teach = e.review !== 'ng' && e.emb ? (e.taught ? ' 手帳に登録済み' : btn('teach', '手帳に教える')) : '';
+    return `<b>${label}</b> ${btn('undo', '取消')}${teach}`;
+  }
+  async function review(id, act) {
+    const e = S.events.find(x => x.id === id); if (!e) return;
+    if (act === 'ok' || act === 'ng') e.review = act;
+    else if (act === 'undo') { e.review = null; e.fixedJa = null; }
+    else if (act === 'fix') {
+      const names = [...document.querySelectorAll('#regSelect option')].map(o => o.value).filter(v => v && v !== '__free__');
+      const v = (prompt('正しい種名を入力してください（例: ' + names.slice(0, 3).join('、') + '）', '') || '').trim();
+      if (!v) return;
+      if (!names.includes(v) && !confirm(`「${v}」は北海道の188種の一覧にありません。このまま使いますか？`)) return;
+      e.review = 'fixed'; e.fixedJa = v;
+    } else if (act === 'teach') {
+      const ja = confirmedJa(e); if (!ja || !e.emb) return;
+      const entry = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 8), ja, kind: 'bird', date: new Date().toISOString(), embs: [e.emb] };
+      await idbPut(entry); nbEntries.push(entry); renderNotebook();
+      e.taught = true;
+    }
+    saveSessionSoon(); render();
   }
 
   function renderBins() {
@@ -239,8 +270,11 @@
     if (!S.events.length) { $('smBins').innerHTML = ''; return; }
     const t0 = Math.floor(S.sessionStart / bin) * bin, t1 = Math.max(Date.now(), ...S.events.map(e => e.t1));
     const cols = []; for (let t = t0; t <= t1; t += bin) cols.push(t);
-    const sp = [...new Set(S.events.map(e => e.ja))];
-    const cnt = {}; for (const e of S.events) { const k = e.ja + '|' + Math.floor((e.t0 - t0) / bin); cnt[k] = (cnt[k] || 0) + e.count; }
+    // 不正解は数えない。訂正したものは直した種名で数える
+    const evs = S.events.filter(e => e.review !== 'ng');
+    const nm = e => e.review === 'fixed' ? e.fixedJa : e.ja;
+    const sp = [...new Set(evs.map(nm))];
+    const cnt = {}; for (const e of evs) { const k = nm(e) + '|' + Math.floor((e.t0 - t0) / bin); cnt[k] = (cnt[k] || 0) + e.count; }
     $('smBins').innerHTML = '<table><tr><th>種名</th>' + cols.map(c => `<th>${hm(c)}〜</th>`).join('') + '</tr>' +
       sp.map(ja => `<tr><td>${ja}</td>` + cols.map((c, i) => `<td style="text-align:center">${cnt[ja + '|' + i] || ''}</td>`).join('') + '</tr>').join('') + '</table>';
   }
@@ -292,7 +326,8 @@
     const files = [];
     const d = new Date(S.sessionStart);
     const ymd = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
-    const lines = [['開始時刻', '終了時刻', '種名', '回数', '最大確からしさ', '根拠', '緯度', '経度', '音声ファイル', '音声の開始時刻', '備考']];
+    const lines = [['開始時刻', '終了時刻', 'AIの種名', '判定', '確定した種名', '回数', '最大確からしさ', '根拠', '緯度（調査員）', '経度（調査員）', '音声ファイル', '音声の開始時刻', '備考']];
+    const rvName = { ok: '正解', ng: '不正解', fixed: '訂正' };
     for (const e of S.events.slice().sort((a, b) => a.t0 - b.t0)) {
       let fn = '';
       if (e.clip) {
@@ -302,9 +337,9 @@
           files.push({ name: fn, data: wav(c.pcm) });
         }
       }
-      lines.push([hms(e.t0), hms(e.t1), e.ja, e.count, (e.max * 100).toFixed(1), e.src, e.lat ?? '', e.lng ?? '', fn, e.clipT0 ? hms(e.clipT0) : '', e.note]);
+      lines.push([hms(e.t0), hms(e.t1), e.ja, rvName[e.review] || '未判定', confirmedJa(e), e.count, (e.max * 100).toFixed(1), e.src, e.lat ?? '', e.lng ?? '', fn, e.clipT0 ? hms(e.clipT0) : '', e.note]);
     }
-    for (const g of S.gaps) lines.push([hms(g.from), g.to ? hms(g.to) : '', '（録音停止）', '', '', '', '', '', '', '', '画面が消えた・別アプリ']);
+    for (const g of S.gaps) lines.push([hms(g.from), g.to ? hms(g.to) : '', '（録音停止）', '', '', '', '', '', '', '', '', '', '画面が消えた・別アプリ']);
     const csv = '﻿' + lines.map(r => r.map(x => `"${String(x).replace(/"/g, '""')}"`).join(',')).join('\r\n');
     files.unshift({ name: '一覧.csv', data: new TextEncoder().encode(csv) });
     const a = document.createElement('a');
