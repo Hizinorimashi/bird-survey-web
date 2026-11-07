@@ -1,7 +1,9 @@
 # GitHub Pages への公開（2026-11-07 から）。
-# 従来の自動公開（pages-build-deployment）は配信の完了を10分しか待たず、
-# 約240MB（鳴き声の音声188本）を配るときにときどき時間切れで失敗していた。
-# 同じ中身をこの手順で公開し、配信の完了を30分まで待つ。
+# 従来の自動公開（pages-build-deployment）で、約240MB（鳴き声の音声188本）の配信が
+# ときどき「Timeout reached」（10分）で失敗していたため、同じ中身をこの手順で公開する。
+# 注意: deploy-pages の待ち時間の上限は10分（600000ms）で、それ以上には延ばせない
+# （2026-11-07 に30分を指定したら「上限の10分に切り詰めた」と警告が出た）。
+# この手順への切り替えで失敗が減るかは様子見。続くようなら音声を公開対象から外す案を検討する。
 # 元の方式に戻すとき: リポジトリの Settings → Pages → Source を「Deploy from a branch」（master / root）にする
 name: GitHub Pages に公開
 on:
@@ -31,4 +33,4 @@ jobs:
       - id: deployment
         uses: actions/deploy-pages@v4
         with:
-          timeout: 1800000
+          timeout: 600000   # 上限（10分）
