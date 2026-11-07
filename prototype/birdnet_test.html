@@ -24,7 +24,7 @@
 
 <h2>1. 判別してみる</h2>
 <div>
-  <label><input type="checkbox" id="optHokkaido" checked> 北海道の鳥に絞る（北海道鳥類目録505種）</label>
+  <label><input type="checkbox" id="optHokkaido" checked> <span id="optHokkaidoLabel">北海道の鳥に絞る（北海道鳥類目録505種）</span></label>
   <label><input type="checkbox" id="optArea"> 場所と時期で絞る</label>
 </div>
 <div id="areaBox" style="margin:4px 0">
@@ -92,6 +92,7 @@ let hkSpecies = [];       // 北海道目録505種（hokkaido_list.json）
 const idxName = new Map();    // AI内番号 → 表示名（目録掲載名）
 const nameCanon = new Map();  // いろいろな呼び名 → 表示名（承認済み・自動対応の種だけ。推測では統合しない）
 let prepError = null;     // 準備（一覧の読み込み・検査）の失敗
+let hkExtraCount = 0;     // 目録外の追加種の数
 let areaScores = null;
 let evalRows = [];
 let reqId = 0;
@@ -160,7 +161,21 @@ async function prepare() {
   for (const [id, arr] of Object.entries(al.alias)) {
     if (!ids.has(id) || !Array.isArray(arr) || !arr.length || !arr.every(isLabel)) bad('承認済み対応 ' + id);
   }
-  hkSpecies = hk.species;
+  // 目録外の追加種（ユーザー承認）。元目録の505件を検査した後に検査して結合する
+  const extra = al.extra === undefined ? [] : al.extra;
+  if (!Array.isArray(extra) || extra.length > 50) bad('追加種の形式');
+  const baseNames = new Set(hk.species.flatMap(sp => [sp.list_ja, sp.master_ja]));
+  const baseSci = new Set(hk.species.map(sp => sp.sci));
+  for (const x of extra) {
+    const okStr = v => typeof v === 'string' && v.length > 0 && v.length <= 200;
+    if (!x || !okStr(x.id) || ids.has(x.id) || !okStr(x.list_ja) || !okStr(x.master_ja) || !okStr(x.sci) || !okStr(x.reason)) bad('追加種の行 ' + JSON.stringify(x && x.id));
+    if (baseNames.has(x.list_ja) || baseNames.has(x.master_ja) || baseSci.has(x.sci)) bad('追加種が目録や他の追加種と重なっています ' + x.id);
+    if (!Array.isArray(x.birdnet) || !x.birdnet.length || !x.birdnet.every(isLabel)) bad('追加種の対応先 ' + x.id);
+    ids.add(x.id);
+    baseNames.add(x.list_ja); baseNames.add(x.master_ja); baseSci.add(x.sci);   // 追加種どうしの重なりも検査する
+  }
+  hkSpecies = hk.species.concat(extra.map(x => ({ ...x, residency: null, status: 'extra' })));
+  hkExtraCount = extra.length;
   hokkaidoIdx = new Set();
   for (const sp of hkSpecies) {
     const targets = sp.birdnet.length ? sp.birdnet : (al.alias[sp.id] || []);
@@ -179,6 +194,8 @@ async function prepare() {
   $('regSelect').innerHTML = '<option value="">― 一覧から選ぶ（北海道目録・五十音順）―</option>' +
     names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('') +
     '<option value="__free__">一覧にない種（自分で入力）</option>';
+  const lbl = document.getElementById('optHokkaidoLabel');
+  if (lbl) lbl.textContent = `北海道の鳥に絞る（北海道鳥類目録505種${hkExtraCount ? '＋追加' + hkExtraCount + '種' : ''}）`;
   renderNotebook();
   if (window.SURVEY && SURVEY.render) SURVEY.render();
 }
@@ -278,7 +295,22 @@ async function idbDelete(id) {
   const db = await idb();
   return new Promise((res, rej) => { const tx = db.transaction('entries', 'readwrite'); tx.objectStore('entries').delete(id); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
 }
-async function loadNotebook() { nbEntries = await idbAll(); renderNotebook(); }
+let nbLoadState = 'loading', nbLoadError = '';   // 手帳の読み込み状態（失敗の表示を、別の描き直しで消さないため）
+async function loadNotebook() {
+  try { nbEntries = await idbAll(); nbLoadState = 'ok'; }
+  catch (err) { nbLoadState = 'failed'; nbLoadError = String(err); }
+  renderNotebook();
+}
+
+let NOISE_SUPPRESS_T = 0.7;   // 雑音の抑止の基準（似ている度）。C2評価（2026-11-07）で0.7に決定: 取りこぼし増加 1.2pt（アプリ音源）/1.1pt（科博・別の雑音）、雑音のみの誤検出 約28%→0%
+function isNoiseLike(f, t = NOISE_SUPPRESS_T) {
+  let bestNoise = -1, bestBird = -1;
+  for (const en of nbEntries) for (const e of en.embs) {
+    const s = dot(f.e, e);
+    if (en.kind === 'noise') { if (s > bestNoise) bestNoise = s; } else if (s > bestBird) bestBird = s;
+  }
+  return bestNoise >= t && bestNoise > bestBird;
+}
 
 // 区間ごとに手帳で一番近い登録を探し、種ごとの最大の近さを返す（一番近いのが「雑音」の区間は数えない）
 function notebookSims(frames) {
@@ -314,7 +346,9 @@ function renderResult() {
   if (!lastRec) return;
   const opt = { hokkaido: $('optHokkaido').checked, area: $('optArea').checked };
   const top = combinedList(lastRec, opt).slice(0, 10);
+  const noiseN = lastRec.frames.filter(f => isNoiseLike(f)).length;   // filter の第2引数（番号）を基準に渡さないよう、包んで呼ぶ
   $('result').innerHTML = `<p>録音 ${lastRec.sec.toFixed(1)}秒 / 判定 ${(lastRec.ms / 1000).toFixed(1)}秒</p>` +
+    (noiseN ? `<p style="color:#a60">注意: 手帳の「鳥なし（雑音）」に近い区間が ${noiseN}/${lastRec.frames.length} あります。雑音を鳥と取り違えている可能性があります。</p>` : '') +
     '<table><tr><th>順位</th><th>種名</th><th>確からしさ</th><th>根拠</th></tr>' +
     top.map((t, k) => `<tr><td>${k + 1}</td><td>${esc(t.ja)}</td><td>${(t.score * 100).toFixed(1)}%</td><td>${t.nb > t.bn ? '手帳で一致（似ている度 ' + t.sim.toFixed(2) + '）' : 'BirdNET'}</td></tr>`).join('') +
     '</table>';
@@ -364,6 +398,8 @@ async function register(ja, kind) {
 }
 
 function renderNotebook() {
+  if (nbLoadState === 'failed') { $('nbSummary').textContent = '手帳を読み込めませんでした（登録が無いのではありません）: ' + nbLoadError; return; }
+  if (nbLoadState === 'loading') { $('nbSummary').textContent = '手帳を読み込み中…'; return; }
   const groups = Object.create(null);
   for (const e of nbEntries) { const k = canonName(e.ja); (groups[k] = groups[k] || []).push(e); }   // 古い呼び名も同じ種にまとめて表示（保存値は書き換えない）
   const names = Object.keys(groups).sort((a, b) => (a === NOISE) - (b === NOISE) || a.localeCompare(b, 'ja'));
@@ -557,7 +593,7 @@ $('btnCsv').onclick = () => {
 
 $('date').valueAsDate = new Date();
 const ready = prepare().catch(err => { prepError = err; setStatus('準備に失敗しました（判別は使えません）: ' + err.message); });
-loadNotebook().catch(err => { $('nbSummary').textContent = '手帳を読み込めませんでした: ' + err; });
+loadNotebook();
 
 // ---- 圏外対策（AI一式をスマホに保存）----
 async function checkOffline() {

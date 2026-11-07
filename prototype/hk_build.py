@@ -14,6 +14,11 @@ APPROVED = {
   'Anser fabalis': ['Anser serrirostris', 'Anser fabalis'],
   'Calandrella brachydactyla': ['Calandrella dukhunensis', 'Calandrella brachydactyla'],
 }
+# 2026-11-07 ユーザー承認: 目録外だが北海道にいる種（鳥類DBの北海道目録に無い）。鳥類DBの species_master の種IDを使う
+EXTRA = [
+  {'id': 'BD467', 'birdnet': ['Urosphena squameiceps'],
+   'reason': '北海道で普通の夏鳥だが、鳥類DBの北海道目録（HOKKAIDO5）に登録が無い。目録外の追加種として扱う（鳥類DBは書き換えない）'},
+]
 c = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
 rows = list(c.execute(SQL))
 raw = open(labels, 'rb').read()
@@ -34,11 +39,18 @@ for sid, mja, lja, sci, resd in rows:
     stat[st] += 1
     species.append({'id': sid, 'master_ja': mja, 'list_ja': lja, 'sci': sci, 'residency': resd, 'birdnet': bn, 'status': st})
 assert len(species) == 505 and len({s['id'] for s in species}) == 505
+base_ids = {s['id'] for s in species}
+extra = []
+for x in EXTRA:
+    r = c.execute('select species_id, japanese_name, scientific_name from species_master where species_id=?', (x['id'],)).fetchone()
+    assert r and x['id'] not in base_ids, x['id']
+    assert all(t in by_sci for t in x['birdnet']), x
+    extra.append({'id': r[0], 'list_ja': r[1], 'master_ja': r[1], 'sci': r[2], 'birdnet': x['birdnet'], 'reason': x['reason'], 'approved_at': '2026-11-07'})
 now = datetime.datetime.now().isoformat(timespec='seconds')
 json.dump({'format': 'hokkaido-list', 'version': 1, 'species': species}, open(f'{outdir}/hokkaido_list.json', 'w', encoding='utf-8'), ensure_ascii=False, separators=(',', ':'))
-json.dump({'format': 'hokkaido-alias', 'version': 1, 'approved_at': '2026-11-07', 'approved_by': 'user', 'alias': alias}, open(f'{outdir}/hokkaido_alias.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+json.dump({'format': 'hokkaido-alias', 'version': 1, 'approved_at': '2026-11-07', 'approved_by': 'user', 'alias': alias, 'extra': extra}, open(f'{outdir}/hokkaido_alias.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
 json.dump({'generated': now, 'source_db': 'bird_database.db species_listing HOKKAIDO5（北海道鳥類目録）', 'sql': SQL,
            'rule': '自動対応=学名一致かつ和名一致先が食い違わない／承認済み対応=hokkaido_alias.json／それ以外=BirdNET該当なし',
-           'labels_sha256': hashlib.sha256(raw).hexdigest(), 'counts': stat, 'total': len(species)},
+           'labels_sha256': hashlib.sha256(raw).hexdigest(), 'counts': stat, 'total': len(species), 'extra': len(extra)},
           open(f'{outdir}/hokkaido_list.meta.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
 print(stat)

@@ -25,7 +25,7 @@
     ring: new Float32Array(SR * RING_SEC), written: 0, next: 0, judged: 0, busy: null,
     seg: null,                 // {t0: 区間の録音開始時刻(ms), id}
     sessionId: null, sessionStart: null,
-    events: [], gaps: [], pendingClips: [], humanWins: new Set(), lost: [],
+    events: [], gaps: [], suppressed: [], pendingClips: [], humanWins: new Set(), lost: [],
     clipQueue: Promise.resolve(),
     stats: { wins: 0, procMs: 0, lagSec: 0 }
   };
@@ -70,7 +70,7 @@
     tx.objectStore('clips').clear(); tx.objectStore('sessions').clear();
     return txDone(tx);
   }
-  function sessionObj() { return { id: S.sessionId, start: S.sessionStart, events: S.events, gaps: S.gaps }; }
+  function sessionObj() { return { id: S.sessionId, start: S.sessionStart, events: S.events, gaps: S.gaps, suppressed: S.suppressed }; }
   async function saveSessionNow() {
     if (!S.sessionId) return;
     const db = await sdb();
@@ -154,7 +154,16 @@
   // 3秒区間ごとの判定。鳥以外を除いたうえで、基準以上（thr以上）の種を上位から最大 MAX_SPECIES_PER_WIN 種まで記録する
   // （BirdNETは種ごとに独立した確からしさを出すので、同時に鳴いた複数種を扱える）。まとめ・切り出し・人の声の判定は種ごとに独立
   function handleWindow(ws, row, frame, seg) {
-    if (humanIdx !== undefined && row[humanIdx] >= HUMAN_THR) S.humanWins.add(ws);
+    if (humanIdx !== undefined && row[humanIdx] >= HUMAN_THR) S.humanWins.add(ws);   // 人の声の判定は雑音の抑止より先に、常に行う
+    // 雑音の抑止: この区間が手帳の「鳥なし（雑音）」に近ければ、鳥の検出は記録しない（抑止した時間帯は別に残す）
+    if (isNoiseLike(frame)) {
+      const tw0 = tOfSeg(seg, ws), last = S.suppressed[S.suppressed.length - 1];
+      if (last && last.seg === seg.id && last.endS === ws) { last.endS = ws + WIN; last.t1 = tOfSeg(seg, ws + WIN); last.n++; }
+      else S.suppressed.push({ seg: seg.id, startS: ws, endS: ws + WIN, t0: tw0, t1: tOfSeg(seg, ws + WIN), n: 1 });
+      for (const e of S.events) if (!e.closed && e.seg === seg.id && ws - e.endS > GAP_MERGE * WIN) e.closed = true;
+      saveSessionSoon();
+      return;
+    }
     const opt = { hokkaido: $('optHokkaido').checked, area: $('optArea').checked };
     const thr = parseFloat($('smThr').value) || 0.3;
     const hits = combinedList({ frames: [frame], maxv: row }, opt)
@@ -295,7 +304,7 @@
   async function start() {
     if (S.running || S.starting || !S.modelReady || S.restoreState !== 'ok') return;
     // 前の調査が残っていれば、消してよいか確認（保存領域を際限なく使わないため、調査は1件だけ保持）
-    if (S.sessionId && S.events.length) {
+    if (S.sessionId && (S.events.length || S.suppressed.length || S.gaps.length)) {   // 抑止や停止区間だけの調査も、消す前に確認する
       if (!confirm('前回の調査の記録と音を消して、新しい調査を始めます。\n書き出し（ZIP）は済みましたか？')) return;
     }
     S.starting = true; S.op++;
@@ -304,7 +313,7 @@
       await S.clipQueue;
       await sClearAll();
       initNames();
-      S.events = []; S.gaps = []; S.stats = { wins: 0, procMs: 0, lagSec: 0 }; S.seg = null; S.pos = null;
+      S.events = []; S.gaps = []; S.suppressed = []; S.stats = { wins: 0, procMs: 0, lagSec: 0 }; S.seg = null; S.pos = null;
       S.sessionId = 'S' + Date.now(); S.sessionStart = Date.now();
       $('smPrev').innerHTML = '';
       await updateArea();
@@ -393,7 +402,8 @@
     const mb = S.events.filter(e => e.clip).reduce((a, e) => a + (e.clipSec || 0) * SR * 2, 0) / 1e6;
     $('smStats').innerHTML = `${S.running ? '<b style="color:#c00">● 録音中</b>' : '停止中'}　` +
       (S.running ? `経過 ${Math.floor(el / 60)}分${el % 60}秒　判別 ${S.stats.wins}区間（3秒の音を平均${avg.toFixed(2)}秒で処理）　遅れ ${S.stats.lagSec.toFixed(1)}秒　` : `開始 ${new Date(S.sessionStart).toLocaleString()}　`) +
-      `検出 ${S.events.length}件　保存した音 ${clips}件（${mb.toFixed(1)}MB）`;
+      `検出 ${S.events.length}件　保存した音 ${clips}件（${mb.toFixed(1)}MB）` +
+      (S.suppressed.length ? `　雑音として抑止 ${S.suppressed.reduce((a, x) => a + x.n, 0)}区間` : '');
     // 時刻順の一覧（新しい順）。停止区間も混ぜる
     const rows = S.events.map(e => ({ t: e.t0, html:
       `<tr class="${e.review === 'ok' ? 'ok' : e.review === 'ng' ? 'ng' : e.review === 'fixed' ? 'fx' : ''}">` +
@@ -402,6 +412,7 @@
       `<td>${reviewCell(e)}</td>` +
       `<td>${e.lat != null ? e.lat.toFixed(4) + ',' + e.lng.toFixed(4) : ''}</td></tr>` }))
       .concat(S.gaps.map(g => ({ t: g.from, html: `<tr class="na"><td>${hms(g.from)}〜${g.to ? hms(g.to) : ''}</td><td colspan="7">録音停止（${esc(g.reason || '画面が消えた・別アプリ')}）</td></tr>` })))
+      .concat(S.suppressed.map(x => ({ t: x.t0, html: `<tr class="na"><td>${hms(x.t0)}〜${hms(x.t1)}</td><td colspan="7">雑音として抑止（${x.n}区間・鳥の検出は記録していません）</td></tr>` })))
       .sort((a, b) => b.t - a.t);
     $('smList').innerHTML = '<table><tr><th>時刻</th><th>種名</th><th>回数</th><th>最大</th><th>根拠</th><th>音</th><th>判定</th><th>位置（調査員）</th></tr>' + rows.map(r => r.html).join('') + '</table>';
     document.querySelectorAll('.smPlay').forEach(b => b.onclick = () => play(b.dataset.id));
@@ -514,7 +525,7 @@
   const safeName = s => String(s).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 40);
 
   async function exportZip() {
-    if (!S.events.length) { alert('まだ検出がありません'); return; }
+    if (!S.events.length && !S.suppressed.length && !S.gaps.length) { alert('まだ検出がありません'); return; }
     await S.clipQueue;
     const files = [];
     const d = new Date(S.sessionStart);
@@ -534,6 +545,7 @@
         e.lat ?? '', e.lng ?? '', e.acc != null ? Math.round(e.acc) : '', fn, e.clipT0 ? hms(e.clipT0) : '', e.note]);
     }
     for (const g of S.gaps) lines.push([hms(g.from), g.to ? hms(g.to) : '', '（録音停止）', '', '', '', '', '', '', '', '', '', '', g.reason || '画面が消えた・別アプリ']);
+    for (const x of S.suppressed) lines.push([hms(x.t0), hms(x.t1), '（雑音として抑止）', '', '', x.n, '', '', '', '', '', '', '', '手帳の「鳥なし（雑音）」に近い区間。鳥の検出を記録していない']);
     const csv = '﻿' + lines.map(r => r.map(csvCell).join(',')).join('\r\n');
     files.unshift({ name: '一覧.csv', data: new TextEncoder().encode(csv) });
     const a = document.createElement('a');
@@ -559,7 +571,7 @@
     if (S.running || S.starting) { S.restoreState = 'ok'; updateStartBtn(); return; }   // 念のため（開始後に遅れて届いた結果は使わない）
     if (all.length) {
       const s = all.sort((a, b) => b.start - a.start)[0];
-      S.sessionId = s.id; S.sessionStart = s.start; S.events = s.events || []; S.gaps = s.gaps || [];
+      S.sessionId = s.id; S.sessionStart = s.start; S.events = s.events || []; S.gaps = s.gaps || []; S.suppressed = Array.isArray(s.suppressed) ? s.suppressed : [];
       for (const e of S.events) e.closed = true;
       $('smPrev').innerHTML = `<div style="padding:6px;background:#eef">前回の調査（${esc(new Date(s.start).toLocaleString())}・検出${S.events.length}件）を表示しています。
         書き出し・判定ができます。 <button id="smClear">前回の調査を消す</button></div>`;
@@ -568,7 +580,7 @@
         if (!confirm('前回の調査の記録と音を消します。書き出しは済みましたか？')) return;
         await S.clipQueue;
         await sClearAll();
-        S.sessionId = null; S.sessionStart = null; S.events = []; S.gaps = [];
+        S.sessionId = null; S.sessionStart = null; S.events = []; S.gaps = []; S.suppressed = [];
         $('smPrev').innerHTML = ''; $('smList').innerHTML = ''; $('smBins').innerHTML = ''; $('smStats').innerHTML = '';
       };
       render();
