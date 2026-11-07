@@ -40,10 +40,14 @@
 <div id="registerBox" style="display:none;margin-top:8px;padding:8px;background:#f6f6e8">
   <b>この録音を手帳に教える</b>
   <div id="quickPick" style="margin:4px 0"></div>
-  <input id="regName" list="nameList" placeholder="正解の種名" size="14">
+  <div id="otherBox" style="display:none;margin:4px 0">
+    <select id="regSelect"></select>
+  </div>
+  <div style="margin:4px 0">
+    正解: <input id="regName" placeholder="上で選ぶか、種名を入力" size="16">
+  </div>
   <button id="btnReg">この種として登録</button>
   <button id="btnRegNoise">鳥なし（雑音）として登録</button>
-  <datalist id="nameList"></datalist>
   <div id="regMsg" style="font-size:0.9em;color:#363"></div>
 </div>
 
@@ -130,8 +134,11 @@ async function prepare() {
   hokkaidoIdx = new Set(ev.filter(e => e.sci && sciIndex[e.sci] !== undefined).map(e => sciIndex[e.sci]));
   // 正解表の和名を優先表示用に
   ev.forEach(e => { if (e.sci && sciIndex[e.sci] !== undefined) labels[sciIndex[e.sci]].appJa = e.ja; });
-  // 登録時の種名候補: アプリの北海道188種（BirdNETが知らない8種も含む）
-  $('nameList').innerHTML = ev.map(e => `<option value="${e.ja}">`).join('');
+  // 「その他」で選べる種名一覧: アプリの北海道188種（BirdNETが知らない8種も含む）を五十音順に
+  const names = ev.map(e => e.ja).sort((a, b) => a.localeCompare(b, 'ja'));
+  $('regSelect').innerHTML = '<option value="">― 一覧から選ぶ（五十音順）―</option>' +
+    names.map(n => `<option value="${n}">${n}</option>`).join('') +
+    '<option value="__free__">一覧にない種（自分で入力）</option>';
 }
 
 async function onLoaded(backend) {
@@ -258,10 +265,11 @@ function renderResult() {
     '<table><tr><th>順位</th><th>種名</th><th>確からしさ</th><th>根拠</th></tr>' +
     top.map((t, k) => `<tr><td>${k + 1}</td><td>${t.ja}</td><td>${(t.score * 100).toFixed(1)}%</td><td>${t.nb > t.bn ? '手帳で一致（似ている度 ' + t.sim.toFixed(2) + '）' : 'BirdNET'}</td></tr>`).join('') +
     '</table>';
-  $('quickPick').innerHTML = '正解をタップ: ' + top.slice(0, 3).map(t => `<button class="qp">${t.ja}</button>`).join('');
-  document.querySelectorAll('.qp').forEach(b => b.onclick = () => { $('regName').value = b.textContent; });
+  $('quickPick').innerHTML = '正解をタップ: ' + top.slice(0, 3).map(t => `<button class="qp">${t.ja}</button>`).join('') +
+    '<button id="btnOther">その他</button>';
+  document.querySelectorAll('.qp').forEach(b => b.onclick = () => { $('regName').value = b.textContent; $('otherBox').style.display = 'none'; });
+  $('btnOther').onclick = () => { $('otherBox').style.display = ''; $('regSelect').value = ''; $('regSelect').focus(); };
   $('registerBox').style.display = '';
-  $('regMsg').textContent = '';
 }
 
 async function judge(arrayBuffer) {
@@ -277,6 +285,10 @@ async function judge(arrayBuffer) {
     frames.push({ e: l2(r.emb.subarray(f * r.D, (f + 1) * r.D)), bird });
   }
   lastRec = { frames, maxv, sec, ms: performance.now() - t0 };
+  // 新しい録音になったら、登録欄を空に戻す（表の再描画だけでは消さない）
+  $('regName').value = '';
+  $('otherBox').style.display = 'none';
+  $('regMsg').textContent = '';
   renderResult();
   setStatus('判別完了');
 }
@@ -319,6 +331,11 @@ function renderNotebook() {
 function f32ToB64(a) { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let s = ''; for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode.apply(null, u.subarray(i, i + 8192)); return btoa(s); }
 function b64ToF32(b) { const s = atob(b); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return new Float32Array(u.buffer); }
 
+$('regSelect').onchange = () => {
+  const v = $('regSelect').value;
+  if (v === '__free__') { $('regName').value = ''; $('regName').focus(); }
+  else if (v) $('regName').value = v;
+};
 $('btnReg').onclick = () => register($('regName').value.trim(), 'bird').catch(err => $('regMsg').textContent = 'エラー: ' + err);
 $('btnRegNoise').onclick = () => register(null, 'noise').catch(err => $('regMsg').textContent = 'エラー: ' + err);
 $('optHokkaido').onchange = renderResult;
