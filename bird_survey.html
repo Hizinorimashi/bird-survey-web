@@ -186,10 +186,15 @@
   #tabMapLayer > #obsPosMap{width:100%; height:100% !important; border-radius:0 !important; border:0 !important;}
   body.tab-obs{overflow:hidden;}
   body.tab-obs .app{position:fixed; top:8px; bottom:8px; right:8px; left:auto; margin:0;
-    width:min(440px, 46vw); max-width:none; overflow-y:auto; -webkit-overflow-scrolling:touch;
+    width:min(340px, 36vw); max-width:none; overflow-y:auto; -webkit-overflow-scrolling:touch;
     z-index:1100; background:var(--bg); border:1px solid var(--line); border-radius:14px;
     box-shadow:0 6px 24px rgba(0,0,0,.45); padding-top:52px; box-sizing:border-box;}
   body.tab-obs.tab-left .app{right:auto; left:8px;}
+  /* 入力の小窓は小さめに（2026-11-07 実機:「入力フォームがデカすぎて地図が見づらい」） */
+  body.tab-obs .app{font-size:14px;}
+  body.tab-obs .app .field{margin-bottom:8px;}
+  body.tab-obs .app details.fold summary{padding:8px 10px;}
+  body.tab-obs .app .card{padding:8px;}
   /* 共通の min-height:100vh を引き継ぐと、上下8pxの指定より高くなって下端が画面の外へはみ出し、
      下に貼り付く「保存して次の個体へ」が見えなくなる（2026-11-07 実機） */
   body.tab-obs .app{min-height:0;}
@@ -197,12 +202,19 @@
   #obsPosMap{-webkit-touch-callout:none; -webkit-user-select:none; user-select:none;}
   body.tab-obs.tab-collapsed .app{display:none;}
   /* 小窓が開いている側の地図のボタン（P/L/N・ズーム・↶・描く）を小窓の外へずらす（小窓で隠さない） */
-  body.tab-obs:not(.tab-collapsed):not(.tab-left) #tabMapLayer .leaflet-right{right:calc(min(440px, 46vw) + 8px);}
-  body.tab-obs.tab-left:not(.tab-collapsed) #tabMapLayer .leaflet-left{left:calc(min(440px, 46vw) + 8px);}
+  body.tab-obs:not(.tab-collapsed):not(.tab-left) #tabMapLayer .leaflet-right{right:calc(min(340px, 36vw) + 8px);}
+  body.tab-obs.tab-left:not(.tab-collapsed) #tabMapLayer .leaflet-left{left:calc(min(340px, 36vw) + 8px);}
   #tabBar{position:fixed; top:14px; right:16px; z-index:1101; min-height:44px; padding:8px 14px;
     border-radius:22px; border:1px solid var(--line); background:var(--accent); color:#fff;
     font-size:15px; font-weight:700; box-shadow:0 2px 8px rgba(0,0,0,.4);}
   body.tab-left #tabBar{right:auto; left:16px;}
+  /* 入力を開かなくても前の画面へ戻れるように（2026-11-07 実機）。小窓が左に開いて重なるときは小窓の「戻る」を使う */
+  #tabBack{position:fixed; top:14px; left:16px; z-index:1101; min-height:44px; padding:8px 14px;
+    border-radius:22px; border:1px solid var(--line); background:var(--panel); color:var(--fg);
+    font-size:15px; font-weight:700; box-shadow:0 2px 8px rgba(0,0,0,.4);}
+  body.tab-left:not(.tab-collapsed) #tabBack{display:none;}
+  body.tab-collapsed.tab-left #tabBar{left:auto; right:16px;}
+  body.tab-obs #tabMapLayer .leaflet-top.leaflet-left{top:56px;}
   body:not(.tab-collapsed) #tabBar{background:var(--panel); color:var(--fg);}
   body.tab-obs #voiceDock{z-index:1150 !important;}
   /* タブレット表示ではフリーハンドで描けるので「くるくる」は出さない（2026-11-07 実機での要望） */
@@ -314,7 +326,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v226（2026-11-07 行動の欄を1つに／線ごとに種名・齢・個体名／齢を A・SA・J で表示／図鑑・鳴き声をメディアへ／線の途中に◎／P が無くても確認を出さない）';
+const APP_VERSION = 'v227（2026-11-07 地図の上に戻る／種名の下に齢・性別・個体名／営巣木は N のときだけ／描くモードの軽いタップで面・◎／入力の小窓を小さく）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3011,20 +3023,7 @@ SCREENS.obsEdit = (argStr)=>{
           </div>
           <!-- 線の行動は種情報の「行動」1つにまとめた（2026-11-07）。この欄は使わない -->
           <div id="flBehWrap" style="display:none;">${segFold('fl_behavior','行動（複数選択可）',OPT.flightBehavior)}</div>
-          <!-- 線ごとの種名・齢・個体名（2026-11-07 ユーザー要望）。空欄は上の種名・齢・個体名を使う。
-               値は線そのもの（seg.fl.sp_name など）に持たせ、入れた瞬間に控える -->
-          <details class="fold" id="flWhoWrap" style="margin-top:6px;">
-            <summary><span class="lab" style="display:inline; margin:0;">この線だけ違う鳥</span>
-              <span class="small muted" id="flWhoSum">上と同じ</span></summary>
-            <div class="row" style="gap:6px; flex-wrap:wrap; align-items:center;">
-              <input id="flSp" list="flSpList" autocomplete="off" placeholder="種名（空欄＝上の種名）" style="flex:1 1 160px;" oninput="flWhoInput()">
-              <select id="flAge" onchange="flWhoInput()" style="width:auto;"><option value="">齢（上と同じ）</option>
-                ${OPT.obsAge.map(x=>`<option value="${esc(x)}">${esc(x)}${AGE_ABBR[x]?' '+AGE_ABBR[x]:''}</option>`).join('')}</select>
-              <input id="flLbl" autocomplete="off" placeholder="個体名（空欄＝上と同じ）" style="flex:1 1 120px;" oninput="flWhoInput()">
-            </div>
-            <datalist id="flSpList">${SPECIES.map(sp=>`<option value="${esc(sp.japanese_name)}"></option>`).join('')}</datalist>
-            <div class="tiny muted">種や個体名が上と違う線は、P の鳥とは別の鳥として数えます</div>
-          </details>
+          <!-- 「この線だけ違う鳥」は 2026-11-07 にやめた（ユーザー決定）。齢・性別・個体名は種名のすぐ下へ -->
         </div>
         <!-- くるくるは**線の属性ではなく描き方**なので、L の欄の外に置く。
              中に置くと、線が2本以上あって選んでいないとき（＝新しいLを押した直後）に
@@ -3078,32 +3077,35 @@ SCREENS.obsEdit = (argStr)=>{
       <form id="obForm">
         <!-- 並び（2026-11-07 実機の要望）: 種名 → 観察メモ → 種情報 → 環境 → 営巣木 → メディア → 登録。
              種名と観察メモは一番使うので折りたたみの外。欄の名前・保存のしかたは変えない -->
+        <div id="spBlock">
         <label class="field" id="spField"><span class="lab">種名（未入力でも保存可）</span>
           <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
             placeholder="和名で検索…" oninput="spSearch(this.value); indLabelChips()">
           <div id="spSuggest"></div>
           <div class="chips" id="spQuick"></div>
         </label>
+        <!-- 齢・性別・個体名は種名のすぐ下（2026-11-07 ユーザー決定。種情報の中から移した。欄の名前・保存は同じ） -->
+        <div class="two">
+          <label class="field"><span class="lab">齢</span>${segSelect('age_class',OPT.obsAge)}</label>
+          <label class="field obs-only"><span class="lab">性別</span>${segSelect('sex',OPT.sex)}</label>
+        </div>
+        <label class="field"><span class="lab">個体名（任意・同じ鳥を追うとき）</span>
+          <input id="indLabel" autocomplete="off" value="${esc(o.individual_label||'')}"
+            placeholder="例：クマタカA／左翼損傷" oninput="SCREENS._indLabelTouched=true; indLabelChips()">
+          <div class="chips" id="indLabelChips"></div>
+          <div class="tiny muted">同じ名前を付けた記録は、集計で1羽として数えます</div>
+        </label>
+        </div>
         <label class="field" id="noteField"><span class="lab">観察メモ</span>
           <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
 
         <details class="fold" id="foldSpecies">
           <summary><span class="lab" style="display:inline; margin:0;">🐦 種情報</span>
-            <span class="small muted">個体名・数・齢・行動など</span></summary>
-          <label class="field"><span class="lab">個体名（任意・同じ鳥を追うとき）</span>
-            <input id="indLabel" autocomplete="off" value="${esc(o.individual_label||'')}"
-              placeholder="例：クマタカA／左翼損傷" oninput="SCREENS._indLabelTouched=true; indLabelChips()">
-            <div class="chips" id="indLabelChips"></div>
-            <div class="tiny muted">同じ名前を付けた記録は、集計で1羽として数えます</div>
-          </label>
+            <span class="small muted">数・同定・行動など</span></summary>
           <div class="two">
             <label class="field"><span class="lab">個体数</span>
               <input type="number" name="count" inputmode="numeric" min="0" value="${esc(o.count!=null?o.count:1)}"></label>
-            <label class="field"><span class="lab">齢</span>${segSelect('age_class',OPT.obsAge)}</label>
-          </div>
-          <div class="two obs-only">
-            <label class="field"><span class="lab">性別</span>${segSelect('sex',OPT.sex)}</label>
-            <label class="field"><span class="lab">同定状態</span>${segSelect('identification_status',OPT.idStatus)}</label>
+            <label class="field obs-only"><span class="lab">同定状態</span>${segSelect('identification_status',OPT.idStatus)}</label>
           </div>
           <div id="idHint" class="note" style="display:none; margin:2px 0 10px;"></div>
           <!-- 行動は1つの欄（2026-11-07）。線を選んでいればその線の行動、それ以外は観察の行動（behSwitch） -->
@@ -3410,6 +3412,7 @@ SCREENS.obsEdit = (argStr)=>{
       // その前に保存された場合に空の入力欄で既存の値を上書きしてしまう
       SCREENS._obsOnlyInit=null;
       SCREENS._behT=null; SCREENS._obsBeh=behVal();   // 行動の欄は観察を指した状態から始める
+      nestFoldSync();
       pfSyncFlightFields(); perchTabs(); perchLoad(); segChips(); nestLabelSync();
       obsOnlyCapture();   // ここまでが「最初の状態」
       // 個体数を利用者が触ったかを見分ける（巣だけの記録で、初期値の1羽を勝手に数えないため）。
@@ -3783,7 +3786,7 @@ function mapFullOff(now){
 /* 並べる順。**描くのに使うものを先**に置く（形・面の種類・高度・くるくる・行動）。
    種情報を先にすると、開いたときに背が高く、くるくるが下へ押し出されて
    欄の中を送らないと押せなくなる（2026-08-13 実機で指摘） */
-const MAPFULL_TOOL_IDS = ['flSpiralWrap', 'flAttrRow', 'spField', 'foldSpecies'];   // 種名欄は種情報の外に出したので一緒に移す
+const MAPFULL_TOOL_IDS = ['flSpiralWrap', 'flAttrRow', 'spBlock', 'foldSpecies'];   // 種名欄は種情報の外に出したので一緒に移す
 function mapFullToolsOn(f){
   const box=document.createElement('div');
   box.className='map-full-tools';
@@ -3965,6 +3968,8 @@ function tabletAttach(){
   const layer=document.createElement('div'); layer.id='tabMapLayer';
   document.body.appendChild(layer);
   layer.appendChild(el);
+  if(!$('#tabBack')){ const bk=document.createElement('button'); bk.id='tabBack'; bk.type='button'; bk.textContent='‹ 戻る';
+    bk.onclick=()=>goBack(); document.body.appendChild(bk); }
   let bar=$('#tabBar');
   if(!bar){ bar=document.createElement('button'); bar.id='tabBar'; bar.type='button';
     bar.addEventListener('click', ()=>tabletPanel(document.body.classList.contains('tab-collapsed')));
@@ -3983,6 +3988,7 @@ function tabletAttach(){
 function tabletRelease(){
   document.body.classList.remove('tab-obs','tab-collapsed','tab-left');
   const bar=$('#tabBar'); if(bar) bar.remove();
+  const bk=$('#tabBack'); if(bk) bk.remove();
   if(!_tab){ const ly=$('#tabMapLayer'); if(ly) ly.remove(); return; }
   const {el, mark, layer}=_tab; _tab=null;
   try{
@@ -4057,6 +4063,7 @@ function drawAttach(m, opts){
   const el=m.getContainer();
   const d={m, el, on:false, state:'idle', pts:[], times:[], pid:null, pointers:new Set(), tmp:null, prev:null,
     btn:null, onCommit:opts.onCommit, onToggle:opts.onToggle||null, onTap:opts.onTap||null, blockClickUntil:0, handlers:{},
+    onDrawTap:opts.onDrawTap||null,   // 描くモード中の軽いタップ（短いなぞり）を受け取る
     pen:null,    // pen … 描くモードがオフのときのペンの接触 {id, x, y, t}
     onLongPress:opts.onLongPress||null, lp:null, lpHold:null,   // lp … 長押し待ち {id,x,y,timer}／lpHold … 長押しが成立して押したままの接触
     touching:new Set(), lpMulti:false};   // touching … 地図に触れている接触（描くモードのオン・オフに関係なく）／lpMulti … 2本以上触れた操作の途中
@@ -4086,23 +4093,24 @@ function drawAttach(m, opts){
     if(d.touching.size>=2) d.lpMulti=true;
     if(d.onLongPress){
       if(d.lpMulti || d.lp || d.lpHold!=null){ drawLpClear(d); }
-      else if(!(e.target && e.target.closest && e.target.closest('.leaflet-control'))){
+      else if(!(e.target && e.target.closest && e.target.closest('.leaflet-control, .map-full-tools'))){
         const p0=pt(e); d.lp={id:e.pointerId, x:p0.x, y:p0.y, timer:setTimeout(lpFire, LONGPRESS_MS)};
       }
     }
     if(!d.on){
       d.blockClickUntil=0;   // 新しい接触は別の操作。前のペンのタップの click 抑止は解く（監査 Minor）
       // ペンのタップの見分け（描くモードがオフのとき）。ボタン・印（マーカー）の上ではそれぞれに任せる
-      if(e.pointerType==='pen' && d.onTap && !(e.target && e.target.closest && e.target.closest('.leaflet-control, .leaflet-marker-icon'))){
+      if(e.pointerType==='pen' && d.onTap && !(e.target && e.target.closest && e.target.closest('.leaflet-control, .leaflet-marker-icon, .map-full-tools'))){
         const p=pt(e); d.pen={id:e.pointerId, x:p.x, y:p.y, t:Date.now()};
       } else d.pen=null;
       return;
     }
-    if(e.target && e.target.closest && e.target.closest('.leaflet-control')) return;   // ボタンからは描き始めない
+    // ボタン・地図の拡大表示に重ねた入力欄（.map-full-tools）からは描き始めない・タップにしない（v227 監査 Major）
+    if(e.target && e.target.closest && e.target.closest('.leaflet-control, .map-full-tools')) return;
     d.pointers.add(e.pointerId);
     if(d.pointers.size>=2){ drawCancel('gesture'); return; }   // 2本目: 描きかけを捨てて地図の操作へ
     if(d.state!=='idle') return;
-    d.state='draw'; d.pid=e.pointerId; d.pts=[pt(e)]; d.times=[new Date()];
+    d.state='draw'; d.pid=e.pointerId; d.pts=[pt(e)]; d.times=[new Date()]; d.t0=Date.now();
     try{ el.setPointerCapture && el.setPointerCapture(e.pointerId); }catch(_){}
     if(e.pointerType!=='touch') e.preventDefault();   // ペン・マウスで文字選択などが起きないように
   };
@@ -4192,7 +4200,15 @@ function drawFinish(d){
   drawTmpClear(d);
   d.blockClickUntil=Date.now()+500;   // なぞり終えた直後の click で点が二重に入らないように
   let len=0; for(let i=1;i<raw.length;i++) len+=Math.hypot(raw[i].x-raw[i-1].x, raw[i].y-raw[i-1].y);
-  if(raw.length<2 || len<DRAW_MIN_LEN_PX) return;   // 短すぎるなぞりは何もしない（小窓も開かない）
+  if(raw.length<2 || len<DRAW_MIN_LEN_PX){
+    // 短すぎるなぞりは線にしない。ただし短く触れただけならタップとして渡す（描くモードのまま
+    // 始点を押して面にする・◎を置く・選んだ点を動かす。2026-11-07 実機:「面にできない・◎が置けない」）
+    if(d.onDrawTap && raw.length && (Date.now()-(d.t0||0))<=PEN_TAP_MS){
+      let ll=null; try{ ll=d.m.containerPointToLatLng(raw[0]); }catch(e){}
+      if(ll){ try{ d.onDrawTap(ll.lat, ll.lng); }catch(e){ console.error(e); } }
+    }
+    return;
+  }
   // 間引き。上限を超えたら黙って切らず、間引きを強める
   const idx=raw.map((p,i)=>({x:p.x, y:p.y, i}));
   let tol=DRAW_TOL_PX, s=drawSimplify(idx, tol);
@@ -4665,6 +4681,17 @@ function birdAfterSave(u2, add, flU){
   return true;
 }
 /* ---------- ここまで 段A・段B ---------- */
+// 営巣木・巣の欄は、N モード・巣を置いた・巣の入力がある（開き直した記録を含む）ときだけ出す（2026-11-07 ユーザー要望）。
+// 隠しても欄はフォームの中にあるので、値は今までどおり保存・復元される
+function nestFoldSync(){
+  const d=document.getElementById('foldNest'); if(!d) return;
+  let show=(PF_MODE==='N') || !!PF_NEST;
+  if(!show){ try{ show=(typeof nestFilled==='function') && nestFilled(); }catch(e){} }
+  // 営巣木のメモ・写真だけの記録でも出す（表示のためだけの条件。nestFilled は保存の判定にも使うので変えない）
+  if(!show){ const nn=document.querySelector('[name="nest_note"]');
+    show=!!(nn && String(nn.value||'').trim()) || ((SCREENS._nestMedia||[]).length>0); }
+  d.style.display=show?'':'none';
+}
 function pfSet(mode){
   // L を押し直したときは「前の L の終点から続ける／離して始める」を切り替える。
   // 同じ鳥を追っている間は前の終わりから続けたいことがほとんどだが、
@@ -4682,7 +4709,7 @@ function pfSet(mode){
   PF_SEL=-1;   // モードを選び直したら「新しく落とす」に戻す
   if(typeof segChips==='function') segChips();
   ['P','F','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', mode===m); });
-  pfInfo(); pfSyncFlightFields();
+  pfInfo(); pfSyncFlightFields(); nestFoldSync();
 }
 function pfPoints(){ return PF_SEGS.filter(x=>x.t==='P'); }
 // PF_NEST=巣の位置 [lat,lon]（1つだけ） / PF_NEST_ID=巣そのものの目印 /
@@ -5138,7 +5165,7 @@ function segEditBar(){
     else if(PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='P') msg.textContent=segLabel(PF_SEL)+' を直し中（タップで移動）';
     else if(SCREENS._soarSel && SCREENS._soarSel.seg===PF_SEGS[PF_SEL]) msg.textContent=segLabel(PF_SEL)+' の◎を直し中';
     else if(SCREENS._soarPlace) msg.textContent='◎を置く場所を線の上でタップ';
-    else msg.textContent=segLabel(PF_SEL)+' を直し中（なぞると引き直し）';   // 20字以内（狭い画面で折り返さない）
+    else msg.textContent=segLabel(PF_SEL)+'を直し中（描き足し・引き直し）';   // 20字以内（狭い画面で折り返さない）
   }
 }
 function segPick(i, force){
@@ -5565,6 +5592,7 @@ function pfDrop(lat,lon){
     const last=PF_SEGS[PF_SEGS.length-1];
     // トレースは**必ず線から始まる**。面にするのは「始点をもう一度タップして閉じる」操作。
     // 前のトレースの形は引き継がない（線のつもりが面になるのを防ぐ）
+    if(PF_NEWLINE && pfCloseStroke(lat, lon)) return;   // なぞった直後の線の始点の近く → 面にする（控えは上で積んである）
     if(PF_NEWLINE || !last || last.t!=='F'){
       // 「続きから」なら、前の L の終点を新しい線の1点目にしてつなぐ。
       // 時刻は前の終点のものをそのまま使う（同じ場所・同じ時のことなので）
@@ -5597,6 +5625,7 @@ function obsMapUndo(){
   // 戻すのは地図の操作（位置・経路・巣）だけ。あとから書いた「止まっていたもの」や
   // 飛翔の時刻まで巻き戻すと、気づかないうちに入力が消える（2026-08-06 監査）
   const cur=new Map(); PF_SEGS.forEach(sg=>{ if(sg.id!=null) cur.set(sg.id, sg); });
+  const strokeId=(PF_STROKE_SEG && PF_STROKE_SEG.id!=null) ? PF_STROKE_SEG.id : null;   // なぞった直後の線は、戻したあとも同じ線を指す
   const st=JSON.parse(PF_HIST.pop());
   PF_SEGS=st.segs; PF_NEST=st.nest; PF_NEWLINE=st.newline; PF_SEL=st.sel; PERCH_IDX=st.perch;
   PF_CONT=(st.cont!==false);   // 「続きから／離して」も戻す（古い控えは既定の「続きから」）
@@ -5614,6 +5643,7 @@ function obsMapUndo(){
       sg.fl=Object.assign({}, nowSg.fl, {shape:histShape, area_type:histType});
     }
   });
+  PF_STROKE_SEG = strokeId!=null ? (PF_SEGS.find(sg=>sg.id===strokeId) || null) : null;   // 消えた線なら外す
   SCREENS._pendingPerch=st.pending||null;
   PF_LEGACY_ID=(st.legacy==null)?null:st.legacy;
   SCREENS._nestTouchedMap=!!st.nestTouched;   // 地図の操作を戻したら、その分の「触った」も戻す（記入欄の変更は残る）
@@ -5632,6 +5662,7 @@ function obsMapClear(){
 }
 let pfLayer=null;
 function pfRedraw(){
+  nestFoldSync();
   if(!mapObj) return;
   try{ if(typeof birdListSync==='function' && BIRDS.length>1) birdListSync(); }catch(e){}   // 一覧の止まり/経路数を追随させる
   if(pfLayer){ try{ mapObj.removeLayer(pfLayer); }catch(e){} }
@@ -5752,7 +5783,8 @@ function pfRedraw(){
           // PF_NEWLINE は「次のタップから新しい線を始める」状態＝描いている途中の線は無い
           //（Lを押し直した直後に、前の線が面に変わってしまう。2026-08-13 監査）
           const target=(PF_SEL>=0) ? PF_SEGS[PF_SEL]
-            : ((PF_MODE==='F' && !PF_NEWLINE) ? lastDrawnFl() : null);
+            : ((PF_MODE==='F' && !PF_NEWLINE) ? lastDrawnFl()
+              : ((PF_STROKE_SEG && PF_SEGS.includes(PF_STROKE_SEG)) ? PF_STROKE_SEG : null));   // なぞった直後の線も閉じられる
           if(target!==seg) return;
           const p=seg.pts[segContOffset(seg)];
           // 「くるくる」中は閉じずに、押した場所へ輪を入れる
@@ -5820,6 +5852,7 @@ function initObsPosMap(){
       if(selL){ if(PF_MODE!=='F') segPick(PF_SEL, true); }   // 選んだ L はそのまま（なぞると引き直し）
       else if(PF_MODE!=='F' || PF_SEL===-2) pfSet('F');
       if(PF_SPIRAL && typeof spiralToggle==='function') spiralToggle(); } },
+    onDrawTap:(la, lo)=>pfDrawTap(la, lo),   // 描くモード中の軽いタップ
     onLongPress:(cp)=>pfLongPress(cp)   // 長押しで P・L・巣を選ぶ
   });
   addTabLineControl(mapObj);
@@ -5890,6 +5923,25 @@ function pfLongPress(cp){
   let at=null; try{ at=mapObj.containerPointToLatLng(cp); }catch(e){}
   tabletPanel(true, '#segEditBar', at);   // タブレット表示なら小窓を開いて「直し中」の帯を見せる
   return true;
+}
+// なぞった直後の線（PF_STROKE_SEG）を、始点の近くのタップで面にする。扱ったら true（控えは呼び出し側で積む）
+function pfCloseStroke(lat, lon){
+  const sg=PF_STROKE_SEG;
+  if(!sg || !PF_SEGS.includes(sg) || sg.t!=='F') return false;
+  const r=pfTryClose(sg, lat, lon);
+  if(r===true){ SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips(); return true; }
+  if(r==='ng'){ PF_HIST.pop(); return true; }
+  return false;
+}
+// 描くモード中の軽いタップ。意味のあるときだけ扱い、それ以外は今までどおり何もしない
+//（描くモード中に誤って触れただけで1点の線ができないように）
+function pfDrawTap(lat, lon){
+  if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;
+  if(PF_SEL!==-1){ pfDrop(lat, lon); return; }   // 選んでいる P・巣の移動／L の描き足し・面にする・◎を置く
+  if(PF_STROKE_SEG && PF_SEGS.includes(PF_STROKE_SEG)){
+    pfSnap();
+    if(!pfCloseStroke(lat, lon)) PF_HIST.pop();   // 始点から遠いタップは何もしない
+  }
 }
 // ◎を置く準備（次の線の上のタップで置く）
 function soarPlaceStart(){
