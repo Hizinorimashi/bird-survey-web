@@ -190,6 +190,11 @@
     z-index:1100; background:var(--bg); border:1px solid var(--line); border-radius:14px;
     box-shadow:0 6px 24px rgba(0,0,0,.45); padding-top:52px; box-sizing:border-box;}
   body.tab-obs.tab-left .app{right:auto; left:8px;}
+  /* 共通の min-height:100vh を引き継ぐと、上下8pxの指定より高くなって下端が画面の外へはみ出し、
+     下に貼り付く「保存して次の個体へ」が見えなくなる（2026-11-07 実機） */
+  body.tab-obs .app{min-height:0;}
+  /* 地図の長押しで線・点を選ぶので、iPad の長押しメニュー・文字選択・拡大鏡を出さない */
+  #obsPosMap{-webkit-touch-callout:none; -webkit-user-select:none; user-select:none;}
   body.tab-obs.tab-collapsed .app{display:none;}
   /* 小窓が開いている側の地図のボタン（P/L/N・ズーム・↶・描く）を小窓の外へずらす（小窓で隠さない） */
   body.tab-obs:not(.tab-collapsed):not(.tab-left) #tabMapLayer .leaflet-right{right:calc(min(440px, 46vw) + 8px);}
@@ -308,7 +313,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v224（2026-11-07 ペンでP・Nを置ける／描くモードはなぞるたびに別の線／タブレット表示ではくるくるを出さない）';
+const APP_VERSION = 'v225（2026-11-07 地図の長押しで線・点を選んで直す／入力欄の並べ替え／保存ボタンを常に表示／複数羽の入口をなくす）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -3040,25 +3045,21 @@ SCREENS.obsEdit = (argStr)=>{
       </div>
       <div id="birdList" style="display:none; margin-bottom:8px;"></div>
       <form id="obForm">
-        <details class="fold" id="foldMedia" open>
-          <summary><span class="lab" style="display:inline; margin:0;">📷 メディア記録</span>
-            <span class="small muted">写真・録音・動画・メモ</span></summary>
-          <div class="field"><span class="lab">録音メモ（鳴き声など）</span><div id="recPanel"></div></div>
-          <div class="field"><span class="lab">写真・動画</span><div id="mediaPanel"></div></div>
-          <label class="field"><span class="lab">観察メモ</span>
-            <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
-        </details>
+        <!-- 並び（2026-11-07 実機の要望）: 種名 → 観察メモ → 種情報 → 環境 → 営巣木 → メディア → 登録。
+             種名と観察メモは一番使うので折りたたみの外。欄の名前・保存のしかたは変えない -->
+        <label class="field" id="spField"><span class="lab">種名（未入力でも保存可）</span>
+          <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
+            placeholder="和名で検索…" oninput="spSearch(this.value); indLabelChips()">
+          <div id="spSuggest"></div>
+          <div class="chips" id="spQuick"></div>
+          <div class="chips" id="spRefLinks"></div>
+        </label>
+        <label class="field" id="noteField"><span class="lab">観察メモ</span>
+          <textarea name="note" placeholder="行動・環境・気づいたこと">${esc(o.note)}</textarea></label>
 
         <details class="fold" id="foldSpecies">
           <summary><span class="lab" style="display:inline; margin:0;">🐦 種情報</span>
-            <span class="small muted">種名・数・齢・行動など</span></summary>
-          <label class="field"><span class="lab">種名（未入力でも保存可）</span>
-            <input id="spInput" autocomplete="off" value="${esc(o.species_name_snapshot)}"
-              placeholder="和名で検索…" oninput="spSearch(this.value); indLabelChips()">
-            <div id="spSuggest"></div>
-            <div class="chips" id="spQuick"></div>
-            <div class="chips" id="spRefLinks"></div>
-          </label>
+            <span class="small muted">個体名・数・齢・行動など</span></summary>
           <label class="field"><span class="lab">個体名（任意・同じ鳥を追うとき）</span>
             <input id="indLabel" autocomplete="off" value="${esc(o.individual_label||'')}"
               placeholder="例：クマタカA／左翼損傷" oninput="SCREENS._indLabelTouched=true; indLabelChips()">
@@ -3174,6 +3175,13 @@ SCREENS.obsEdit = (argStr)=>{
           <input type="hidden" id="nestLon" value="${esc(o.nest_longitude||'')}">
         </details>
 
+        <details class="fold" id="foldMedia">
+          <summary><span class="lab" style="display:inline; margin:0;">📷 メディア記録</span>
+            <span class="small muted">写真・録音・動画</span></summary>
+          <div class="field"><span class="lab">録音メモ（鳴き声など）</span><div id="recPanel"></div></div>
+          <div class="field"><span class="lab">写真・動画</span><div id="mediaPanel"></div></div>
+        </details>
+
         <details class="fold obs-only" id="foldReg">
           <summary><span class="lab" style="display:inline; margin:0;">🕮 登録</span>
             <span class="small muted">図鑑登録・別カメラの番号</span></summary>
@@ -3204,8 +3212,7 @@ SCREENS.obsEdit = (argStr)=>{
           : `<button type="button" class="btn" style="flex:1;" onclick="saveObs('${o.uuid}','${svUuid}',${editing},false)">保存する</button>`}
         ${BIRDS.length>1?`<button type="button" class="btn danger" style="flex:1;" onclick="birdDrop()">この個体を消す</button>`:''}
       </div>
-      ${(!editing && BIRDS.length<=1)?`<div class="sp"></div>
-      <button type="button" class="btn ghost" onclick="openMultiTrace('${svUuid}')">🛩 複数羽を同時に追う（タブで色分けして一度に描く）</button>`:''}
+      <!-- 「複数羽を同時に追う」の入口は出さない（2026-11-07 ユーザー: 不要）。画面・保存の仕組みは残す -->
     `,
     onMount:()=>{ SCREENS._obs=o;
       if(revisitBird){
@@ -3734,7 +3741,7 @@ function mapFullOff(now){
 /* 並べる順。**描くのに使うものを先**に置く（形・面の種類・高度・くるくる・行動）。
    種情報を先にすると、開いたときに背が高く、くるくるが下へ押し出されて
    欄の中を送らないと押せなくなる（2026-08-13 実機で指摘） */
-const MAPFULL_TOOL_IDS = ['flSpiralWrap', 'flAttrRow', 'foldSpecies'];
+const MAPFULL_TOOL_IDS = ['flSpiralWrap', 'flAttrRow', 'spField', 'foldSpecies'];   // 種名欄は種情報の外に出したので一緒に移す
 function mapFullToolsOn(f){
   const box=document.createElement('div');
   box.className='map-full-tools';
@@ -3976,6 +3983,10 @@ const DRAW_MIN_PX=3, DRAW_TOL_PX=2.5, DRAW_MAX_PTS=300, DRAW_COLLECT_MAX=4000, D
    受け取り、click を出さないことがある（2026-11-07 実機: ペンで P・N が置けない）。
    描くモードがオフのとき、ペンの接触が小さく短ければ自前でタップとして扱い、後から来る click は二重にしない */
 const PEN_TAP_PX=12, PEN_TAP_MS=600;
+/* 長押しで選ぶ（2026-11-07 実機の要望「一度描いた線や点を直したい」）。短いタップは今までどおり新しく置く。
+   止まりは飛んできた線の終点に置くことが多く、短いタップで選ぶ作りにすると新しく置けなくなるため長押しにした。
+   長押しが成立したら、**その接触**から出るタップ・ペンのタップ・なぞりの確定・地図の click は処理しない */
+const LONGPRESS_MS=500, LONGPRESS_PX=12;
 let _draw=null;   // {m, el, on, state, pts, times, pid, pointers:Set, tmp, prev:{...}, btn, onCommit, onToggle, blockClickUntil, handlers}
 function drawClickBlocked(){ return !!(_draw && Date.now() < _draw.blockClickUntil); }
 function drawIsOn(){ return !!(_draw && _draw.on); }
@@ -4004,8 +4015,20 @@ function drawAttach(m, opts){
   const el=m.getContainer();
   const d={m, el, on:false, state:'idle', pts:[], times:[], pid:null, pointers:new Set(), tmp:null, prev:null,
     btn:null, onCommit:opts.onCommit, onToggle:opts.onToggle||null, onTap:opts.onTap||null, blockClickUntil:0, handlers:{},
-    pen:null};   // pen … 描くモードがオフのときのペンの接触 {id, x, y, t}
+    pen:null,    // pen … 描くモードがオフのときのペンの接触 {id, x, y, t}
+    onLongPress:opts.onLongPress||null, lp:null, lpHold:null,   // lp … 長押し待ち {id,x,y,timer}／lpHold … 長押しが成立して押したままの接触
+    touching:new Set(), lpMulti:false};   // touching … 地図に触れている接触（描くモードのオン・オフに関係なく）／lpMulti … 2本以上触れた操作の途中
   _draw=d;
+  // 長押しの成立。選べたときだけ、その接触の残りの動作を止める（選べなければ何もしない＝今までどおり）
+  const lpFire=()=>{
+    const lp=d.lp; d.lp=null;
+    if(!lp || _draw!==d || !d.onLongPress) return;
+    let hit=false; try{ hit=!!d.onLongPress(L.point(lp.x, lp.y)); }catch(err){ console.error(err); }
+    if(!hit) return;
+    d.lpHold=lp.id; d.pen=null;
+    if(d.state==='draw'){ drawTmpClear(d); d.pts=[]; d.times=[]; d.pid=null; d.state='idle'; }   // なぞりの確定もしない
+    d.blockClickUntil=Infinity;   // 離すまでの地図の click は使わない（離したら 0.6秒後に解く）
+  };
   const C=L.Control.extend({ onAdd:function(){
     const b=L.DomUtil.create('button','draw-btn'); b.type='button'; b.id='drawBtn';
     b.textContent='✏ 描く'; b.title='オンの間は、ペンでも指でもなぞって線を描けます（2本指で拡大縮小）';
@@ -4015,6 +4038,16 @@ function drawAttach(m, opts){
   new C({position:'topright'}).addTo(m);
   const pt=(e)=>{ const r=el.getBoundingClientRect(); return L.point(e.clientX-r.left, e.clientY-r.top); };
   d.handlers.down=(e)=>{
+    // 長押し待ち: 1本だけ触れているときだけ。2本目が来たら待ちを捨て、全部離れるまで始めない
+    //（1本目を動かして待ちが消えたあとに2本目を置いても、拡大縮小の途中で選ばれないように。監査 Major）
+    d.touching.add(e.pointerId);
+    if(d.touching.size>=2) d.lpMulti=true;
+    if(d.onLongPress){
+      if(d.lpMulti || d.lp || d.lpHold!=null){ drawLpClear(d); }
+      else if(!(e.target && e.target.closest && e.target.closest('.leaflet-control'))){
+        const p0=pt(e); d.lp={id:e.pointerId, x:p0.x, y:p0.y, timer:setTimeout(lpFire, LONGPRESS_MS)};
+      }
+    }
     if(!d.on){
       d.blockClickUntil=0;   // 新しい接触は別の操作。前のペンのタップの click 抑止は解く（監査 Minor）
       // ペンのタップの見分け（描くモードがオフのとき）。ボタン・印（マーカー）の上ではそれぞれに任せる
@@ -4032,6 +4065,7 @@ function drawAttach(m, opts){
     if(e.pointerType!=='touch') e.preventDefault();   // ペン・マウスで文字選択などが起きないように
   };
   d.handlers.move=(e)=>{
+    if(d.lp && d.lp.id===e.pointerId){ const p=pt(e); if(Math.hypot(p.x-d.lp.x, p.y-d.lp.y)>LONGPRESS_PX) drawLpClear(d); }   // 動かしたら長押しにしない
     if(!d.on){
       // ペンのタップ候補: 途中で一度でも大きく動いたら、元の位置近くへ戻して離してもタップにしない（監査 Major）
       if(d.pen && d.pen.id===e.pointerId){ const p=pt(e); if(Math.hypot(p.x-d.pen.x, p.y-d.pen.y)>PEN_TAP_PX) d.pen=null; }
@@ -4045,6 +4079,12 @@ function drawAttach(m, opts){
     drawTmpUpdate(d);
   };
   d.handlers.up=(e)=>{
+    if(d.lpHold!=null && d.lpHold===e.pointerId){   // 長押しで選んだ接触を離した: 何も置かない・描かない
+      d.lpHold=null; d.pen=null; d.pointers.delete(e.pointerId);
+      d.blockClickUntil=Date.now()+600;   // 離した直後に来る地図の click も使わない
+      return;
+    }
+    if(d.lp && d.lp.id===e.pointerId) drawLpClear(d);
     if(!d.on && d.pen && d.pen.id===e.pointerId){
       const p=pt(e), pen=d.pen; d.pen=null;
       if(Math.hypot(p.x-pen.x, p.y-pen.y)<=PEN_TAP_PX && Date.now()-pen.t<=PEN_TAP_MS){
@@ -4058,12 +4098,24 @@ function drawAttach(m, opts){
     if(d.state==='draw' && e.pointerId===d.pid){ drawFinish(d); }
     if(d.state==='gesture' && d.pointers.size===0){ d.state='idle'; d.blockClickUntil=Date.now()+500; }
   };
-  d.handlers.cancel=(e)=>{ if(d.pen && d.pen.id===e.pointerId) d.pen=null; d.pointers.delete(e.pointerId); drawCancel(d.pointers.size?'gesture':'idle'); };
+  d.handlers.cancel=(e)=>{ if(d.pen && d.pen.id===e.pointerId) d.pen=null;
+    if(d.lpHold!=null && d.lpHold===e.pointerId){ d.lpHold=null; d.blockClickUntil=Date.now()+600; }
+    d.pointers.delete(e.pointerId); drawCancel(d.pointers.size?'gesture':'idle'); };
   el.addEventListener('pointerdown', d.handlers.down, true);
   el.addEventListener('pointermove', d.handlers.move, true);
   el.addEventListener('pointerup', d.handlers.up, true);
   el.addEventListener('pointercancel', d.handlers.cancel, true);
-  d.handlers.vis=()=>{ if(document.hidden) drawCancel('idle'); };
+  d.handlers.wend=(e)=>{
+    d.touching.delete(e.pointerId);
+    if(!d.touching.size) d.lpMulti=false;
+    if(d.lp && d.lp.id===e.pointerId) drawLpClear(d);
+    if(d.lpHold!=null && d.lpHold===e.pointerId){ d.lpHold=null; d.blockClickUntil=Date.now()+600; }
+  };
+  window.addEventListener('pointerup', d.handlers.wend);
+  window.addEventListener('pointercancel', d.handlers.wend);
+  // 画面が隠れたら、描きかけ・長押し・接触の記録をすべて捨てる。離した知らせが届かないまま戻っても、
+  // 古い接触が残って長押しが始まらない・click が解けない、とならないように（監査 Major）
+  d.handlers.vis=()=>{ if(document.hidden){ drawCancel('idle'); drawResetContacts(d); } };
   document.addEventListener('visibilitychange', d.handlers.vis);
   return d;
 }
@@ -4076,10 +4128,18 @@ function drawTmpUpdate(d){
     else d.tmp.setLatLngs(ll);
   });
 }
+function drawLpClear(d){ if(d && d.lp){ clearTimeout(d.lp.timer); d.lp=null; } }
+function drawResetContacts(d){
+  if(!d) return;
+  drawLpClear(d); d.lpHold=null; d.pen=null; d.lpMulti=false;
+  d.touching.clear(); d.pointers.clear();
+  if(!Number.isFinite(d.blockClickUntil)) d.blockClickUntil=Date.now()+600;   // 解けない抑止を残さない
+}
 function drawTmpClear(d){ if(d && d.tmp){ try{ d.m.removeLayer(d.tmp); }catch(e){} d.tmp=null; } }
 // 描きかけを捨てる（中断・2本目の指・画面が隠れたとき）。点も履歴も増やさない
 function drawCancel(nextState){
   const d=_draw; if(!d) return;
+  drawLpClear(d);   // 中断・2本目の指・画面が隠れたときは長押し待ちも捨てる
   const wasActive = d.state!=='idle' || d.pts.length>0;   // 描きかけ・2本指の操作があったときだけ直後の click を抑える
   drawTmpClear(d); d.pts=[]; d.times=[]; d.pid=null;
   d.state=nextState||'idle';
@@ -4128,8 +4188,10 @@ function drawSet(on){
 // 地図を破棄する前に必ず呼ぶ（地図の要素は残ることがあるので、付けた見張りを外す）
 function drawDetach(){
   const d=_draw; if(!d) return;
-  drawCancel('idle');
+  drawCancel('idle'); drawResetContacts(d);
   try{
+    window.removeEventListener('pointerup', d.handlers.wend);
+    window.removeEventListener('pointercancel', d.handlers.wend);
     d.el.removeEventListener('pointerdown', d.handlers.down, true);
     d.el.removeEventListener('pointermove', d.handlers.move, true);
     d.el.removeEventListener('pointerup', d.handlers.up, true);
@@ -5027,10 +5089,17 @@ function segEditBar(){
     else msg.textContent=segLabel(PF_SEL)+' を直し中（タップで描き足す）';
   }
 }
-function segPick(i){
+function segPick(i, force){
   if(typeof perchStore==='function') perchStore();
-  PF_SEL=(PF_SEL===i)?-1:i;   // もう一度押したら選択を外す
+  PF_SEL=(PF_SEL===i && !force)?-1:i;   // もう一度押したら選択を外す（地図の長押しでは外さない）
   if(PF_SEL===-1) PF_NEWLINE=true;   // 「新しく落とす」に戻ったら、次の線も新しく始める
+  PF_STROKE_SEG=null;
+  // L を選んだら経路モードにする。pfSet('F') は選択を外すので使わず、表示だけ合わせる。
+  // P・N モードのまま「✏ 描く」を押すと pfSet('F') が選択を外し、引き直すつもりが新しい L になるため（計画レビュー Major 2）
+  if(PF_SEL>=0 && PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='F' && PF_MODE!=='F'){
+    if(typeof spiralReset==='function') spiralReset();
+    PF_MODE='F'; ['P','F','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', m==='F'); });
+  }
   if(typeof pfSyncFlightFields==='function') pfSyncFlightFields();   // 高度・行動の欄を選んだ経路に切り替える
   // 止まりを選んだら「止まっていたもの」の入力もその P に合わせる
   if(PF_SEL>=0 && PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='P'){
@@ -5457,7 +5526,7 @@ function pfRedraw(){
       +';text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;white-space:nowrap">'+t+'</div>',
     iconSize:[26,16], iconAnchor:[-7,17]});
   if(PF_NEST){
-    L.marker(PF_NEST,{icon:badge('巣','#8a6fd0',26)}).addTo(pfLayer);
+    L.marker(PF_NEST,{icon:badge('巣', PF_SEL===-2?'#6a4fb0':'#8a6fd0', PF_SEL===-2?34:26)}).addTo(pfLayer);   // 直し中は大きく
   }
   let np=0;
   // 線の番号はチップと同じ segLabel() で振る（数え方を別に持つと、0点の壊れた経路が
@@ -5531,6 +5600,7 @@ function pfRedraw(){
         startMk.on('click', ev=>{
           if(ev && ev.originalEvent) L.DomEvent.stop(ev.originalEvent);
           if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;   // 保存の後処理中は触らせない
+          if(drawClickBlocked()) return;   // 長押しで選んだ・なぞった直後の click では閉じない
           // **閉じられるのは「いま描いている線」だけ**にする。
           // どの線の始点でも閉じられると、止まり（P）や巣（N）を落としている最中や、
           // 別の線を直している最中に、関係のない線が面に変わる（2026-08-13 監査）
@@ -5603,7 +5673,12 @@ function initObsPosMap(){
   drawAttach(mapObj, {
     onCommit:(ll, tt)=>pfAddStroke(ll, tt),
     onTap:(la, lo)=>pfDrop(la, lo),   // ペンのタップ（描くモードがオフのとき）
-    onToggle:(on)=>{ if(on){ if(PF_MODE!=='F' || PF_SEL===-2) pfSet('F'); if(PF_SPIRAL && typeof spiralToggle==='function') spiralToggle(); } }
+    onToggle:(on)=>{ if(on){
+      const selL=PF_SEL>=0 && PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='F';
+      if(selL){ if(PF_MODE!=='F') segPick(PF_SEL, true); }   // 選んだ L はそのまま（なぞると引き直し）
+      else if(PF_MODE!=='F' || PF_SEL===-2) pfSet('F');
+      if(PF_SPIRAL && typeof spiralToggle==='function') spiralToggle(); } },
+    onLongPress:(cp)=>pfLongPress(cp)   // 長押しで P・L・巣を選ぶ
   });
   addTabLineControl(mapObj);
   addCrosshairControl(mapObj, (la2,lo2)=>pfDrop(la2,lo2), '＋');
@@ -5637,6 +5712,39 @@ function addTabLineControl(m){
    pfDrop を点ごとに呼ばない＝始点付近で「面にする」判定（pfTryClose）を通さない（計画レビュー M3）。
    追加先・続ける（cont）の決まりは pfDrop の L の分岐と同じ */
 let PF_STROKE_SEG=null;   // 描くモードで最後に作った線（入力の対象にする。次に何か描けば外れる）
+const PF_HIT_PX=14;
+// 地図の長押し（cp=地図の中の画面座標）。いまの個体の P・L・巣だけが対象（他の個体の薄い表示は選ばない）。
+// 線は頂点だけでなく線分までの距離で測る。選べたら true
+function pfLongPress(cp){
+  if(!mapObj || (typeof SAVE_BUSY!=='undefined' && SAVE_BUSY)) return false;
+  const C=ll=>mapObj.latLngToContainerPoint(L.latLng(ll[0], ll[1]));
+  let best=null, bd=Infinity;
+  const take=(i, dist)=>{ if(dist<=PF_HIT_PX && dist<bd){ bd=dist; best=i; } };
+  try{
+    PF_SEGS.forEach((sg,i)=>{
+      if(sg.t==='P'){ if(sg.pt){ const q=C(sg.pt); take(i, Math.hypot(cp.x-q.x, cp.y-q.y)-3); } return; }   // 点は線より少し優先
+      const ps=(sg.pts||[]).map(C); if(!ps.length) return;
+      let dmin=Math.hypot(cp.x-ps[0].x, cp.y-ps[0].y);
+      for(let k=0;k+1<ps.length;k++) dmin=Math.min(dmin, drawSegDist(cp, ps[k], ps[k+1]));
+      if(segShape(sg)===SHAPE_AREA && ps.length>2) dmin=Math.min(dmin, drawSegDist(cp, ps[ps.length-1], ps[0]));
+      take(i, dmin);
+    });
+    if(PF_NEST){ const q=C(PF_NEST); take(-2, Math.hypot(cp.x-q.x, cp.y-q.y)-3); }
+  }catch(e){ return false; }
+  if(best===null) return false;
+  segPick(best, true);
+  let at=null; try{ at=mapObj.containerPointToLatLng(cp); }catch(e){}
+  tabletPanel(true, '#segEditBar', at);   // タブレット表示なら小窓を開いて「直し中」の帯を見せる
+  return true;
+}
+// なぞり直しの時刻。観察した時刻を、直した時刻に変えない（元の最初と最後の時刻の間に割り振る）
+function pfRedrawTimes(old, n, fresh){
+  const a=old[0]||'', b=old[old.length-1]||a;
+  if(!a) return fresh.slice();
+  const ta=new Date(a).getTime(), tb=new Date(b).getTime();
+  if(!Number.isFinite(ta) || !Number.isFinite(tb)) return Array.from({length:n}, (_,i)=>(i===n-1?b:a));
+  return Array.from({length:n}, (_,i)=>localDatetimeValue(new Date(ta+(tb-ta)*(n>1?i/(n-1):0))));
+}
 function pfAddStroke(ll, tt){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;
   if(!ll || ll.length<2) return;
@@ -5645,8 +5753,17 @@ function pfAddStroke(ll, tt){
   let target=null;
   if(PF_SEL>=0){ const sg=PF_SEGS[PF_SEL]; if(sg && sg.t==='F') target=sg; else PF_SEL=-1; }   // P を選んでいても、なぞりは線として扱う
   if(target){
-    ll.forEach((p,i)=>{ target.pts.push([p[0],p[1]]); target.times.push(times[i]); });
-    target.edited=true;
+    // **選んだ線はなぞり直しで置き換える**（2026-11-07 実機の要望「描いた線を直したい」）。
+    // 同じ線（id・srcUuid）のまま、高度・行動・添付・メモは残す。時刻は元の範囲のまま。
+    // 全体を引き直すので前の線からの続き（cont）は外す。描き足しはタップで今までどおり
+    target.times=pfRedrawTimes(target.times||[], ll.length, times);
+    target.pts=ll.map(p=>[p[0],p[1]]);
+    target.cont=0; target.edited=true;
+    if(segShape(target)===SHAPE_AREA){
+      target.fl.shape=SHAPE_LINE; target.fl.area_type='';
+      if(SCREENS._flSeg===target) flLoadFrom(target);   // 欄が面のままだと、保存・個体切替で面が書き戻される（監査 Major）
+      toast('面をなぞり直したので線になりました。面にするときは始点の丸を押してください', 4000);
+    }
   } else {
     // **なぞるたびに新しいL、前の線とはつながない**（2026-11-07 実機での決定）。
     // フリーハンドでは、続けたいときは前の終点から描き始めればよく、自動で直線を結ぶと
