@@ -1,0 +1,34 @@
+# GitHub Pages への公開（2026-11-07 から）。
+# 従来の自動公開（pages-build-deployment）は配信の完了を10分しか待たず、
+# 約240MB（鳴き声の音声188本）を配るときにときどき時間切れで失敗していた。
+# 同じ中身をこの手順で公開し、配信の完了を30分まで待つ。
+# 元の方式に戻すとき: リポジトリの Settings → Pages → Source を「Deploy from a branch」（master / root）にする
+name: GitHub Pages に公開
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: deployment
+        uses: actions/deploy-pages@v4
+        with:
+          timeout: 1800000
