@@ -82,6 +82,8 @@
 'use strict';
 const SR = 48000;
 const $ = id => document.getElementById(id);
+// 画面に文字を埋め込むときは必ず無害化する（手帳の読み込みファイル等、外から来た文字が入るため）
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let labels = [];          // [{sci, ja, en}]
 let sciIndex = {};        // 学名 → 番号
 let evalList = [];        // 正解表
@@ -140,7 +142,7 @@ async function prepare() {
   // 「その他」で選べる種名一覧: アプリの北海道188種（BirdNETが知らない8種も含む）を五十音順に
   const names = ev.map(e => e.ja).sort((a, b) => a.localeCompare(b, 'ja'));
   $('regSelect').innerHTML = '<option value="">― 一覧から選ぶ（五十音順）―</option>' +
-    names.map(n => `<option value="${n}">${n}</option>`).join('') +
+    names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('') +
     '<option value="__free__">一覧にない種（自分で入力）</option>';
 }
 
@@ -267,9 +269,9 @@ function renderResult() {
   const top = combinedList(lastRec, opt).slice(0, 10);
   $('result').innerHTML = `<p>録音 ${lastRec.sec.toFixed(1)}秒 / 判定 ${(lastRec.ms / 1000).toFixed(1)}秒</p>` +
     '<table><tr><th>順位</th><th>種名</th><th>確からしさ</th><th>根拠</th></tr>' +
-    top.map((t, k) => `<tr><td>${k + 1}</td><td>${t.ja}</td><td>${(t.score * 100).toFixed(1)}%</td><td>${t.nb > t.bn ? '手帳で一致（似ている度 ' + t.sim.toFixed(2) + '）' : 'BirdNET'}</td></tr>`).join('') +
+    top.map((t, k) => `<tr><td>${k + 1}</td><td>${esc(t.ja)}</td><td>${(t.score * 100).toFixed(1)}%</td><td>${t.nb > t.bn ? '手帳で一致（似ている度 ' + t.sim.toFixed(2) + '）' : 'BirdNET'}</td></tr>`).join('') +
     '</table>';
-  $('quickPick').innerHTML = '正解をタップ: ' + top.slice(0, 3).map(t => `<button class="qp">${t.ja}</button>`).join('') +
+  $('quickPick').innerHTML = '正解をタップ: ' + top.slice(0, 3).map(t => `<button class="qp">${esc(t.ja)}</button>`).join('') +
     '<button id="btnOther">その他</button>';
   document.querySelectorAll('.qp').forEach(b => b.onclick = () => { $('regName').value = b.textContent; $('otherBox').style.display = 'none'; });
   $('btnOther').onclick = () => { $('otherBox').style.display = ''; $('regSelect').value = ''; $('regSelect').focus(); };
@@ -321,8 +323,8 @@ function renderNotebook() {
     names.map(ja => {
       const es = groups[ja].sort((a, b) => a.date.localeCompare(b.date));
       const warn = ja !== NOISE && es.length < 5 ? '（5件未満）' : '';
-      return `<tr><td>${ja}</td><td>${es.length}${warn}</td><td>` +
-        es.map(e => `${e.date.slice(0, 16).replace('T', ' ')} <button class="nbDel" data-id="${e.id}">×</button>`).join('<br>') + '</td></tr>';
+      return `<tr><td>${esc(ja)}</td><td>${es.length}${warn}</td><td>` +
+        es.map(e => `${esc(String(e.date).slice(0, 16).replace('T', ' '))} <button class="nbDel" data-id="${esc(e.id)}">×</button>`).join('<br>') + '</td></tr>';
     }).join('') + '</table>';
   document.querySelectorAll('.nbDel').forEach(b => b.onclick = async () => {
     if (!confirm('この登録を消しますか？')) return;
@@ -357,16 +359,31 @@ $('importInput').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
   try {
     const data = JSON.parse(await f.text());
-    if (data.format !== 'birdnet-notebook') throw new Error('手帳のファイルではありません');
+    if (!data || data.format !== 'birdnet-notebook' || data.version !== 1 || !Array.isArray(data.entries)) throw new Error('手帳のファイルではありません');
+    if (data.entries.length > 5000) throw new Error('件数が多すぎます');
     const have = new Set(nbEntries.map(x => x.id));
-    let added = 0;
+    let added = 0, dup = 0, bad = 0;
     for (const x of data.entries) {
-      if (have.has(x.id)) continue;
-      const entry = { id: x.id, ja: x.ja, kind: x.kind, date: x.date, embs: x.embs.map(b64ToF32) };
-      await idbPut(entry); nbEntries.push(entry); added++;
+      // 1件ずつ形を検査し、おかしいものは取り込まない
+      const ok = x && typeof x.id === 'string' && /^[0-9A-Za-z-]{1,40}$/.test(x.id)
+        && typeof x.ja === 'string' && x.ja.trim().length > 0 && x.ja.length <= 40
+        && (x.kind === 'bird' || x.kind === 'noise')
+        && typeof x.date === 'string' && x.date.length <= 40
+        && Array.isArray(x.embs) && x.embs.length >= 1 && x.embs.length <= 20 && x.embs.every(b => typeof b === 'string');
+      let embs = null;
+      if (ok) {
+        try {
+          embs = x.embs.map(b64ToF32);
+          if (!embs.every(v => v.length === 1024 && v.every(Number.isFinite))) embs = null;
+        } catch (err) { embs = null; }
+      }
+      if (!ok || !embs) { bad++; continue; }
+      if (have.has(x.id)) { dup++; continue; }
+      const entry = { id: x.id, ja: x.kind === 'noise' ? NOISE : x.ja.trim(), kind: x.kind, date: x.date, embs };
+      await idbPut(entry); nbEntries.push(entry); have.add(x.id); added++;
     }
     renderNotebook(); renderResult();
-    alert(`${added}件を読み込みました（重複${data.entries.length - added}件は飛ばしました）`);
+    alert(`${added}件を読み込みました（重複${dup}件・形がおかしい${bad}件は飛ばしました）`);
   } catch (err) { alert('読み込みエラー: ' + err.message); }
   e.target.value = '';
 };
@@ -460,7 +477,7 @@ function renderEval() {
     evalRows.map(r => {
       const rk = r.max_rank_hk;
       const cls = !r.sci ? 'na' : rk === 1 ? 'ok' : 'ng';
-      return `<tr class="${cls}"><td>${r.ja}</td><td>${r.sec || ''}</td><td>${r.max_top1_hk || r.error || ''}</td><td>${r.sci ? rk : '対象外'}</td><td>${r.max_conf ?? ''}</td></tr>`;
+      return `<tr class="${cls}"><td>${esc(r.ja)}</td><td>${esc(r.sec || '')}</td><td>${esc(r.max_top1_hk || r.error || '')}</td><td>${r.sci ? rk : '対象外'}</td><td>${r.max_conf ?? ''}</td></tr>`;
     }).join('') + '</table>';
 }
 

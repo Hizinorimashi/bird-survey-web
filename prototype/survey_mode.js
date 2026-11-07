@@ -225,8 +225,8 @@
     // 時刻順の一覧（新しい順）。停止区間も混ぜる
     const rows = S.events.map(e => ({ t: e.t0, html:
       `<tr class="${e.review === 'ok' ? 'ok' : e.review === 'ng' ? 'ng' : e.review === 'fixed' ? 'fx' : ''}">` +
-      `<td>${hms(e.t0)}〜${hms(e.t1)}</td><td>${e.ja}</td><td>${e.count}</td><td>${(e.max * 100).toFixed(0)}%</td><td>${e.src}</td>` +
-      `<td>${e.clip ? `<button class="smPlay" data-id="${e.clip}">▶</button>` : ''}<span style="font-size:0.8em">${e.note}</span></td>` +
+      `<td>${hms(e.t0)}〜${hms(e.t1)}</td><td>${esc(e.ja)}</td><td>${e.count}</td><td>${(e.max * 100).toFixed(0)}%</td><td>${esc(e.src)}</td>` +
+      `<td>${e.clip ? `<button class="smPlay" data-id="${esc(e.clip)}">▶</button>` : ''}<span style="font-size:0.8em">${esc(e.note)}</span></td>` +
       `<td>${reviewCell(e)}</td>` +
       `<td>${e.lat != null ? e.lat.toFixed(4) + ',' + e.lng.toFixed(4) : ''}</td></tr>` }))
       .concat(S.gaps.map(g => ({ t: g.from, html: `<tr class="na"><td>${hms(g.from)}〜${g.to ? hms(g.to) : ''}</td><td colspan="7">録音停止（画面が消えた・別アプリ）</td></tr>` })))
@@ -240,9 +240,9 @@
   // ---- 判定（正解・不正解・訂正）----
   const confirmedJa = e => e.review === 'ok' ? e.ja : e.review === 'fixed' ? e.fixedJa : '';
   function reviewCell(e) {
-    const btn = (act, label) => `<button class="smRv" data-id="${e.id}" data-act="${act}">${label}</button>`;
+    const btn = (act, label) => `<button class="smRv" data-id="${esc(e.id)}" data-act="${act}">${label}</button>`;
     if (!e.review) return btn('ok', '○正解') + btn('ng', '×不正解') + btn('fix', '種を直す');
-    const label = e.review === 'ok' ? '○正解' : e.review === 'ng' ? '×不正解' : '→' + e.fixedJa;
+    const label = e.review === 'ok' ? '○正解' : e.review === 'ng' ? '×不正解' : '→' + esc(e.fixedJa);
     const teach = e.review !== 'ng' && e.emb ? (e.taught ? ' 手帳に登録済み' : btn('teach', '手帳に教える')) : '';
     return `<b>${label}</b> ${btn('undo', '取消')}${teach}`;
   }
@@ -276,7 +276,7 @@
     const sp = [...new Set(evs.map(nm))];
     const cnt = {}; for (const e of evs) { const k = nm(e) + '|' + Math.floor((e.t0 - t0) / bin); cnt[k] = (cnt[k] || 0) + e.count; }
     $('smBins').innerHTML = '<table><tr><th>種名</th>' + cols.map(c => `<th>${hm(c)}〜</th>`).join('') + '</tr>' +
-      sp.map(ja => `<tr><td>${ja}</td>` + cols.map((c, i) => `<td style="text-align:center">${cnt[ja + '|' + i] || ''}</td>`).join('') + '</tr>').join('') + '</table>';
+      sp.map(ja => `<tr><td>${esc(ja)}</td>` + cols.map((c, i) => `<td style="text-align:center">${cnt[ja + '|' + i] || ''}</td>`).join('') + '</tr>').join('') + '</table>';
   }
 
   // ---- 音声ファイル ----
