@@ -251,22 +251,27 @@
       S.seg = { t0: Date.now(), id: (S.seg ? S.seg.id + 1 : 1) };
       node.port.onmessage = e => { if (gen === S.gen) onPcm(e.data); };
       src.connect(node);
+      releaseCurrent();   // 念のため: 前のマイクが残っていれば、置き換える前に必ず放す
       S.stream = stream; S.ctx = ctx; S.node = node;
     } catch (err) {
       // 引き渡し前に失敗・中断したら、つかんだマイクや音声処理を必ず放す
       try { node && (node.port.onmessage = null, node.disconnect()); } catch (e) {}
       try { stream && stream.getTracks().forEach(t => t.stop()); } catch (e) {}
       try { ctx && ctx.close(); } catch (e) {}
+      if (stale()) throw superseded();   // すでに別の操作に追い越されていた要求の失敗は「取りやめ」扱い
       throw err;
     }
   }
-  function stopCapture() {
-    S.gen++;
-    abandonPending('録音が中断したため音声保存なし');
+  function releaseCurrent() {
     try { S.node && (S.node.port.onmessage = null, S.node.disconnect()); } catch (e) {}
     try { S.stream && S.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
     try { S.ctx && S.ctx.close(); } catch (e) {}
     S.node = S.stream = S.ctx = null;
+  }
+  function stopCapture() {
+    S.gen++;
+    abandonPending('録音が中断したため音声保存なし');
+    releaseCurrent();
   }
   async function keepAwake() {
     try { if ('wakeLock' in navigator) S.wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
@@ -309,7 +314,8 @@
       await saveSessionNow();
       tick();
     } catch (err) {
-      stop();
+      // 開始の失敗で全体を止めるのは、他に動いている録音（画面復帰で再開済みなど）が無いときだけ
+      if (!S.stream) stop();
       throw err;
     } finally {
       S.starting = false;
@@ -329,20 +335,22 @@
     updateStartBtn();
     render();
   }
-  // 録音の再開は順番待ちで1つずつ（前の再開が取りやめになっても、後の再開は改めて実行する）。
-  // 実際に再開できたときだけ停止区間を閉じる
-  function resumeCapture() {
-    const run = async () => {
-      if (!S.running || document.hidden) throw superseded();
+  // 録音の再開。同時の要求は1つにまとめ、すでに再開済み（マイクあり）なら何もしない。
+  // 処理中は「録音を再開」ボタンを押せなくする。実際に再開できたときだけ停止区間を閉じる
+  async function resumeCapture() {
+    while (S.resuming) { try { await S.resuming; } catch (e) {} }   // 実行中の再開があれば終わるのを待つ
+    if (!S.running || document.hidden) throw superseded();
+    if (S.stream) return;                                          // 既に再開済み
+    const btn = $('smResume'); btn.disabled = true;
+    const p = (async () => {
       await startCapture();
       const g = S.gaps[S.gaps.length - 1]; if (g && !g.to) g.to = Date.now();
-      $('smResume').style.display = 'none';
+      btn.style.display = 'none';
       saveSessionSoon(); render();
-    };
-    const p = (S.resuming || Promise.resolve()).catch(() => {}).then(run);
-    S.resuming = p;
-    p.finally(() => { if (S.resuming === p) S.resuming = null; }).catch(() => {});
-    return p;
+    })();
+    S.resuming = p;   // 待ちのループを抜けてから同期的に設定するので、2つ目の要求はここで必ず待つ
+    try { await p; }
+    finally { if (S.resuming === p) S.resuming = null; btn.disabled = false; }
   }
 
   // 画面が隠れたら停止区間として記録し、戻ったら再開を試みる
