@@ -51,6 +51,9 @@
   <div id="regMsg" style="font-size:0.9em;color:#363"></div>
 </div>
 
+<h2>連続モード（調査中ずっと聞く）</h2>
+<div id="surveyBox"></div>
+
 <h2>手帳（教えた声）</h2>
 <p style="font-size:0.9em">同じ種を<b>5羽分以上、できれば別の場所で録った声</b>を教えると効きやすくなります（1羽分だけではほとんど効きません）。
 音声そのものは保存せず、声の特徴だけをこの端末に保存します。</p>
@@ -146,6 +149,7 @@ async function onLoaded(backend) {
   setStatus(`準備完了（${labels.length}種・計算方式: ${backend}）`);
   $('btnRec').disabled = false;
   $('btnEval').disabled = false;
+  if ($('smStart')) $('smStart').disabled = false;
 }
 
 // BirdNETの週番号（1か月を4週とし1〜48）
@@ -485,11 +489,12 @@ async function checkOffline() {
     const keys = await caches.keys();
     const name = keys.find(k => k.startsWith('birdnet-proto-'));
     const n = name ? (await (await caches.open(name)).keys()).length : 0;
-    el.textContent = n >= 23 ? '圏外での利用: 準備OK（AI一式を保存済み）' : `圏外での利用: 保存中…（${n}/23）`;
-    if (n < 23) setTimeout(checkOffline, 3000);
+    el.textContent = n >= 25 ? '圏外での利用: 準備OK（AI一式を保存済み）' : `圏外での利用: 保存中…（${n}/25）`;
+    if (n < 25) setTimeout(checkOffline, 3000);
   } catch (err) { el.textContent = '圏外での利用: 準備失敗 ' + err; }
 }
 checkOffline();
 </script>
+<script src="survey_mode.js"></script>
 </body>
 </html>
