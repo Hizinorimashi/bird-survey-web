@@ -213,6 +213,7 @@
     border-radius:22px; border:1px solid var(--line); background:var(--panel); color:var(--fg);
     font-size:15px; font-weight:700; box-shadow:0 2px 8px rgba(0,0,0,.4);}
   body.tab-left:not(.tab-collapsed) #tabBack{display:none;}
+  body.no-back #tabBack{display:none;}   /* 観察の編集では地図の上の戻るも出さない */
   body.tab-collapsed.tab-left #tabBar{left:auto; right:16px;}
   body.tab-obs #tabMapLayer .leaflet-top.leaflet-left{top:56px;}
   body:not(.tab-collapsed) #tabBar{background:var(--panel); color:var(--fg);}
@@ -326,7 +327,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v227（2026-11-07 地図の上に戻る／種名の下に齢・性別・個体名／営巣木は N のときだけ／描くモードの軽いタップで面・◎／入力の小窓を小さく）';
+const APP_VERSION = 'v228（2026-11-07 追加と編集のタブ／編集では戻るを出さない／入力を閉じる／P が無くても観察の欄を残す）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1556,7 +1557,8 @@ function render(){
   const scr = SCREENS[cur.name] || SCREENS.home;
   const out = scr(cur.arg) || {};
   $('#hTitle').textContent = out.title || '鳥類調査記録';
-  $('#backBtn').classList.toggle('hidden', STACK.length<=1);
+  $('#backBtn').classList.toggle('hidden', STACK.length<=1 || !!out.hideBack);   // 観察の編集では出さない（終えるのは保存かタブ）
+  document.body.classList.toggle('no-back', !!out.hideBack);
   const sub = $('#hSub'); sub.innerHTML = (out.sub||[]).join('');
   if(typeof renderWalkPill==='function') renderWalkPill();   // 歩行記録中の常設表示（全画面）
   const main = $('#main');
@@ -2822,9 +2824,8 @@ function voiceApplyToForm(){
   if(pick.name) chooseSpecies((speciesByName(pick.name)||{}).species_id||'', pick.name);
   if(p.count){ const el=$('#obForm [name="count"]');
     if(el){ el.value=p.count; el.dispatchEvent(new Event('input',{bubbles:true})); } }   // 手入力と同じ扱いにする
-  // 飛翔だけの画面では、観察にしか残せない項目（確認方法・距離帯・方向・通常の行動）は反映しない
-  //（反映しても保存先が無く、保存時に止められて手戻りになる）
-  const floNow = (typeof isFlightOnly==='function') && isFlightOnly();
+  // P が無く線だけでも観察の項目は反映する（v228: 保存で位置の無い観察に残す。監査 Minor）
+  const floNow = false;
   if(!floNow && p.detection_method) segSet('detection_method', p.detection_method);
   if(!floNow && p.distance_band) segSet('distance_band', p.distance_band);   // 話して入れた指定は守る（changeで指定済みになる）
   if(!floNow && p.direction) segSet('direction', p.direction);
@@ -2988,7 +2989,13 @@ SCREENS.obsEdit = (argStr)=>{
 
   return {
     title: editing?'観察を編集':'観察を追加',
+    hideBack: !!editing,
     html:`
+      <!-- 追加と編集をタブで分ける（2026-11-07 ユーザー決定）。編集中の「＋ 追加」は、保存してから新しい観察へ -->
+      <div class="seg obs-tabs" id="obsTabs" style="margin-bottom:8px;">
+        <button type="button" class="${editing?'':'on'}" onclick="obsTabAdd('${o.uuid}','${svUuid}',${editing?'true':'false'})">＋ 追加</button>
+        <button type="button" class="${editing?'on':''}" onclick="obsTabEdit(${editing?'true':'false'})">✎ 編集${editing?'中':''}</button>
+      </div>
       <!-- 地図が主役。P=鳥がいた場所（点）、F=飛翔経路（線）。何を保存するかは地図の中身で決まる -->
       <div class="card" style="background:var(--panel2); padding:8px;">
         <div id="obsPosMap" style="height:300px; border-radius:var(--radius); border:1px solid var(--line);"></div>
@@ -4000,7 +4007,7 @@ function tabletRelease(){
 }
 function tabletBarSync(){
   const bar=$('#tabBar'); if(!bar) return;
-  bar.textContent = document.body.classList.contains('tab-collapsed') ? '📝 入力を開く ▲' : '▼ 地図を広く';
+  bar.textContent = document.body.classList.contains('tab-collapsed') ? '📝 入力を開く ▲' : '▼ 入力を閉じる';
 }
 /* 小窓を開く／畳む。target … 開いたときに寄せて見せる欄（P:止まり情報 / N:巣 / L:線の属性）。
    at … いま置いた・描いた地点。地図の右半分なら小窓を左へ寄せて、描いた場所を隠さない */
@@ -4683,6 +4690,20 @@ function birdAfterSave(u2, add, flU){
 /* ---------- ここまで 段A・段B ---------- */
 // 営巣木・巣の欄は、N モード・巣を置いた・巣の入力がある（開き直した記録を含む）ときだけ出す（2026-11-07 ユーザー要望）。
 // 隠しても欄はフォームの中にあるので、値は今までどおり保存・復元される
+// 観察の画面のタブ。編集中の「＋ 追加」は、いまの編集を保存してから新しい観察の入力へ（保存できなければ留まる）
+function obsTabAdd(u, sv, editing){
+  if(!editing) return;
+  if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;
+  // この画面にほかの個体の入力があるときは進まない。保存のあとの画面移動で書きかけの確認が出て、
+  // 取り消すと画面と保存済みの記録が食い違うため（v228 監査 Major）
+  if(typeof BIRDS!=='undefined' && BIRDS.length>1){
+    toast('この画面には複数の個体があります。新しい個体は、下の「💾 保存して次の個体へ」で追加してください', 6000); return; }   // 案内どおりに進める操作を示す（監査 Minor）
+  saveObs(u, sv, true, true);
+}
+function obsTabEdit(editing){
+  if(editing) return;
+  toast('調査の画面の観察一覧で直したい記録を押すと、編集になります', 4000);
+}
 function nestFoldSync(){
   const d=document.getElementById('foldNest'); if(!d) return;
   let show=(PF_MODE==='N') || !!PF_NEST;
@@ -5007,11 +5028,12 @@ function isFlightOnly(){ return pfSaveableFls().length>0 && !willSaveObs(); }
 function syncDisabledStates(){
   const ps=pfPoints();
   const flightOnly = isFlightOnly();
-  obsOnlyEls().forEach(el=>{ el.disabled=flightOnly; });
+  // P が無いのは普通（猛禽など）。観察の欄はいつでも入力でき、入力があれば保存で位置の無い観察を残す（2026-11-07 ユーザー）
+  obsOnlyEls().forEach(el=>{ el.disabled=false; });
   // 止まり木は P が無ければ置き場所が無い（この指定が後に来るように書く）
   if(typeof PERCH_FIELDS!=='undefined')
     PERCH_FIELDS.forEach(id=>{ const el=$('#'+id); if(el) el.disabled = flightOnly || ps.length===0; });
-  const note=$('#obsOnlyNote'); if(note) note.style.display=flightOnly?'':'none';
+  const note=$('#obsOnlyNote'); if(note) note.style.display='none';
 }
 // 最初の状態を覚えておく（「触られたか」を見比べるため／戻すため）
 function obsOnlyCapture(){
@@ -7027,7 +7049,10 @@ function saveObs(u, svUuid, editing, cont){
   }
   // 編集では、Pを消しても記録そのものは残す（位置だけ空になる）
   // 巣だけを記録した場合も観察を1件作る（画面で入れられるのに保存先が無い、を作らない）
-  const nObs = editing ? Math.max(1, pts.length) : (pts.length || (nestFilled()?1:0));
+  // P が無く線だけでも、観察にしか残せない欄に入力があれば、位置の無い観察を1件作って残す（線と同じ鳥として結ぶ）。
+  // 以前は「観察にしか残せない項目に入力があります」で止めていたが、P が無いのは普通なので止めない（2026-11-07 ユーザー）
+  const obsKeepNoP = !editing && !pts.length && !nestFilled() && paths.length>0 && obsOnlyChanged();
+  const nObs = editing ? Math.max(1, pts.length) : (pts.length || (nestFilled()?1:0) || (obsKeepNoP?1:0));
   const nRec = nObs + paths.length;
   const deletingOnly = nRec===0 && ((SCREENS._loadedFl||[]).length>0 || (SCREENS._loadedObs||[]).length>0);
   if(nRec===0 && !deletingOnly){
@@ -7891,7 +7916,7 @@ function saveObs(u, svUuid, editing, cont){
       age_class:rec.age_class, individual_key:rec.individual_key,
       individual_label:rec.individual_label||'' }}));
   }
-  else if(cont){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid, keep})); } // 位置を引き継いで次の種へ
+  else if(cont){ const n0=STACK.length; goBack(); if(STACK.length<n0) nav('obsEdit', JSON.stringify({sv:svUuid, keep})); } // 位置を引き継いで次の種へ（戻れなかったら次へ進まない）
   else goBack();
   };
   (async ()=>{
