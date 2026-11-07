@@ -151,7 +151,7 @@ async function onLoaded(backend) {
   setStatus(`準備完了（${labels.length}種・計算方式: ${backend}）`);
   $('btnRec').disabled = false;
   $('btnEval').disabled = false;
-  if ($('smStart')) $('smStart').disabled = false;
+  if (window.SURVEY) SURVEY.setModelReady();   // 連続モードの開始は前回の調査の読み込みも済んでから
 }
 
 // BirdNETの週番号（1か月を4週とし1〜48）

@@ -228,25 +228,37 @@
   }
 
   // ---- 開始・停止・中断 ----
+  // 別の操作に追い越された開始処理の例外（呼び出し側は「失敗」として扱わない）
+  function superseded() { const e = new Error('別の操作に切り替わったため開始を取りやめました'); e.superseded = true; return e; }
   async function startCapture() {
     const gen = ++S.gen;
     abandonPending('録音が中断したため音声保存なし');
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-    if (gen !== S.gen || !S.running) { stream.getTracks().forEach(t => t.stop()); throw new Error('開始中に停止されました'); }
-    const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SR });
-    try { await ctx.audioWorklet.addModule('pcm-recorder.js'); }
-    catch (err) { stream.getTracks().forEach(t => t.stop()); ctx.close(); throw err; }
-    if (gen !== S.gen || !S.running) { stream.getTracks().forEach(t => t.stop()); ctx.close(); throw new Error('開始中に停止されました'); }
-    // 区間をリセット（中断後は新しい区間として時刻を数え直す）
-    S.ring.fill(0); S.written = 0; S.next = 0; S.judged = 0; S.busy = null;
-    S.humanWins.clear(); S.lost = []; S.pendingClips = [];
-    for (const e of S.events) e.closed = true;
-    S.seg = { t0: Date.now(), id: (S.seg ? S.seg.id + 1 : 1) };
-    const src = ctx.createMediaStreamSource(stream);
-    const node = new AudioWorkletNode(ctx, 'pcm-recorder');
-    node.port.onmessage = e => { if (gen === S.gen) onPcm(e.data); };
-    src.connect(node);
-    S.stream = stream; S.ctx = ctx; S.node = node;
+    const stale = () => gen !== S.gen || !S.running || document.hidden;
+    if (stale()) throw superseded();
+    let stream = null, ctx = null, node = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+      if (stale()) throw superseded();
+      ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SR });
+      await ctx.audioWorklet.addModule('pcm-recorder.js');
+      if (stale()) throw superseded();
+      const src = ctx.createMediaStreamSource(stream);
+      node = new AudioWorkletNode(ctx, 'pcm-recorder');
+      // 区間をリセット（中断後は新しい区間として時刻を数え直す）
+      S.ring.fill(0); S.written = 0; S.next = 0; S.judged = 0; S.busy = null;
+      S.humanWins.clear(); S.lost = []; S.pendingClips = [];
+      for (const e of S.events) e.closed = true;
+      S.seg = { t0: Date.now(), id: (S.seg ? S.seg.id + 1 : 1) };
+      node.port.onmessage = e => { if (gen === S.gen) onPcm(e.data); };
+      src.connect(node);
+      S.stream = stream; S.ctx = ctx; S.node = node;
+    } catch (err) {
+      // 引き渡し前に失敗・中断したら、つかんだマイクや音声処理を必ず放す
+      try { node && (node.port.onmessage = null, node.disconnect()); } catch (e) {}
+      try { stream && stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+      try { ctx && ctx.close(); } catch (e) {}
+      throw err;
+    }
   }
   function stopCapture() {
     S.gen++;
@@ -260,14 +272,22 @@
     try { if ('wakeLock' in navigator) S.wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
   }
 
+  // 開始ボタンは「AIの準備」と「前回の調査の読み込み成功」の両方がそろってから押せる
+  S.modelReady = false; S.restoreState = 'loading'; S.op = 0; S.resuming = null;
+  function updateStartBtn() {
+    const b = $('smStart'); if (!b) return;
+    b.disabled = !(S.modelReady && S.restoreState === 'ok') || S.running || S.starting;
+  }
+  function setModelReady() { S.modelReady = true; updateStartBtn(); }
+
   async function start() {
-    if (S.running || S.starting) return;
+    if (S.running || S.starting || !S.modelReady || S.restoreState !== 'ok') return;
     // 前の調査が残っていれば、消してよいか確認（保存領域を際限なく使わないため、調査は1件だけ保持）
     if (S.sessionId && S.events.length) {
       if (!confirm('前回の調査の記録と音を消して、新しい調査を始めます。\n書き出し（ZIP）は済みましたか？')) return;
     }
-    S.starting = true;
-    $('smStart').disabled = true;
+    S.starting = true; S.op++;
+    updateStartBtn();
     try {
       await S.clipQueue;
       await sClearAll();
@@ -277,12 +297,15 @@
       $('smPrev').innerHTML = '';
       await updateArea();
       S.running = true;
-      await startCapture();
+      try { await startCapture(); }
+      catch (err) { if (!err.superseded) throw err; }   // 画面切替などで追い越された → 再開側に任せる
+      if (!S.running) return;                            // 開始中に「停止」が押された
       await keepAwake();
       if (navigator.geolocation) S.geoId = navigator.geolocation.watchPosition(
         p => { S.pos = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, t: p.timestamp || Date.now() }; },
         () => {}, { enableHighAccuracy: true });
-      $('smStop').disabled = false; $('smResume').style.display = 'none';
+      $('smStop').disabled = false;
+      if (S.stream) $('smResume').style.display = 'none';
       await saveSessionNow();
       tick();
     } catch (err) {
@@ -290,9 +313,11 @@
       throw err;
     } finally {
       S.starting = false;
+      updateStartBtn();
     }
   }
   function stop() {
+    S.op++;
     S.running = false;
     stopCapture();
     if (S.geoId != null) { navigator.geolocation.clearWatch(S.geoId); S.geoId = null; }
@@ -300,27 +325,44 @@
     const g = S.gaps[S.gaps.length - 1]; if (g && !g.to) g.to = Date.now();
     for (const e of S.events) e.closed = true;
     S.clipQueue.then(() => saveSessionNow()).catch(err => console.warn(err));
-    $('smStart').disabled = false; $('smStop').disabled = true; $('smResume').style.display = 'none';
+    $('smStop').disabled = true; $('smResume').style.display = 'none';
+    updateStartBtn();
     render();
   }
-  async function resumeCapture() {
-    await startCapture();
-    const g = S.gaps[S.gaps.length - 1]; if (g && !g.to) g.to = Date.now();   // 実際に再開できてから閉じる
-    $('smResume').style.display = 'none';
-    saveSessionSoon(); render();
+  // 録音の再開は順番待ちで1つずつ（前の再開が取りやめになっても、後の再開は改めて実行する）。
+  // 実際に再開できたときだけ停止区間を閉じる
+  function resumeCapture() {
+    const run = async () => {
+      if (!S.running || document.hidden) throw superseded();
+      await startCapture();
+      const g = S.gaps[S.gaps.length - 1]; if (g && !g.to) g.to = Date.now();
+      $('smResume').style.display = 'none';
+      saveSessionSoon(); render();
+    };
+    const p = (S.resuming || Promise.resolve()).catch(() => {}).then(run);
+    S.resuming = p;
+    p.finally(() => { if (S.resuming === p) S.resuming = null; }).catch(() => {});
+    return p;
   }
 
   // 画面が隠れたら停止区間として記録し、戻ったら再開を試みる
   document.addEventListener('visibilitychange', async () => {
+    const op = ++S.op;
     if (!S.running) return;
     if (document.hidden) {
-      S.gaps.push({ from: Date.now(), to: null, reason: '画面が消えた・別アプリ' });
+      const last = S.gaps[S.gaps.length - 1];
+      if (!last || last.to) S.gaps.push({ from: Date.now(), to: null, reason: '画面が消えた・別アプリ' });
       stopCapture();
       saveSessionSoon(); render();
-    } else {
-      await keepAwake();
-      try { await resumeCapture(); }
-      catch (e) { if (S.running) $('smResume').style.display = ''; render(); }   // 自動で再開できない端末は「再開」ボタンで
+      return;
+    }
+    await keepAwake();
+    if (op !== S.op || !S.running || document.hidden) return;   // 待っている間に別の操作があった
+    try { await resumeCapture(); }
+    catch (e) {
+      if (e.superseded) return;                                   // 追い越された（失敗ではない）
+      if (op === S.op && S.running) $('smResume').style.display = '';   // 自動で再開できない端末は「再開」ボタンで
+      render();
     }
   });
 
@@ -385,7 +427,7 @@
   function renderBins() {
     const bin = parseInt($('smBin').value, 10) * 60000;
     if (!S.events.length) { $('smBins').innerHTML = ''; return; }
-    const hitsOf = e => (Array.isArray(e.hits) && e.hits.length ? e.hits : [e.t0]);
+    const hasHits = e => Array.isArray(e.hits) && e.hits.length > 0;
     const t0 = Math.floor(S.sessionStart / bin) * bin;
     const t1 = Math.max(S.running ? Date.now() : 0, ...S.events.map(e => e.t1));
     const cols = []; for (let t = t0; t <= t1; t += bin) cols.push(t);
@@ -395,10 +437,13 @@
     for (const e of evs) {
       if (!cnt.has(nm(e))) cnt.set(nm(e), new Map());
       const row = cnt.get(nm(e));
-      for (const h of hitsOf(e)) { const i = Math.floor((h - t0) / bin); row.set(i, (row.get(i) || 0) + 1); }
+      if (hasHits(e)) { for (const h of e.hits) { const i = Math.floor((h - t0) / bin); row.set(i, (row.get(i) || 0) + 1); } }
+      else row.set('unknown', (row.get('unknown') || 0) + (e.count || 1));   // 旧形式の記録は時間帯の内訳が分からない
     }
-    $('smBins').innerHTML = '<table><tr><th>種名</th>' + cols.map(c => `<th>${hm(c)}〜</th>`).join('') + '</tr>' +
-      [...cnt.entries()].map(([ja, row]) => `<tr><td>${esc(ja)}</td>` + cols.map((c, i) => `<td style="text-align:center">${row.get(i) || ''}</td>`).join('') + '</tr>').join('') + '</table>';
+    const anyUnknown = evs.some(e => !hasHits(e));
+    $('smBins').innerHTML = '<table><tr><th>種名</th>' + cols.map(c => `<th>${hm(c)}〜</th>`).join('') + (anyUnknown ? '<th>時間帯不明</th>' : '') + '</tr>' +
+      [...cnt.entries()].map(([ja, row]) => `<tr><td>${esc(ja)}</td>` + cols.map((c, i) => `<td style="text-align:center">${row.get(i) || ''}</td>`).join('') +
+        (anyUnknown ? `<td style="text-align:center">${row.get('unknown') || ''}</td>` : '') + '</tr>').join('') + '</table>';
   }
 
   // ---- 音声ファイル ----
@@ -483,21 +528,37 @@
   }
 
   // ---- 前回の調査（開き直したとき）----
+  // 前回の調査を読み込む。成功するまで「開始」は押せない（読めないまま全消去しないため）
   async function loadPrevious() {
-    const all = await sall('sessions');
-    if (!all.length) return;
-    const s = all.sort((a, b) => b.start - a.start)[0];
-    S.sessionId = s.id; S.sessionStart = s.start; S.events = s.events || []; S.gaps = s.gaps || [];
-    for (const e of S.events) e.closed = true;
-    $('smPrev').innerHTML = `<div style="padding:6px;background:#eef">前回の調査（${esc(new Date(s.start).toLocaleString())}・検出${S.events.length}件）を表示しています。
-      書き出し・判定ができます。 <button id="smClear">前回の調査を消す</button></div>`;
-    $('smClear').onclick = async () => {
-      if (!confirm('前回の調査の記録と音を消します。書き出しは済みましたか？')) return;
-      await sClearAll();
-      S.sessionId = null; S.sessionStart = null; S.events = []; S.gaps = [];
-      $('smPrev').innerHTML = ''; $('smList').innerHTML = ''; $('smBins').innerHTML = ''; $('smStats').innerHTML = '';
-    };
-    render();
+    S.restoreState = 'loading'; updateStartBtn();
+    let all;
+    try { all = await sall('sessions'); }
+    catch (err) {
+      S.restoreState = 'failed'; updateStartBtn();
+      $('smPrev').innerHTML = '<div style="padding:6px;background:#fdd">前回の調査を読み込めませんでした。新しい調査を始める前に読み込み直してください。 <button id="smRetry">読み込み直す</button></div>';
+      $('smRetry').onclick = () => loadPrevious().catch(() => {});
+      throw err;
+    }
+    if (S.running || S.starting) { S.restoreState = 'ok'; updateStartBtn(); return; }   // 念のため（開始後に遅れて届いた結果は使わない）
+    if (all.length) {
+      const s = all.sort((a, b) => b.start - a.start)[0];
+      S.sessionId = s.id; S.sessionStart = s.start; S.events = s.events || []; S.gaps = s.gaps || [];
+      for (const e of S.events) e.closed = true;
+      $('smPrev').innerHTML = `<div style="padding:6px;background:#eef">前回の調査（${esc(new Date(s.start).toLocaleString())}・検出${S.events.length}件）を表示しています。
+        書き出し・判定ができます。 <button id="smClear">前回の調査を消す</button></div>`;
+      $('smClear').onclick = async () => {
+        if (S.running || S.starting) return;
+        if (!confirm('前回の調査の記録と音を消します。書き出しは済みましたか？')) return;
+        await S.clipQueue;
+        await sClearAll();
+        S.sessionId = null; S.sessionStart = null; S.events = []; S.gaps = [];
+        $('smPrev').innerHTML = ''; $('smList').innerHTML = ''; $('smBins').innerHTML = ''; $('smStats').innerHTML = '';
+      };
+      render();
+    } else {
+      $('smPrev').innerHTML = '';
+    }
+    S.restoreState = 'ok'; updateStartBtn();
   }
 
   // ---- 画面部品 ----
@@ -506,7 +567,7 @@
     box.innerHTML = `
       <p style="font-size:0.9em">調査中ずっと聞いて判別し、鳥が聞こえた前後の音だけ残します。
       <b>画面を消したり別のアプリに切り替えると、その間は録音が止まります</b>（iPhoneの仕組み）。画面はつけたままにしてください。
-      人の声が入った部分の音は保存しません。結果は候補なので、聞き直して確かめてください。
+      AIが人の声を検出した区間を含む音は保存しません（検出漏れにより人の声が保存される場合があります）。結果は候補なので、聞き直して確かめてください。
       保持できる調査は1件だけです。新しく始める前に書き出してください。</p>
       <div>判定の基準 <select id="smThr"><option value="0.1">10%</option><option value="0.2">20%</option><option value="0.3" selected>30%</option><option value="0.5">50%</option><option value="0.7">70%</option></select>
         前後 <select id="smPad"><option>3</option><option selected>5</option><option>10</option></select>秒
@@ -520,13 +581,14 @@
       <div id="smBins"></div>`;
     $('smStart').onclick = () => start().catch(e => alert('開始できませんでした: ' + e));
     $('smStop').onclick = stop;
-    $('smResume').onclick = async () => { try { await resumeCapture(); } catch (e) { alert('再開できませんでした: ' + e); } };
+    $('smResume').onclick = async () => { S.op++; try { await resumeCapture(); } catch (e) { if (!e.superseded) alert('再開できませんでした: ' + e); } };
     $('smZip').onclick = () => exportZip().catch(e => alert('書き出しエラー: ' + e));
     $('smBin').onchange = renderBins;
     // 開始ボタンはAIの読み込み完了時（birdnet_test.html の onLoaded）に有効になる
     loadPrevious().catch(err => console.warn('前回の調査を読めませんでした', err));
+    if (S.modelReady) updateStartBtn();
   }
   // 検証用に内部を公開（画面からは使わない）
-  Object.assign(S, { handleWindow, onPcm, render, exportZip, zip, wav, initNames, queueFlush, pump, csvCell, saveSessionNow, loadPrevious });
+  Object.assign(S, { handleWindow, onPcm, render, exportZip, zip, wav, initNames, queueFlush, pump, csvCell, saveSessionNow, loadPrevious, setModelReady, start, stop, startCapture, resumeCapture });
   build();
 })();
