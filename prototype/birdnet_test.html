@@ -37,6 +37,24 @@
   <button id="btnRec" disabled>録音（10秒）</button>
 </div>
 <div id="result"></div>
+<div id="registerBox" style="display:none;margin-top:8px;padding:8px;background:#f6f6e8">
+  <b>この録音を手帳に教える</b>
+  <div id="quickPick" style="margin:4px 0"></div>
+  <input id="regName" list="nameList" placeholder="正解の種名" size="14">
+  <button id="btnReg">この種として登録</button>
+  <button id="btnRegNoise">鳥なし（雑音）として登録</button>
+  <datalist id="nameList"></datalist>
+  <div id="regMsg" style="font-size:0.9em;color:#363"></div>
+</div>
+
+<h2>手帳（教えた声）</h2>
+<p style="font-size:0.9em">同じ種を<b>5羽分以上、できれば別の場所で録った声</b>を教えると効きやすくなります（1羽分だけではほとんど効きません）。
+音声そのものは保存せず、声の特徴だけをこの端末に保存します。</p>
+<div id="nbSummary"></div>
+<div>
+  <button id="btnExport">手帳を書き出す</button>
+  <label>手帳を読み込む <input type="file" id="importInput" accept=".json,application/json"></label>
+</div>
 
 <h2>2. 答え合わせ（アプリ内の鳴き声188種）</h2>
 <div>
@@ -78,7 +96,7 @@ worker.onmessage = ({ data }) => {
   else if (data.message === 'predict_progress') {
     if (pending[data.id] && pending[data.id].onProgress) pending[data.id].onProgress(data.done, data.total);
   }
-  else if (data.message === 'predicted' || data.message === 'area') {
+  else if (data.message === 'predicted' || data.message === 'area' || data.message === 'embedded') {
     if (pending[data.id]) { pending[data.id].resolve(data); delete pending[data.id]; }
   }
 };
@@ -112,6 +130,8 @@ async function prepare() {
   hokkaidoIdx = new Set(ev.filter(e => e.sci && sciIndex[e.sci] !== undefined).map(e => sciIndex[e.sci]));
   // 正解表の和名を優先表示用に
   ev.forEach(e => { if (e.sci && sciIndex[e.sci] !== undefined) labels[sciIndex[e.sci]].appJa = e.ja; });
+  // 登録時の種名候補: アプリの北海道188種（BirdNETが知らない8種も含む）
+  $('nameList').innerHTML = ev.map(e => `<option value="${e.ja}">`).join('');
 }
 
 async function onLoaded(backend) {
@@ -163,21 +183,172 @@ function rankList(scores, { hokkaido, area }) {
 
 function nameOf(i) { const b = labels[i]; return b.appJa || b.ja; }
 
+// ---- 手帳（教えた声の指紋）----
+const NB_T0 = 0.6;          // 似ている度の基準（科博データで検証した値）
+const NB_KEEP_BIRD = 3;     // 種として登録するとき保存する区間数（鳥らしい順）
+const NB_KEEP_NOISE = 10;   // 雑音として登録するとき保存する区間数
+const NOISE = '鳥なし（雑音）';
+let nbEntries = [];         // {id, ja, kind:'bird'|'noise', date, embs:[Float32Array]}
+let lastRec = null;         // 直前に判別した録音 {frames:[{e,bird}], maxv, sec, ms}
+
+function l2(v) {
+  let s = 0; for (let i = 0; i < v.length; i++) s += v[i] * v[i];
+  s = Math.sqrt(s) || 1;
+  const o = new Float32Array(v.length); for (let i = 0; i < v.length; i++) o[i] = v[i] / s;
+  return o;
+}
+function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+
+function idb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('birdnet-notebook', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('entries', { keyPath: 'id' });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbAll() {
+  const db = await idb();
+  return new Promise((res, rej) => { const r = db.transaction('entries').objectStore('entries').getAll(); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+}
+async function idbPut(entry) {
+  const db = await idb();
+  return new Promise((res, rej) => { const tx = db.transaction('entries', 'readwrite'); tx.objectStore('entries').put(entry); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+}
+async function idbDelete(id) {
+  const db = await idb();
+  return new Promise((res, rej) => { const tx = db.transaction('entries', 'readwrite'); tx.objectStore('entries').delete(id); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+}
+async function loadNotebook() { nbEntries = await idbAll(); renderNotebook(); }
+
+// 区間ごとに手帳で一番近い登録を探し、種ごとの最大の近さを返す（一番近いのが「雑音」の区間は数えない）
+function notebookSims(frames) {
+  const sims = {};
+  if (!nbEntries.length) return sims;
+  for (const f of frames) {
+    let best = -1, bestEntry = null;
+    for (const en of nbEntries) for (const e of en.embs) { const s = dot(f.e, e); if (s > best) { best = s; bestEntry = en; } }
+    if (!bestEntry || bestEntry.kind === 'noise') continue;
+    if (!(bestEntry.ja in sims) || best > sims[bestEntry.ja]) sims[bestEntry.ja] = best;
+  }
+  return sims;
+}
+
+// BirdNETと手帳を合わせた候補一覧
+function combinedList(rec, opt) {
+  const byName = {};
+  for (const t of rankList(rec.maxv, opt)) {
+    const ja = nameOf(t.i);
+    if (!byName[ja] || t.s > byName[ja].bn) byName[ja] = { ja, bn: t.s, nb: 0, sim: null };
+  }
+  const sims = notebookSims(rec.frames);
+  for (const [ja, sim] of Object.entries(sims)) {
+    const nb = Math.max(0, Math.min(1, (sim - NB_T0) / (1 - NB_T0)));
+    if (!byName[ja]) byName[ja] = { ja, bn: 0, nb: 0, sim: null };
+    byName[ja].nb = nb; byName[ja].sim = sim;
+  }
+  return Object.values(byName).map(x => ({ ...x, score: Math.max(x.bn, x.nb) })).sort((a, b) => b.score - a.score);
+}
+
+function renderResult() {
+  if (!lastRec) return;
+  const opt = { hokkaido: $('optHokkaido').checked, area: $('optArea').checked };
+  const top = combinedList(lastRec, opt).slice(0, 10);
+  $('result').innerHTML = `<p>録音 ${lastRec.sec.toFixed(1)}秒 / 判定 ${(lastRec.ms / 1000).toFixed(1)}秒</p>` +
+    '<table><tr><th>順位</th><th>種名</th><th>確からしさ</th><th>根拠</th></tr>' +
+    top.map((t, k) => `<tr><td>${k + 1}</td><td>${t.ja}</td><td>${(t.score * 100).toFixed(1)}%</td><td>${t.nb > t.bn ? '手帳で一致（似ている度 ' + t.sim.toFixed(2) + '）' : 'BirdNET'}</td></tr>`).join('') +
+    '</table>';
+  $('quickPick').innerHTML = '正解をタップ: ' + top.slice(0, 3).map(t => `<button class="qp">${t.ja}</button>`).join('');
+  document.querySelectorAll('.qp').forEach(b => b.onclick = () => { $('regName').value = b.textContent; });
+  $('registerBox').style.display = '';
+  $('regMsg').textContent = '';
+}
+
 async function judge(arrayBuffer) {
   setStatus('判別中…');
   await updateArea();
   const { pcm, sec } = await decodeToPcm(arrayBuffer, 120);
   const t0 = performance.now();
-  const res = await ask({ message: 'predict', pcm }, [pcm.buffer]);
-  const ms = performance.now() - t0;
-  const opt = { hokkaido: $('optHokkaido').checked, area: $('optArea').checked };
-  const top = rankList(res.maxv, opt).slice(0, 10);
-  $('result').innerHTML = `<p>録音 ${sec.toFixed(1)}秒 / 判定 ${(ms / 1000).toFixed(1)}秒</p>` +
-    '<table><tr><th>順位</th><th>種名</th><th>確からしさ（区間の最大）</th><th>全体のまとめ値</th></tr>' +
-    top.map((t, k) => `<tr><td>${k + 1}</td><td>${nameOf(t.i)}</td><td>${(t.s * 100).toFixed(1)}%</td><td>${(res.pooled[t.i] * 100).toFixed(1)}%</td></tr>`).join('') +
-    '</table>';
+  const r = await ask({ message: 'embed', pcm }, [pcm.buffer]);
+  const frames = [], maxv = new Float32Array(r.C);
+  for (let f = 0; f < r.nFrames; f++) {
+    let bird = 0;
+    for (let c = 0; c < r.C; c++) { const v = r.scores[f * r.C + c]; if (v > bird) bird = v; if (v > maxv[c]) maxv[c] = v; }
+    frames.push({ e: l2(r.emb.subarray(f * r.D, (f + 1) * r.D)), bird });
+  }
+  lastRec = { frames, maxv, sec, ms: performance.now() - t0 };
+  renderResult();
   setStatus('判別完了');
 }
+
+async function register(ja, kind) {
+  if (!lastRec) return;
+  if (kind === 'bird' && !ja) { $('regMsg').textContent = '種名を入れてください'; return; }
+  const frames = kind === 'noise'
+    ? lastRec.frames.slice(0, NB_KEEP_NOISE)
+    : lastRec.frames.slice().sort((a, b) => b.bird - a.bird).slice(0, NB_KEEP_BIRD);
+  const entry = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 8), ja: kind === 'noise' ? NOISE : ja, kind, date: new Date().toISOString(), embs: frames.map(f => f.e) };
+  await idbPut(entry);
+  nbEntries.push(entry);
+  const n = nbEntries.filter(e => e.ja === entry.ja).length;
+  $('regMsg').textContent = `「${entry.ja}」として登録しました（この種は${n}件目）`;
+  renderNotebook();
+  renderResult();
+}
+
+function renderNotebook() {
+  const groups = {};
+  for (const e of nbEntries) (groups[e.ja] = groups[e.ja] || []).push(e);
+  const names = Object.keys(groups).sort((a, b) => (a === NOISE) - (b === NOISE) || a.localeCompare(b, 'ja'));
+  if (!names.length) { $('nbSummary').innerHTML = '<p>まだ何も登録されていません。</p>'; return; }
+  $('nbSummary').innerHTML = '<table><tr><th>種名</th><th>件数</th><th>登録日時（×で消す）</th></tr>' +
+    names.map(ja => {
+      const es = groups[ja].sort((a, b) => a.date.localeCompare(b.date));
+      const warn = ja !== NOISE && es.length < 5 ? '（5件未満）' : '';
+      return `<tr><td>${ja}</td><td>${es.length}${warn}</td><td>` +
+        es.map(e => `${e.date.slice(0, 16).replace('T', ' ')} <button class="nbDel" data-id="${e.id}">×</button>`).join('<br>') + '</td></tr>';
+    }).join('') + '</table>';
+  document.querySelectorAll('.nbDel').forEach(b => b.onclick = async () => {
+    if (!confirm('この登録を消しますか？')) return;
+    await idbDelete(b.dataset.id);
+    nbEntries = nbEntries.filter(e => e.id !== b.dataset.id);
+    renderNotebook(); renderResult();
+  });
+}
+
+function f32ToB64(a) { const u = new Uint8Array(a.buffer, a.byteOffset, a.byteLength); let s = ''; for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode.apply(null, u.subarray(i, i + 8192)); return btoa(s); }
+function b64ToF32(b) { const s = atob(b); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return new Float32Array(u.buffer); }
+
+$('btnReg').onclick = () => register($('regName').value.trim(), 'bird').catch(err => $('regMsg').textContent = 'エラー: ' + err);
+$('btnRegNoise').onclick = () => register(null, 'noise').catch(err => $('regMsg').textContent = 'エラー: ' + err);
+$('optHokkaido').onchange = renderResult;
+$('optArea').onchange = async () => { await updateArea(); renderResult(); };
+
+$('btnExport').onclick = () => {
+  const data = { format: 'birdnet-notebook', version: 1, model: 'BirdNET v2.4 GLOBAL_AVG_POOL(1024)', exported: new Date().toISOString(),
+    entries: nbEntries.map(e => ({ id: e.id, ja: e.ja, kind: e.kind, date: e.date, embs: e.embs.map(f32ToB64) })) };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  a.download = 'birdnet_notebook_' + new Date().toISOString().slice(0, 10) + '.json'; a.click();
+};
+
+$('importInput').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    if (data.format !== 'birdnet-notebook') throw new Error('手帳のファイルではありません');
+    const have = new Set(nbEntries.map(x => x.id));
+    let added = 0;
+    for (const x of data.entries) {
+      if (have.has(x.id)) continue;
+      const entry = { id: x.id, ja: x.ja, kind: x.kind, date: x.date, embs: x.embs.map(b64ToF32) };
+      await idbPut(entry); nbEntries.push(entry); added++;
+    }
+    renderNotebook(); renderResult();
+    alert(`${added}件を読み込みました（重複${data.entries.length - added}件は飛ばしました）`);
+  } catch (err) { alert('読み込みエラー: ' + err.message); }
+  e.target.value = '';
+};
 
 $('fileInput').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
@@ -285,6 +456,7 @@ $('btnCsv').onclick = () => {
 
 $('date').valueAsDate = new Date();
 const ready = prepare().catch(err => setStatus('準備エラー: ' + err));
+loadNotebook().catch(err => { $('nbSummary').textContent = '手帳を読み込めませんでした: ' + err; });
 
 // ---- 圏外対策（AI一式をスマホに保存）----
 async function checkOffline() {

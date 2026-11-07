@@ -22,6 +22,7 @@ const BATCH_FRAMES = 8;        // 一度にAIへ渡す3秒区間の数（メモ�
 const POOL_ALPHA = 5.0;        // 区間をまとめる時の重み（公式と同じ）
 
 let birdModel = null;
+let embedModel = null;   // 「声の指紋」（最終判定の直前の数値の組）と判定結果を同時に出す
 let areaModel = null;
 
 // ---- 以下2つは公式コードそのまま（音声→スペクトログラム変換） ----
@@ -156,6 +157,10 @@ async function init() {
       onProgress: p => postMessage({ message: 'progress', progress: Math.round(p * 90) })
     });
     tf.tidy(() => { birdModel.predict(tf.zeros([1, WINDOW_SAMPLES])); });
+    embedModel = tf.model({
+      inputs: birdModel.inputs,
+      outputs: [birdModel.getLayer('GLOBAL_AVG_POOL').output, birdModel.outputs[0]]
+    });
     try {
       areaModel = await tf.loadGraphModel(AREA_MODEL_PATH);
     } catch (e) {
@@ -170,6 +175,7 @@ async function init() {
 onmessage = async ({ data }) => {
   try {
     if (data.message === 'predict') await handlePredict(data);
+    else if (data.message === 'embed') await handleEmbed(data);
     else if (data.message === 'area') await handleArea(data);
   } catch (e) {
     postMessage({ message: 'error', id: data.id, text: String(e && e.stack || e) });
@@ -208,6 +214,36 @@ async function handlePredict({ id, pcm, hopSec = 1.5 }) {
   const pooled = new Float32Array(sumExp.length);
   for (let i = 0; i < sumExp.length; i++) pooled[i] = Math.log(sumExp[i] / nFrames) / POOL_ALPHA;
   postMessage({ message: 'predicted', id, pooled, maxv, nFrames }, [pooled.buffer, maxv.buffer]);
+}
+
+// 3秒区間ごとの「声の指紋」(emb)・判定結果(scores)・音の大きさ(rms)をそのまま返す（手帳機能用）
+async function handleEmbed({ id, pcm, hopSec = 1.5 }) {
+  const hop = Math.round(hopSec * SAMPLE_RATE);
+  const total = pcm.length;
+  const nFrames = Math.max(1, Math.ceil(Math.max(0, total - WINDOW_SAMPLES) / hop) + 1);
+  let emb = null, scores = null, D = 0, C = 0;
+  const rms = new Float32Array(nFrames);
+  for (let f0 = 0; f0 < nFrames; f0 += BATCH_FRAMES) {
+    const n = Math.min(BATCH_FRAMES, nFrames - f0);
+    const framed = new Float32Array(n * WINDOW_SAMPLES);
+    for (let j = 0; j < n; j++) {
+      const start = (f0 + j) * hop;
+      const seg = pcm.subarray(start, Math.min(start + WINDOW_SAMPLES, total));
+      framed.set(seg, j * WINDOW_SAMPLES);
+      let s = 0; for (let k = 0; k < seg.length; k++) s += seg[k] * seg[k];
+      rms[f0 + j] = Math.sqrt(s / WINDOW_SAMPLES);
+    }
+    const x = tf.tensor2d(framed, [n, WINDOW_SAMPLES]);
+    const [e, y] = embedModel.predict(x);
+    const ea = await e.data(), ya = await y.data();
+    x.dispose(); e.dispose(); y.dispose();
+    if (!emb) {
+      D = ea.length / n; C = ya.length / n;
+      emb = new Float32Array(nFrames * D); scores = new Float32Array(nFrames * C);
+    }
+    emb.set(ea, f0 * D); scores.set(ya, f0 * C);
+  }
+  postMessage({ message: 'embedded', id, emb, scores, rms, D, C, nFrames }, [emb.buffer, scores.buffer, rms.buffer]);
 }
 
 // 緯度・経度・週（1〜48）から、その場所・時期にいそうな度合いを返す

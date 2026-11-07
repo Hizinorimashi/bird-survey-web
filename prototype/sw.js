@@ -1,6 +1,6 @@
 // 鳴き声AI判別 試作ページ専用の圏外対策（このフォルダ内だけで働く）
 // 保存領域名は本体アプリ(sw.js)の掃除対象 "bird-survey-*" と重ならない名前にする
-const CACHE = 'birdnet-proto-v2';
+const CACHE = 'birdnet-proto-v3';
 
 // AI本体の置き場（birdnet-worker.js の MODEL_BASE と同じ規則）
 const MODEL_BASE = self.location.hostname.endsWith('github.io')
