@@ -419,7 +419,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v237（2026-11-08 地図の上の戻るは調査の画面・見出しの戻るは入力を閉じる／スマホの移動・描くを右下へ／保存の帯の下の余白を詰める）';
+const APP_VERSION = 'v238（2026-11-08 入力画面の経路を滑らかに見せる（保存する線はそのまま））';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -6468,7 +6468,7 @@ function pfRedraw(){
         if(sg.t==='F' && sg.pts && sg.pts.length>1)
           (segShape(sg)===SHAPE_AREA && sg.pts.length>2
             ? L.polygon(sg.pts,{color:'#8a8a8a',weight:2,opacity:.35,fillColor:'#8a8a8a',fillOpacity:.12,interactive:false})
-            : L.polyline(sg.pts,{color:'#8a8a8a',weight:3,opacity:.35,interactive:false})).addTo(pfLayer);
+            : L.polyline(smoothPath(sg.pts),{color:'#8a8a8a',weight:3,opacity:.35,interactive:false})).addTo(pfLayer);
         if(sg.t==='P' && sg.pt)
           L.circleMarker(sg.pt,{radius:6,color:'#fff',weight:1,fillColor:'#8a8a8a',fillOpacity:.45,interactive:false}).addTo(pfLayer);
       }catch(e){}
@@ -6537,14 +6537,19 @@ function pfRedraw(){
         const lineCol=selL?'#ffd479':'#e0a030';
         // 線・面そのものも**タップを遮らない**。押しても何も起きない飾りなのに、
         // 上を狙ったタップが地図に届かず、描き足せなくなる（2026-08-13 監査）
-        if(seg.pts.length>1) L.polyline(seg.pts,{color:lineCol,weight:selL?7:4,opacity:.95,interactive:false}).addTo(pfLayer);
+        // 線は**滑らかにして見せる**（フリーハンドのガタガタを目立たせない。v238・2026-11-08 ユーザー）。
+        // 保存する線（seg.pts）は変えない。地図画面・書き出しの smoothPath と同じ。始点・終点は動かないので印はそのまま。
+        // 直そうと選んでいる線は、元の形も細い点線で重ねる（どこに点があるか分かるように）
+        const disp=seg.pts.length>2 ? smoothPath(seg.pts) : seg.pts;
+        if(seg.pts.length>1) L.polyline(disp,{color:lineCol,weight:selL?7:4,opacity:.95,interactive:false}).addTo(pfLayer);
+        if(selL && seg.pts.length>2) L.polyline(seg.pts,{color:'#ffffff',weight:1.5,opacity:.8,dashArray:'3,4',interactive:false}).addTo(pfLayer);
         (seg.soars||[]).forEach((sp,k)=>drawSoarSpot(pfLayer, sp, '#9b59b6',
           !!(SCREENS._soarSel && SCREENS._soarSel.seg===seg && SCREENS._soarSel.k===k)));
         // 向きは**矢印**で示す。「始」「終」の丸い印はやめた（2026-08-13 指摘）。
         // 続けて描いたLは前の終点から始まるので、終と始の印が近くに並び、
         // 「この間は何？」と見えてしまっていた。報告書の結果図も矢印と点だけ
         if(seg.pts.length>1)
-          flightArrowPts(seg.pts).forEach(a=>
+          flightArrowPts(disp).forEach(a=>
             L.marker(a.p,{icon:flightArrowIcon(a.b,lineCol), interactive:false, rotateWithView:true}).addTo(pfLayer));
         // 線が2本以上あるときは、L1・L2… を小さく出して「直す」チップと見比べられるようにする
         // 前の線から引き継いだ点は「自分で描き始めた場所」ではないので、
@@ -6716,6 +6721,9 @@ function pfLongPress(cp){
       const ps=(sg.pts||[]).map(C); if(!ps.length) return;
       let dmin=Math.hypot(cp.x-ps[0].x, cp.y-ps[0].y);
       for(let k=0;k+1<ps.length;k++) dmin=Math.min(dmin, drawSegDist(cp, ps[k], ps[k+1]));
+      // 線は滑らかにして見せている（v238）。見えている線の上を押しても選べるよう、滑らかな線でも測る（v238 監査 Major）
+      if(segShape(sg)!==SHAPE_AREA && (sg.pts||[]).length>2){ const sp=smoothPath(sg.pts).map(C);
+        for(let k=0;k+1<sp.length;k++) dmin=Math.min(dmin, drawSegDist(cp, sp[k], sp[k+1])); }
       if(segShape(sg)===SHAPE_AREA && ps.length>2) dmin=Math.min(dmin, drawSegDist(cp, ps[ps.length-1], ps[0]));
       take(i, dmin);
     });
@@ -6755,7 +6763,8 @@ function soarPlaceStart(){
 // 線の上のいちばん近い点（画面上の距離）。遠ければ null
 function soarNearestOnLine(sg, cp){
   if(!mapObj || !sg.pts || sg.pts.length<2) return null;
-  const ps=sg.pts.map(p=>mapObj.latLngToContainerPoint(L.latLng(p[0],p[1])));
+  // 見えている（滑らかにした）線の上に置く。元の線に寄せると、表示の線から ◎ が浮く（v238 監査 Major）
+  const ps=(sg.pts.length>2 ? smoothPath(sg.pts) : sg.pts).map(p=>mapObj.latLngToContainerPoint(L.latLng(p[0],p[1])));
   let best=null, bd=Infinity;
   for(let k=0;k+1<ps.length;k++){
     const a=ps[k], b=ps[k+1], dx=b.x-a.x, dy=b.y-a.y, l2=dx*dx+dy*dy;
