@@ -169,6 +169,21 @@
   .aipop-b button:disabled{opacity:.5; font-size:11px;}
   body.tab-obs.tab-left:not(.tab-collapsed) .aifab, body.tab-obs.tab-left:not(.tab-collapsed) #aiPops{left:auto; right:8px;}
   .pf-pan-row{display:flex; gap:6px; align-items:center;}
+  /* ポイント（鳥の記録） */
+  body:not(.tab-obs) #obsPosMap .pf-btn{width:36px; height:36px; font-size:15px;}   /* スマホの小さな地図では4つ並べて「＋」に重ねない */
+  body:not(.tab-obs) #obsPosMap .leaflet-top.leaflet-left > .leaflet-control > div[style*="flex-direction:column"]{gap:5px !important;}
+  .pf-pt{font-size:14px !important;}
+  #ptBox{position:fixed; left:50%; transform:translateX(-50%); top:calc(64px + env(safe-area-inset-top, 0px)); z-index:1220;
+    width:min(360px, 92vw); background:var(--panel); border:1px solid #e8b04b; border-radius:12px; padding:10px; box-shadow:0 6px 20px rgba(0,0,0,.5);}
+  #ptBox .pt-h{font-weight:700; font-size:14px; margin-bottom:6px;}
+  #ptBox .pt-row{display:flex; gap:6px; align-items:center; margin-top:6px;}
+  #ptBox #ptSp{flex:1; min-width:0;}
+  #ptBox #ptCnt{width:70px; flex:none;}
+  #ptBox .btn{flex:1; min-height:44px;}
+  .pt-mark{display:flex; align-items:center; gap:3px; white-space:nowrap; pointer-events:none;}
+  .pt-dot{width:10px; height:10px; border-radius:50%; background:#e8b04b; border:2px solid #fff; flex:none;}
+  .pt-lab{font-size:11px; font-weight:700; color:#111; background:rgba(255,255,255,.85); border-radius:4px; padding:0 3px;}
+  body.tab-obs .pf-pan-row{flex-direction:column; align-items:flex-end;}   /* タブレットでは縦に並べる（v232） */
   .pf-pan-row > .leaflet-control, .pf-pan-row > button{margin:0 !important; float:none !important;}
   .aipop-ft{display:flex; gap:6px; justify-content:flex-end; padding-top:6px; border-top:1px solid var(--line);}
   /* タブレットの観察入力（地図いっぱい）以外では、見出しの右端に置く（スマホで入力欄にかからないように） */
@@ -242,6 +257,7 @@
   body.no-back #tabBack{display:none;}   /* 観察の編集では地図の上の戻るも出さない */
   body.tab-collapsed.tab-left #tabBar{left:auto; right:16px;}
   body.tab-obs #tabMapLayer .leaflet-top.leaflet-left{top:56px;}
+  body.tab-obs #tabMapLayer .leaflet-top.leaflet-right{top:56px;}   /* 地図の種類ボタンが「入力を開く」帯に隠れないように（v232） */
   body:not(.tab-collapsed) #tabBar{background:var(--panel); color:var(--fg);}
   /* タブレット表示ではフリーハンドで描けるので「くるくる」は出さない（2026-11-07 実機での要望） */
   body.tab-obs #flSpiralWrap{display:none !important;}
@@ -352,7 +368,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v231（2026-11-08 ✋ 移動（カーソル）ボタン：選んだボタンのときだけ P・L・N を置ける／開いたときは移動）';
+const APP_VERSION = 'v232（2026-11-08 ポイント（鳥の記録）／いまの音を残す／地図の種類ボタンの重なり／移動と描くを縦に／タブレット表示の切り替え／まとめて記録を削除）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1449,7 +1465,7 @@ const DISCARDED=new Set();
 // 未保存の入力を守る画面の一覧。ここに入れ忘れると、書きかけが警告なく消える
 // （まとめて記録・仮説・検証結果・振り返りが対象外になっていた＝2026-08-04の全体監査 Critical）
 const GUARD_SCREENS=['obsEdit','noteEdit','flightEdit','routeEdit',
-  'obsBatch','hypEdit','hypVerify','surveyEnd'];
+  'hypEdit','hypVerify','surveyEnd'];
 // 入力があった時点で「いまが保護対象の画面か」を見る。画面ごとに見張りを張り替えないための判定
 function markDirtyIfGuarded(){ if(SCREENS._flLoading) return;
   const cur=STACK[STACK.length-1]||{};
@@ -1465,6 +1481,7 @@ function hasUnsaved(){
   if(typeof recBusy==='function' && recBusy()) return true;
   if(typeof mediaBusy==='function' && mediaBusy()) return true;
   if(REC || (typeof VREC!=='undefined' && VREC) || SCREENS._dirty) return true;
+  if(typeof ptHasInput==='function' && ptHasInput()) return true;   // ポイントの小窓に入力中の鳥（v232 監査 Major）
   const cur=STACK[STACK.length-1]||{};
   // 複数個体では、**開いている個体もふくめて全部**を見る。
   // 開いている分を外すと、個体Aを書きかけ→Bを足す→Aに戻る、で見落とす（監査5巡目 Critical）
@@ -1481,6 +1498,7 @@ window.addEventListener('beforeunload', e=>{
 });
 function leaveGuardOk(){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY){ toast('保存の処理中です。少し待ってください'); return false; }
+  if(typeof ptCloseOk==='function' && !ptCloseOk()) return false;   // ポイントの小窓に入力中の鳥がある
   const cur=STACK[STACK.length-1]||{};
   const editScreen=(GUARD_SCREENS.indexOf(cur.name)>=0
     ||(cur.name==='surveyEdit' && SCREENS._editing));   // 既存調査の途中編集も保護（新規は下書き自動保存があるので対象外）
@@ -1542,7 +1560,7 @@ function leaveGuardOk(){
 }
 // 閲覧専用のとき入れない画面（入力できるのに保存できない画面を作らない）
 const RO_BLOCKED_SCREENS=['obsEdit','flightEdit','surveyEdit','noteEdit','routeEdit','hypEdit',
-  'importHub','cloud','obsBatch','hypVerify','surveyEnd','offlineMap','repair'];
+  'importHub','cloud','hypVerify','surveyEnd','offlineMap','repair'];
 // 閲覧の価値がある画面（資料・図鑑・ごみ箱）は開けるが、変更のボタンは出さない
 function roBtn(html){ return window.READ_ONLY ? '' : html; }
 function nav(name, arg){
@@ -1560,6 +1578,7 @@ let _navGen=0;   // 画面世代。マイク許可待ち中に画面が変わっ
 function render(){
   _navGen++;
   if(REC) recAbort(); // 画面を離れたら録音を中断（保存はしない。離脱前の確認は leaveGuardOk が担当）
+  if(typeof ptClose==='function') ptClose();   // ポイントの小窓（#main の外）を片付ける
   // 鳴き声AIの聞き取りはここでは止めない（画面を切り替えても聞き続ける）。対象の調査かどうかは最後の aiOnRender で見る
   if(SCREENS._birdKeep!==true){   // 個体切替などの内部再描画では、切替先個体の書きかけ・仮記録の印を壊さない
     SCREENS._dirty=false; SCREENS._ghost=null;   // 新しい画面は未編集状態から始まる（編集画面の操作でtrueになる）
@@ -2314,14 +2333,14 @@ SCREENS.survey = (u)=>{
     <div class="actions">
       <button type="button" class="act sm primary wide" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🐦</span>観察を追加</button>
       ${roBtn(`<button type="button" class="act sm wide" id="quickRecBtn" onclick="quickRec('${u}')"><span class="ic">🎤</span>すぐ録音（種名はあとで）</button>`)}
-      <button type="button" class="act sm" onclick="nav('obsBatch','${u}')"><span class="ic">🐦🐦</span>まとめて記録</button>
       <button type="button" class="act sm" onclick="nav('map','${u}')"><span class="ic">🗺</span>地図</button>
     </div>
     <details class="fold" id="foldMoreActions" ${SCREENS._actOpen?'open':''} ontoggle="SCREENS._actOpen=this.open">
       <summary><span class="lab" style="display:inline; margin:0;">その他の操作</span>
-        <span class="small muted">聞こえた鳥・経路まとめ・ルート・メモ・仮説・集計・調査情報・終了</span></summary>
+        <span class="small muted">聞こえた鳥・タブレット表示・経路まとめ・ルート・メモ・仮説・集計・調査情報・終了</span></summary>
       <div class="actions" style="margin:0;">
         <button type="button" class="act sm" onclick="nav('aiList','${u}')"><span class="ic">🐦</span>聞こえた鳥</button>
+        <button type="button" class="act sm" id="svTabletBtn" onclick="tabletSet(!tabletOn()); this.innerHTML='<span class=&quot;ic&quot;>📱</span>タブレット表示：'+(tabletOn()?'オン':'オフ')"><span class="ic">📱</span>タブレット表示：${tabletOn()?'オン':'オフ'}</button>
         <button type="button" class="act sm" onclick="nav('flightList','${u}')"><span class="ic">🛩</span>経路まとめ</button>
         <button type="button" class="act sm" onclick="nav('routeEdit','${u}')"><span class="ic">🧭</span>調査ルート</button>
         <button type="button" class="act sm" onclick="nav('noteEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">📝</span>メモ</button>
@@ -2361,7 +2380,6 @@ SCREENS.survey = (u)=>{
         <button class="btn" onclick="nav('summary','${u}')">📊 集計</button>
         <button class="btn" onclick="nav('hypotheses','${u}')">💡 仮説・検証</button>
         <button class="btn" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))">🐦 観察を追加</button>
-        <button class="btn" onclick="nav('obsBatch','${u}')">🐦🐦 まとめて記録</button>
         <button class="btn" onclick="nav('flightList','${u}')">🛩 飛翔経路まとめ</button>
         <button class="btn" onclick="nav('routeEdit','${u}')">🧭 調査ルート</button>
         ${(s.route&&s.route.length)?roBtn(`<button class="btn" onclick="newSurveyFromRoute('${u}')">🧭 このルートで新規調査</button>`):''}
@@ -2936,7 +2954,7 @@ SCREENS.obsEdit = (argStr)=>{
       // 記録モードは毎回「止まっている」から始める（前の画面の経路を持ち越さない）
       // 地図の状態は毎回まっさらから始める（前の画面の内容を持ち越さない）
       PF_MODE='P'; PF_SEGS=[]; PF_NEWLINE=true; PF_SPIRAL=false; flightPath=[]; flightLayer=null; pfLayer=null;
-      PF_PAN=true;   // 開いたときは「✋ 移動」（地図を動かすだけ）。置くときは P・L・N を押す（2026-11-08 ユーザー決定）
+      PF_PAN=true; PF_PT=false;   // 開いたときは「✋ 移動」（地図を動かすだけ）。置くときは P・L・N を押す（2026-11-08 ユーザー決定）
       PF_NEST=null; PF_NEST_ID=nestId(o); PERCH_IDX=0; PF_SEL=-1;
       SCREENS._flSeg=null; PF_HIST=[]; PF_SEQ=0;
       // 「保存して続けて」で位置を引き継いだときは、その位置を守る（空のまま引き継いだ場合も）
@@ -4235,6 +4253,7 @@ function birdStash(){
 }
 function birdBusy(){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY){ toast('保存の処理中です。少し待ってください'); return true; }
+  if(typeof ptCloseOk==='function' && !ptCloseOk()) return true;   // ポイントの小窓に入力中の鳥がある（取り消したら留まる）
   if(typeof recBusy==='function' && recBusy()){ toast('録音を停止してから操作してください'); return true; }
   if(typeof mediaBusy==='function' && mediaBusy()){ toast('写真・動画の取り込みが終わってから操作してください'); return true; }
   return false;
@@ -4244,7 +4263,7 @@ function birdSwitch(i){
   if(birdBusy()) return;
   birdStash();
   BIRD_IDX=i;
-  PF_PAN=true;   // 切り替えた個体も「✋ 移動」から始める（v231 監査）
+  PF_PAN=true; PF_PT=false;   // 切り替えた個体も「✋ 移動」から始める（v231 監査）
   SCREENS._birdKeep=true;
   render();
 }
@@ -4253,7 +4272,7 @@ function birdAdd(){
   birdStash();
   BIRDS.push(newBird());
   BIRD_IDX=BIRDS.length-1;
-  PF_PAN=true;   // 足した個体も「✋ 移動」から
+  PF_PAN=true; PF_PT=false;   // 足した個体も「✋ 移動」から
   SCREENS._birdKeep=true;
   render();
   SCREENS._dirty=false;   // 追加したばかりの個体はまだ書きかけではない
@@ -4276,7 +4295,7 @@ function birdDrop(){
   if(!keptRealD && b.st && b.st.obs && !b.st.obsEditing) DISCARDED.add(b.st.obs.uuid);   // 正式化された記録は名簿に入れない
   BIRDS.splice(BIRD_IDX,1);
   if(BIRD_IDX>=BIRDS.length) BIRD_IDX=BIRDS.length-1;
-  PF_PAN=true;   // 残った個体も「✋ 移動」から
+  PF_PAN=true; PF_PT=false;   // 残った個体も「✋ 移動」から
   SCREENS._birdKeep=true;
   render();
   SCREENS._dirty=!!CUR().dirty;
@@ -4286,7 +4305,7 @@ function birdDrop(){
 function birdAfterSave(u2, add, flU){
   if(!add && BIRDS.length<=1) return false;
   if(typeof spiralReset==='function') spiralReset();   // 押している状態を次の個体へ持ち越さない
-  PF_PAN=true;   // 保存後に読み直す・次の個体も「✋ 移動」から
+  PF_PAN=true; PF_PT=false;   // 保存後に読み直す・次の個体も「✋ 移動」から
   const nb=newBird();
   const b=CUR();
   b.dirty=false; b.form=null; b.st=nb.st; b.map=nb.map; b.media=nb.media;
@@ -4350,6 +4369,7 @@ function nestFoldSync(){
   d.style.display=show?'':'none';
 }
 function pfSet(mode){
+  if(PF_PT && typeof ptCloseOk==='function'){ if(!ptCloseOk()) return; ptClose(); }
   // L を押し直したときは「前の L の終点から続ける／離して始める」を切り替える。
   // 同じ鳥を追っている間は前の終わりから続けたいことがほとんどだが、
   // 見失って出直したときは離して始めたい（2026-08-13 実機で使っての要望）
@@ -4364,6 +4384,7 @@ function pfSet(mode){
   PF_NEWLINE=true; PF_STROKE_SEG=null;   // なぞった線を入力の対象にするのもここまで
   PF_MODE=mode;
   PF_PAN=false;   // P・L・N を押したら、そのボタンで置ける
+  PF_PT=false;
   PF_SEL=-1;   // モードを選び直したら「新しく落とす」に戻す
   if(typeof segChips==='function') segChips();
   pfBtnSync();
@@ -4373,10 +4394,11 @@ function pfSet(mode){
    長押しで選んで直す操作は使える（選んでいる間のタップは、選んだものを動かす・描き足す）。2026-11-08 ユーザー要望 */
 let PF_PAN=true;
 function pfPan(){
+  if(PF_PT && typeof ptCloseOk==='function'){ if(!ptCloseOk()) return; ptClose(); }
   if(typeof spiralReset==='function') spiralReset();
   if(typeof drawIsOn==='function' && drawIsOn()) drawSet(false);
   if(typeof perchStore==='function') perchStore();
-  PF_PAN=true; PF_SEL=-1; PF_NEWLINE=true; PF_STROKE_SEG=null;
+  PF_PAN=true; PF_PT=false; PF_SEL=-1; PF_NEWLINE=true; PF_STROKE_SEG=null;
   SCREENS._soarSel=null; SCREENS._soarPlace=false;
   if(typeof segChips==='function') segChips();
   pfBtnSync();
@@ -4384,13 +4406,120 @@ function pfPan(){
 }
 // 地図のボタンの点灯: カーソルのときは P・L・N を消灯
 function pfBtnSync(){
-  ['P','F','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', !PF_PAN && PF_MODE===m); });
+  ['P','F','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', !PF_PAN && !PF_PT && PF_MODE===m); });
   const c=$('#pfPan'); if(c) c.classList.toggle('on', !!PF_PAN);
+  const t=$('#pfPt'); if(t) t.classList.toggle('on', !!PF_PT);
   if(typeof spiralInfo==='function') spiralInfo();   // 「くるくる」の出し入れ
   if(typeof pfNewLineSync==='function') pfNewLineSync();   // 「＋ 新しいL」の出し入れ
 }
 // カーソルのとき、押しても置かない（選んでいるものがあるときは置ける＝動かす・描き足す）
-function pfPanBlocks(){ return !!PF_PAN && PF_SEL===-1; }
+// 「鳥」（ポイント）のときも、P・L・N の印・線は置かない（地図を押すとポイントの小窓になる）
+function pfPanBlocks(){ return (!!PF_PAN || !!PF_PT) && PF_SEL===-1; }
+/* ポイント（鳥の記録）。見つけた鳥（詳しく追わない）を地図で押して、種名と個体数だけその場で1件ずつ保存する（v232・2026-11-08 ユーザー要望）。
+   決まり（計画: tasks/todo.md「v232」と補足。Codex 計画レビュー済み）:
+   - いま開いている観察の書きかけ・複数個体・添付・未保存の印・離脱確認・↶ には一切触れない（専用の入力状態と保存処理）
+   - PF_MODE は P/F/N のまま、別の印 PF_PT を持つ。PF_PAN と同時に true にしない（切り替えは pfSet・pfPan・ptSet に集約）
+   - 記録には source:'point' を付け、地図の印は毎回 DB から描く（再読み込み・同期・削除に追従） */
+let PF_PT=false;
+let PT_CUR=null;     // 小窓が開いているときの「押した場所・時刻・その時点の新しい GPS・調査」
+let PT_BUSY=false;   // 保存中（連打で二重に保存しない）
+let ptLayer=null, ptTmp=null;
+function ptSet(){
+  if(typeof spiralReset==='function') spiralReset();
+  if(typeof drawIsOn==='function' && drawIsOn()) drawSet(false);
+  if(typeof perchStore==='function') perchStore();
+  PF_PT=true; PF_PAN=false; PF_SEL=-1; PF_NEWLINE=true; PF_STROKE_SEG=null;
+  SCREENS._soarSel=null; SCREENS._soarPlace=false;
+  if(typeof segChips==='function') segChips();
+  pfBtnSync();
+  pfInfo(); pfSyncFlightFields(); nestFoldSync();
+}
+function ptHasInput(){ const i=document.getElementById('ptSp'); return !!(PT_CUR && i && String(i.value||'').trim()); }
+// 小窓を閉じてよいか（入力が残っていれば確かめる。取り消したら閉じない）
+function ptCloseOk(){ return !ptHasInput() || confirm('ポイントに入力中の鳥があります。捨ててよいですか？'); }
+function ptClose(){
+  PT_CUR=null;
+  const b=document.getElementById('ptBox'); if(b) b.remove();
+  if(ptTmp && mapObj){ try{ mapObj.removeLayer(ptTmp); }catch(e){} } ptTmp=null;
+}
+// 地図を押したとき（指・ペン・十字の「＋」）。pfDrop の先頭から呼ぶ
+function ptOpen(lat, lon){
+  if(!writeAllowed()) return;
+  if(PT_CUR && ptHasInput() && !confirm('入力中の鳥を捨てて、ここに置き直しますか？')) return;
+  const sv=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
+  const fx=freshFix();
+  PT_CUR={ lat, lon, time:nowISO(), sv, fix: fx ? { lat:fx.lat, lon:fx.lon, acc:fx.acc } : null };
+  if(ptTmp && mapObj){ try{ mapObj.removeLayer(ptTmp); }catch(e){} }
+  try{ ptTmp=L.marker([lat,lon], { interactive:false, icon:L.divIcon({ className:'', iconSize:[18,18], iconAnchor:[9,9],
+    html:'<div style="width:18px;height:18px;border-radius:50%;background:#e8b04b;border:2px solid #fff;box-shadow:0 0 0 2px #e8b04b88;"></div>' }) }).addTo(mapObj); }catch(e){ ptTmp=null; }
+  let box=document.getElementById('ptBox');
+  const keep=box ? { sp:(document.getElementById('ptSp')||{}).value||'', n:(document.getElementById('ptCnt')||{}).value||'1' } : null;
+  if(!box){
+    box=document.createElement('div'); box.id='ptBox';
+    // 画面の上の方に固定する（キーボードが出ても「追加」「やめる」が隠れないように）。地図の操作には伝えない
+    box.innerHTML=`<div class="pt-h">🐦 ポイント（鳥の記録）</div>
+      <datalist id="ptDatalist">${SPECIES.map(sp=>`<option value="${esc(sp.japanese_name)}"></option>`).join('')}</datalist>
+      <div class="pt-row"><input id="ptSp" list="ptDatalist" autocomplete="off" placeholder="種名（和名）" enterkeyhint="done">
+        <input id="ptCnt" type="number" inputmode="numeric" min="1" step="1" value="1" aria-label="個体数"><span class="small muted">羽</span></div>
+      <div class="pt-row"><button type="button" class="btn primary" id="ptAdd" onclick="ptSave()">追加</button>
+        <button type="button" class="btn ghost" onclick="ptClose()">やめる</button></div>`;
+    ['pointerdown','mousedown','touchstart','click','dblclick','wheel'].forEach(t=>box.addEventListener(t, e=>e.stopPropagation()));
+    document.body.appendChild(box);
+  } else if(keep){ /* 置き直し: 入力は確認の上で捨てた（または空だった） */ }
+  const sp=document.getElementById('ptSp'); if(sp){ sp.value=''; try{ sp.focus(); }catch(e){} }
+  const cn=document.getElementById('ptCnt'); if(cn) cn.value='1';
+}
+// 1件だけ保存する。いまの観察の状態（SCREENS._dirty など）は変えない
+function ptSave(){
+  if(PT_BUSY || !PT_CUR) return;
+  if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY){ toast('保存の処理中です。少し待ってください'); return; }
+  const name=String((document.getElementById('ptSp')||{}).value||'').trim();
+  if(!name){ toast('種名を入れてください'); return; }
+  if(name.length>60){ toast('種名が長すぎます'); return; }
+  const cntRaw=String((document.getElementById('ptCnt')||{}).value||'').trim();
+  const cnt=cntRaw===''?NaN:Number(cntRaw);
+  if(!Number.isInteger(cnt) || cnt<1 || cnt>100000){ toast('個体数は1以上の整数で入れてください'); return; }   // 1.9 を黙って1羽にしない（v232 監査 Major）
+  if(!writeAllowed()) return;
+  const c=PT_CUR, s=DB.survey(c.sv);
+  if(!s || s.deleted_at){ toast('調査が見つからないため保存できませんでした'); return; }
+  if(s.status!=='調査中'){ toast('この調査は終了しているため、ポイントは追加できません（調査を再開してください）', 5000); return; }
+  PT_BUSY=true;
+  try{
+    const arr=DB.loadForWrite(DB.key.ob);
+    if(!arr) return;   // 読めないまま保存すると既存の観察を消してしまう（入力は残す）
+    const sp=speciesByName(name);
+    const rec={ uuid:uuid(), survey_uuid:c.sv, observed_at:c.time,
+      latitude:c.fix?c.fix.lat.toFixed(6):'', longitude:c.fix?c.fix.lon.toFixed(6):'', gps_accuracy:c.fix?Math.round(c.fix.acc):'',
+      species_id:sp?sp.species_id:'', species_name_snapshot:name, count:cnt, detection_method:'目視',
+      behavior:'', habitat:'', age_class:'不明', sex:'不明', distance_band:'', direction:'',
+      target_latitude:c.lat.toFixed(6), target_longitude:c.lon.toFixed(6), perch_size:'', perch_class:'',
+      nest_tree_species:'', nest_tree_height:'', nest_state:'',
+      identification_status:'確定', confidence:'中', needs_review:!sp,
+      note:'', external_photo_reference:'', audio:[], media:[], env_note:'', nest_note:'', env_media:[], nest_media:[],
+      source:'point', created_at:nowISO(), updated_at:nowISO() };
+    arr.push(rec);
+    if(!DB.save(DB.key.ob, arr)) return;   // 失敗は DB.save が知らせる。成功とは言わず入力を残す
+    DB.pushRecent(name);
+    if(typeof scheduleFolderFull==='function') scheduleFolderFull();
+    toast(`${name} ${cnt}羽を記録しました`+(sp?'':'（種名が一覧に無いため要確認を付けました）'), sp?1800:4000);
+    ptClose();
+    ptDrawMarks();
+  } finally { PT_BUSY=false; }
+}
+// 同じ調査のポイントの記録を地図に小さな印で出す（毎回 DB から）
+function ptDrawMarks(){
+  if(!mapObj || !document.getElementById('obsPosMap')) return;
+  if(ptLayer){ try{ mapObj.removeLayer(ptLayer); }catch(e){} }
+  ptLayer=L.layerGroup().addTo(mapObj);
+  const sv=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid; if(!sv) return;
+  DB.obsOf(sv).filter(o=>o.source==='point').forEach(o=>{
+    const la=parseFloat(o.target_latitude), lo=parseFloat(o.target_longitude);
+    if(!isFinite(la) || !isFinite(lo)) return;
+    try{ L.marker([la,lo], { interactive:false, keyboard:false, icon:L.divIcon({ className:'', iconSize:[12,12], iconAnchor:[6,6],
+      html:`<div class="pt-mark"><span class="pt-dot"></span><span class="pt-lab">${esc(o.species_name_snapshot||'')}${(o.count>1)?' '+esc(o.count):''}</span></div>` }) }).addTo(ptLayer); }catch(e){}
+  });
+}
+
 function pfPoints(){ return PF_SEGS.filter(x=>x.t==='P'); }
 // PF_NEST=巣の位置 [lat,lon]（1つだけ） / PF_NEST_ID=巣そのものの目印 /
 // PF_SEL=直している対象（PF_SEGSの番号。-1 は「新しく落とす」）。実体は CUR().map（段A）
@@ -5177,7 +5306,8 @@ function flTimeEdit(which){
 function pfInfo(){
   const el=$('#mapInfo'); if(!el) return;
   const np=pfPoints().length, nf=pfPaths().length;
-  const parts=[PF_PAN?(PF_SEL===-1?'✋ 移動：地図を動かせます。置くときは P・L・N を押す（長押しで選んで直せる）':'選んだものを直しています（タップで動かす・描き足す）')
+  const parts=[PF_PT&&PF_SEL===-1?'鳥：地図を押すと、見つけた鳥を記録（種名と個体数・1つずつ保存）'
+    :PF_PAN?(PF_SEL===-1?'✋ 移動：地図を動かせます。置くときは P・L・N を押す（長押しで選んで直せる）':'選んだものを直しています（タップで動かす・描き足す）')
     :PF_MODE==='P'?'P：タップで止まっていた場所'
     :(PF_MODE==='F'?'L：タップで線。始点をもう一度タップすると囲み（面）':'N：タップで巣の位置')];
   if(PF_SPIRAL && PF_MODE==='F')
@@ -5228,6 +5358,7 @@ function pfTryClose(sg,lat,lon){
 }
 function pfDrop(lat,lon){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;   // 保存の後処理中は地図も触らせない
+  if(PF_PT && PF_SEL===-1){ ptOpen(lat, lon); return; }   // 「鳥」: ポイントの小窓（いまの観察の地図には何も足さない）
   if(pfPanBlocks()) return;   // カーソル（✋ 移動）のときは何も置かない
   pfSnap();   // 「↶」で戻せるように、変える前の状態を控える
   const now=localDatetimeValue();
@@ -5527,12 +5658,14 @@ function initObsPosMap(){
     if(drawClickBlocked()) return;   // なぞり終えた直後の click で点が二重に入らないように
     pfDrop(e.latlng.lat, e.latlng.lng); });
   addPfControl(mapObj);
+  ptDrawMarks();   // 同じ調査のポイントの記録を小さな印で出す
   // 描くモード（✏ 描く）: なぞった線を1回の操作としてまとめて L に加える
   drawAttach(mapObj, {
     onCommit:(ll, tt)=>pfAddStroke(ll, tt),
     onTap:(la, lo)=>pfDrop(la, lo),   // ペンのタップ（描くモードがオフのとき）
     onToggle:(on)=>{ if(on){
-      PF_PAN=false;   // 「✏ 描く」を押したら L で描く（カーソルは消灯）
+      if(PF_PT){ if(!ptCloseOk()){ setTimeout(()=>drawSet(false), 0); return; } ptClose(); }   // ポイントの入力が残っていれば確かめる
+      PF_PAN=false; PF_PT=false;   // 「✏ 描く」を押したら L で描く（カーソル・鳥は消灯）
       const selL=PF_SEL>=0 && PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='F';
       if(selL){ if(PF_MODE!=='F') segPick(PF_SEL, true); }   // 選んだ L はそのまま（なぞると引き直し）
       else if(PF_MODE!=='F' || PF_SEL===-2) pfSet('F');
@@ -5544,6 +5677,7 @@ function initObsPosMap(){
   addPanButton();
   addTabLineControl(mapObj);
   addCrosshairControl(mapObj, (la2,lo2)=>{
+    if(PF_PT && PF_SEL===-1){ pfDrop(la2,lo2); return; }   // 「鳥」なら十字の位置でポイントの小窓
     if(pfPanBlocks()){ toast('いまは「✋ 移動」です。置くときは P・L・N を押してください', 4000); return; }
     pfDrop(la2,lo2); }, '＋');
   // 同じ調査の他の飛翔経路を薄く重ねる
@@ -5590,6 +5724,7 @@ function pfLongPress(cp){
         const e=mapObj.latLngToContainerPoint(L.latLng(sp.lat, sp.lon).toBounds(sp.r*2).getNorthEast());
         const rpx=Math.max(PF_HIT_PX, Math.abs(e.x-q.x));
         if(Math.hypot(cp.x-q.x, cp.y-q.y)<=rpx){
+          if(PF_PT){ if(!ptCloseOk()) return false; ptClose(); PF_PT=false; PF_PAN=true; }
           segPick(i, true); SCREENS._soarSel={seg:sg, k}; pfRedraw(); segEditBar();
           let at=null; try{ at=mapObj.containerPointToLatLng(cp); }catch(e2){}
           tabletPanel(true, '#segEditBar', at); return true; } } }
@@ -5608,6 +5743,7 @@ function pfLongPress(cp){
     if(PF_NEST){ const q=C(PF_NEST); take(-2, Math.hypot(cp.x-q.x, cp.y-q.y)-3); }
   }catch(e){ return false; }
   if(best===null) return false;
+  if(PF_PT){ if(!ptCloseOk()) return false; ptClose(); PF_PT=false; PF_PAN=true; }   // 長押しで選べたら「鳥」を外して直す操作へ（選ぶのをやめたら移動）
   segPick(best, true);
   let at=null; try{ at=mapObj.containerPointToLatLng(cp); }catch(e){}
   tabletPanel(true, '#segEditBar', at);   // タブレット表示なら小窓を開いて「直し中」の帯を見せる
@@ -5743,6 +5879,12 @@ function addPfControl(m){
     // ボタンは3つに保つ。面は**始点をもう一度タップして閉じる**ことで作る
     //（ボタンを増やすと画面がうるさく、地図も狭くなる。2026-08-12 実機で指摘）
     mk('pfP','P','P'); mk('pfF','L','F'); mk('pfN','N','N');
+    // 4つ目「鳥」（ポイント）。スマホの小さな地図では列のボタンを小さくして「＋」に重ねない（CSS）
+    const pt=L.DomUtil.create('button','locate-btn pf-btn pf-pt',box); pt.type='button'; pt.id='pfPt'; pt.textContent='鳥';
+    pt.title='ポイント（鳥の記録）: 地図を押して、見つけた鳥の種名と個体数を1つずつ記録';
+    if(PF_PT) pt.classList.add('on');
+    L.DomEvent.disableClickPropagation(pt);
+    L.DomEvent.on(pt,'click',L.DomEvent.stop).on(pt,'click',()=>ptSet());
     return box; }});
   new C({position:'topleft'}).addTo(m);
   addNewLineControl(m);
@@ -5767,6 +5909,7 @@ function pfNewLine(){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;
   if(PF_MODE!=='F'){ pfSet('F'); return; }   // 経路モードでなければ、まず切り替えるだけ
   PF_SEL=-1; PF_NEWLINE=true; PF_STROKE_SEG=null;   // 次のタップから新しい線
+  PF_PAN=false; PF_PT=false; pfBtnSync();   // 「✋ 移動」のまま選んでいた線から押したときも、次のタップで描けるように（v231 監査 Minor）
   // **必ず前の終点から続ける**。L を押し直して「離す」にしていても、
   // このボタンは「続ける」意味に固定する（離したいときは L を使う。2026-08-13 指摘）
   PF_CONT=true;
@@ -6473,6 +6616,7 @@ function saveObs(u, svUuid, editing, cont){
   // 途中で保存すると、保存したあとの画面移動が録音の確認で止まり、
   // 地図の中身だけ消えた状態が残る。そのあと「書きかけを破棄」で保存済みの記録まで消えてしまう
   if(recBusy()){ toast('録音中です。録音を停止してから保存してください', 5000); return; }
+  if(typeof ptCloseOk==='function' && !ptCloseOk()) return;   // ポイントの小窓に入力中の鳥がある（保存後の画面の組み直しで消えるため）
   if(mediaBusy()){ toast('写真・動画の取り込み中です。終わってから保存してください', 5000); return; }
   // 編集対象が別の端末・タブで削除されていたら保存しない（新規として書くと削除の取り消しになる）
   if(editing && !DB.observations().some(x=>x&&x.uuid===u)){
@@ -7712,107 +7856,7 @@ async function importGuideZip(input){
 }
 
 /* ---------- まとめて記録（定点で複数種を共通の位置・時刻で一括入力） ---------- */
-SCREENS.obsBatch = (svUuid)=>{
-  const s=DB.survey(svUuid); if(!s) return SCREENS.home();
-  const _bfx=freshFix();   // 古い測位は自動入力しない（前の地点の座標が付くのを防ぐ）
-  const lat=_bfx?_bfx.lat.toFixed(6):''; const lon=_bfx?_bfx.lon.toFixed(6):'';
-  SCREENS._batchAcc=_bfx?Math.round(_bfx.acc):'';   // 初期充填座標の精度もここで確定（前回画面の値を引きずらない）
-  const seg=(field,opts,allowEmpty,def)=>`<div class="seg" data-seg="${field}">
-    ${allowEmpty?`<button type="button" class="" onclick="pickObs(this,'${field}','')">なし</button>`:''}
-    ${opts.map(x=>`<button type="button" class="${x===def?'on':''}" onclick="pickObs(this,'${field}','${esc(x)}')">${esc(x)}</button>`).join('')}</div>`;
-  return { title:'まとめて記録', sub:[`<span class="pill">${esc(s.name)}</span>`],
-    html:`
-      <datalist id="spDatalist">${SPECIES.map(sp=>`<option value="${esc(sp.japanese_name)}"></option>`).join('')}</datalist>
-      <div class="note" style="margin-bottom:12px;">定点などで見た複数の種を、位置・時刻を共通にしてまとめて記録します（1種ずつ別の記録として保存）。写真・録音は保存後に各記録から追加できます。</div>
-      <div class="card" style="background:var(--panel2);">
-        <div class="row"><div class="grow small muted">位置（全種で共通）</div>
-          <button type="button" class="btn ghost" style="width:auto; padding:6px 12px;" onclick="batchGps()">📍 現在地</button></div>
-        <div class="two" style="margin-top:8px;">
-          <input id="batchLat" inputmode="decimal" placeholder="緯度" value="${esc(lat)}" oninput="SCREENS._batchAcc=''">
-          <input id="batchLon" inputmode="decimal" placeholder="経度" value="${esc(lon)}" oninput="SCREENS._batchAcc=''">
-        </div>
-      </div>
-      <label class="field"><span class="lab">確認方法（共通）</span>${seg('detection_method',OPT.detection,false,'目視')}</label>
-      <label class="field"><span class="lab">生息環境（共通・任意・複数選択可）</span><div class="seg" data-seg="habitat">${OPT.habitat.map(x=>
-        `<button type="button" onclick="toggleMulti(this)">${esc(x)}</button>`).join('')}</div>${otherBox('habitat','',false)}</label>
-      <div class="divider"></div>
-      <div class="two">
-        <input id="batchSp" list="spDatalist" autocomplete="off" placeholder="種名（和名）">
-        <input id="batchCnt" type="number" inputmode="numeric" min="1" value="1" placeholder="個体数">
-      </div>
-      <div class="sp"></div>
-      <button class="btn" onclick="batchAdd()">＋ この種を追加</button>
-      <div class="sp"></div>
-      <h3 class="muted small">追加した種</h3>
-      <div id="batchList"></div>
-      <div class="sp"></div>
-      <button class="btn primary big" id="batchSaveBtn" onclick="batchSave('${svUuid}')" disabled>0種をまとめて保存</button>
-    `,
-    onMount:()=>{ SCREENS._batchItems=[]; renderBatchList(); const i=$('#batchSp'); if(i) i.focus(); }   // _batchAccは画面構築冒頭で確定済み（ここで消さない）
-  };
-};
-function batchAdd(){
-  const inp=$('#batchSp'), cnt=$('#batchCnt');
-  const name=((inp&&inp.value)||'').trim(); if(!name){ toast('種名を入れてください'); return; }
-  if(cnt && cnt.validity && cnt.validity.badInput){ toast('個体数は数値で入力してください'); return; }
-  // 「||1」で補完すると 0 が黙って 1 に化けるため、空欄の補完と数値検査を分ける
-  const rawB=(cnt&&cnt.value||'').trim();
-  const count = rawB==='' ? 1 : Number(rawB);
-  if(!Number.isInteger(count) || count<1){ toast('個体数は1以上の整数で入力してください'); return; }
-  SCREENS._batchItems=SCREENS._batchItems||[]; SCREENS._batchItems.push({name, count});
-  if(inp) inp.value=''; if(cnt) cnt.value='1'; renderBatchList(); if(inp) inp.focus();
-}
-function batchRemove(i){ (SCREENS._batchItems||[]).splice(i,1); renderBatchList(); }
-function renderBatchList(){
-  const box=$('#batchList'); if(!box) return; const items=SCREENS._batchItems||[];
-  // マスタ外の種名は追加時点で⚠を見せる（保存後に気付くより、その場で打ち直せる方が早い。保存自体は止めない）
-  box.innerHTML = items.length ? items.map((it,i)=>`<div class="card"><div class="row">
-    <div class="grow"><b>${esc(it.name)}</b> <span class="muted small">${esc(it.count)}個体</span>
-      ${speciesByName(it.name)?'':'<span class="small" style="color:var(--warn)">⚠ マスタにない種名（要確認が付きます）</span>'}</div>
-    <button type="button" class="btn ghost danger" style="width:auto; padding:4px 10px;" onclick="batchRemove(${i})">×</button></div></div>`).join('')
-    : '<div class="empty small">まだ追加されていません。上で種名と個体数を入れて「＋ この種を追加」。</div>';
-  const btn=$('#batchSaveBtn'); if(btn){ btn.disabled=!items.length; btn.textContent=`${items.length}種をまとめて保存`; }
-}
-function batchGps(){
-  if(!navigator.geolocation){ toast('位置情報を利用できません'); return; }
-  toast('位置を取得中…');
-  navigator.geolocation.getCurrentPosition(p=>{
-    if($('#batchLat')) $('#batchLat').value=p.coords.latitude.toFixed(6);
-    if($('#batchLon')) $('#batchLon').value=p.coords.longitude.toFixed(6);
-    SCREENS._batchAcc=Math.round(p.coords.accuracy);
-    lastFix={lat:p.coords.latitude, lon:p.coords.longitude, acc:p.coords.accuracy, t:Date.now()};
-    toast('位置を取得しました');
-  }, ()=>toast('位置を取得できませんでした'), {enableHighAccuracy:true, timeout:15000});
-}
-function batchSave(svUuid){
-  const items=SCREENS._batchItems||[]; if(!items.length) return;
-  let lat=(($('#batchLat')&&$('#batchLat').value)||'').trim(), lon=(($('#batchLon')&&$('#batchLon').value)||'').trim();
-  // 観察入力と同じ扱い: 黙って捨てず、位置なしで保存してよいか確認する
-  if((lat||lon) && !validLatLon(lat,lon)){
-    if(!confirm('位置の数値が正しくありません。全件を位置なしで保存しますか？\n（キャンセルすると入力に戻ります）')) return;
-    lat=''; lon='';
-  }
-  const method=segVal('detection_method')||'目視'; const habitat=otherMerge(segVals('habitat'),'habitat'); const when=nowISO();
-  // 配列を一度だけ更新して一括保存する（途中まで保存＝部分保存を避け、全件成功か中止かにする）
-  const arr=DB.loadForWrite(DB.key.ob);
-  if(!arr) return;   // 読めないまま保存すると、既存の観察を今回の分だけで置き換えてしまう
-  let flagged=0;
-  items.forEach(it=>{ const sp=speciesByName(it.name);
-    if(!sp) flagged++;
-    arr.push({ uuid:uuid(), survey_uuid:svUuid, observed_at:when, latitude:lat, longitude:lon,
-      gps_accuracy: (!lat && !lon) ? '' : (SCREENS._batchAcc||''), species_id: sp?sp.species_id:'', species_name_snapshot:it.name,
-      count: it.count, detection_method:method, behavior:'', habitat:habitat,
-      // マスタ外の種名だけ行単位で「要確認」を付ける（同定状態は変えない。珍鳥・亜種名は正しくてもマスタ外のため）
-      identification_status:'確定', confidence:'中', needs_review:!sp, note:'', external_photo_reference:'', audio:[], media:[],
-      created_at:when, updated_at:when });
-  });
-  if(!DB.save(DB.key.ob, arr)) return;   // 保存失敗なら成功表示も遷移もしない（DB.saveが警告済み）
-  items.forEach(it=>DB.pushRecent(it.name));
-  toast(`${items.length}種を保存しました`+(flagged?`（うち${flagged}件はマスタにない種名のため要確認を付けました）`:''), flagged?4000:1800);
-  SCREENS._batchItems=null; SCREENS._batchAcc=null;
-  SCREENS._dirty=false;   // 保存済み＝離脱確認の対象から外す
-  goBack();
-}
+// 「まとめて記録」（SCREENS.obsBatch）は v232 で削除。見つけた鳥を一気に入れるのは観察画面の地図の「鳥」（ポイント）で行う
 function deleteObs(u){ if(!confirm('この観察記録を削除しますか？')) return;
   if(!DB.softDelete(DB.key.ob,u)) return;   // 保存失敗（容量不足）はDB.saveが警告済み。成功表示も遷移もしない
   SCREENS._dirty=false; SCREENS._ghost=null;   // 削除確定後に離脱ガードが二重に確認しないように
@@ -8796,7 +8840,9 @@ function aiPopRender(){
   const ids=AIL.pops.filter(id=>_aiPopRec.has(id));
   const sv=AIL.sv||currentSurveyUuid;
   box.innerHTML=`<div class="aipop-hd"><b>新しく聞こえた鳥</b><button type="button" onclick="aiPopToggle(false)">閉じる</button></div>`
-    + (!AIL.want?`<div style="padding:2px 0 6px;"><button type="button" class="btn primary" style="min-height:40px;" onclick="aiPopToggle(false); aiListenStart()">🐦 聞き取りを始める</button></div>`:'')
+    + (!AIL.want?`<div style="padding:2px 0 6px;"><button type="button" class="btn primary" style="min-height:40px;" onclick="aiPopToggle(false); aiListenStart()">🐦 聞き取りを始める</button></div>`
+      :`<div style="padding:2px 0 6px;"><button type="button" class="btn" style="min-height:40px;" ${aiCanSaveNow()?'':'disabled'} onclick="aiSaveNow()">🎙 いまの音を残す（直前30秒）</button>
+        ${aiCanSaveNow()?'':'<div class="tiny muted">音が届いているときだけ押せます</div>'}</div>`)
     + (ids.length? ids.map(id=>{ const r=_aiPopRec.get(id);
       const t=new Date(r.t0).toTimeString().slice(0,5);
       const play = r.clip ? `<button type="button" onclick="aiPlay('${esc(r.clip)}')" title="聞く">▶</button>`
@@ -8809,6 +8855,43 @@ function aiPopRender(){
     + `<div class="aipop-ft">${ids.length?`<button type="button" onclick="aiPopClear()">知らせを全部消す</button>`:''}`
     + (sv?`<button type="button" onclick="aiPopMore()">聞こえた鳥の一覧へ</button>`:'')+`</div>`;
   box.style.display='';
+}
+// いまの音を残す（v232）。聞き取り中に端末が覚えている直前の音（いまの連続した区間から最大30秒）を、
+// 「聞こえた鳥」に1件として残す。自分で押して残すので、人の声の判定では止めない（AIによる自動の保存とは別）。
+// 自動の声と同じ保存の列（aiQ）・削除の番号の照合・容量の予約と返却・声と記録の一括確定を使う
+const AI_MANUAL_SEC=30;
+function aiCanSaveNow(){ return AIL.want && AIL.cap && !!AIL.seg && Date.now()-AIL.lastPcm<=5000; }
+function aiSaveNow(){
+  if(!aiCanSaveNow()){ toast('聞き取り中で音が届いているときだけ残せます'); return; }
+  if(!writeAllowed()) return;
+  if(AI_TOT.det>=AI_CAP_DET){ toast(`この調査の聞こえた鳥が上限（${AI_CAP_DET}件）に達しています`, 5000); return; }
+  const seg=AIL.seg, sv=AIL.sv, b=AIL.written;
+  const a=Math.max(0, b-AI_MANUAL_SEC*AI_SR, b-AIL.ring.length+1);   // いまの区間だけ（中断の前の音は混ぜない）
+  const pcm=aiRingGet(a, b);
+  if(!pcm || pcm.length<AI_SR){ toast('残せる音がまだありません（聞き始めて1秒未満）'); return; }
+  const sec=pcm.length/AI_SR, bytes=pcm.length*2;
+  if(AI_TOT.clipSec+sec>AI_CAP_CLIP_SEC){ toast('この調査の声が上限（合計30分）のため残せません', 5000); return; }
+  if(AI_TOT.devBytes+bytes>AI_CAP_DEV_BYTES){ toast('端末の声の保存量が上限（200MB）のため残せません', 5000); return; }
+  const i16=new Int16Array(pcm.length);
+  for(let i=0;i<pcm.length;i++) i16[i]=Math.max(-32768, Math.min(32767, Math.round(pcm[i]*32767)));
+  const t0=aiTOf(seg,a), t1=aiTOf(seg,b), pos=aiPosNow(), posOk=pos && Math.abs(pos.t-t1)<=AI_POS_MAX_AGE;
+  const clip={ id:uuid(), sv, det:null, pcm:i16, sr:AI_SR, t0 };
+  const rec={ id:uuid(), kind:'det', manual:true, sv, ja:'（録音のみ）', sci:'', species_id:'', max:0, count:0, t0, t1,
+    lat:posOk?pos.lat:null, lng:posOk?pos.lng:null, acc:posOk?pos.acc:null, pos_t:posOk?pos.t:null,
+    model:'', clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', marked:true, obs_uuid:null, created_at:nowISO() };
+  clip.det=rec.id;
+  const dg=AI_DGEN[sv]||0;
+  // 上限の勘定は先に押さえ、保存できなければ戻す
+  AI_TOT.det++; AI_TOT.clipSec+=sec; AI_TOT.devBytes+=bytes;
+  const refund=()=>{ AI_TOT.det--; AI_TOT.clipSec-=sec; AI_TOT.devBytes-=bytes; };
+  aiQ(sv, async()=>{
+    const db=await aiDb(); const tx=db.transaction(['det','clip'],'readwrite');
+    tx.objectStore('clip').put(clip); tx.objectStore('det').put(rec);   // 声と記録は同じ処理で一緒に確定する
+    await aiTxDone(tx); return true;
+  }, dg).then(ok=>{
+    if(!ok){ refund(); toast('残せませんでした（消した直後・保存できない状態）', 5000); return; }
+    toast(`いまの音（直前${Math.round(sec)}秒）を「聞こえた鳥」に残しました`, 3000); aiListLive();
+  }).catch(()=>{ refund(); toast('残せませんでした（端末の空き容量など）', 5000); });
 }
 function aiPopToggle(on){ AIL.popOpen=!!on; aiPopRender(); }
 function aiPopUpdate(rec){ if(_aiPopRec.has(rec.id)) aiPopRender(); }
@@ -8837,7 +8920,7 @@ SCREENS.aiList=(sv)=>{
   return { title:'聞こえた鳥', sub:[`<span class="pill">${esc(s.name||'調査')}</span>`],
     html:`
       <div class="note small">鳴き声AIが聞き取った<b>候補</b>です。観察の記録にはなっていません（★は印を付けるだけ）。
-        AIが人の声と判定した区間を含む声は保存しません（AIが聞き逃すことはあります）。<br>
+        AIが人の声と判定した区間を含む声は保存しません（AIが聞き逃すことはあります。「🎙 いまの音を残す」で自分で残した音は除く）。<br>
         この一覧と声は<b>この端末の中だけ</b>に保存されます（エクスポート・クラウド保存・同期には含まれません）。</div>
       <div id="aiListBox"><div class="empty">読み込み中…</div></div>
       <div class="divider"></div>
@@ -8856,7 +8939,7 @@ async function aiListLoad(sv){
   const others=dets.filter(d=>!d.marked).map(d=>({t:d.t0, d})).concat(gaps.map(g=>({t:g.t0, g}))).sort((a,b)=>b.t-a.t);
   const row=d=>`<div class="card aidet${d.marked?' marked':''}">
       <div class="row" style="gap:8px; align-items:center;">
-        <div class="grow"><b>${esc(d.ja)}</b> <span class="small muted">${Math.round(d.max*100)}% ・ ${d.count}回 ・ ${hms(d.t0)}〜${hms(d.t1)}</span>
+        <div class="grow"><b>${esc(d.ja)}</b> <span class="small muted">${d.manual?'自分で残した音':`${Math.round(d.max*100)}% ・ ${d.count}回`} ・ ${hms(d.t0)}〜${hms(d.t1)}</span>
           ${d.clip_note?`<div class="tiny muted">${esc(d.clip_note)}</div>`:''}</div>
         ${d.clip?`<button type="button" class="btn" style="width:auto; padding:8px 12px;" onclick="aiPlay('${esc(d.clip)}')">▶</button>`:''}
         ${roBtn(`<button type="button" class="btn${d.marked?' primary':''}" style="width:auto; padding:8px 12px;" data-id="${esc(d.id)}" onclick="aiListMark(this.dataset.id, ${d.marked?'false':'true'})">${d.marked?'★':'☆'}</button>`)}
