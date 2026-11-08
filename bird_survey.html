@@ -234,11 +234,11 @@
   #tabMapLayer{position:fixed; inset:0; z-index:1000; background:var(--bg);}
   #tabMapLayer > #obsPosMap{width:100%; height:100% !important; border-radius:0 !important; border:0 !important;}
   body.tab-obs{overflow:hidden;}
-  body.tab-obs .app{position:fixed; top:8px; bottom:8px; right:8px; left:auto; margin:0;
+  body.tab-obs .app{position:fixed; top:calc(8px + env(safe-area-inset-top, 0px)); bottom:calc(8px + env(safe-area-inset-bottom, 0px)); right:calc(8px + env(safe-area-inset-right, 0px)); left:auto; margin:0;
     width:min(340px, 36vw); max-width:none; overflow-y:auto; -webkit-overflow-scrolling:touch;
     z-index:1100; background:var(--bg); border:1px solid var(--line); border-radius:14px;
     box-shadow:0 6px 24px rgba(0,0,0,.45); padding-top:52px; box-sizing:border-box;}
-  body.tab-obs.tab-left .app{right:auto; left:8px;}
+  body.tab-obs.tab-left .app{right:auto; left:calc(8px + env(safe-area-inset-left, 0px));}
   /* 入力の小窓は小さめに（2026-11-07 実機:「入力フォームがデカすぎて地図が見づらい」） */
   body.tab-obs .app{font-size:14px;}
   body.tab-obs .app .field{margin-bottom:8px;}
@@ -251,21 +251,26 @@
   #obsPosMap{-webkit-touch-callout:none; -webkit-user-select:none; user-select:none;}
   body.tab-obs.tab-collapsed .app{display:none;}
   /* 小窓が開いている側の地図のボタン（P/L/N・ズーム・↶・描く）を小窓の外へずらす（小窓で隠さない） */
-  body.tab-obs:not(.tab-collapsed):not(.tab-left) #tabMapLayer .leaflet-right{right:calc(min(340px, 36vw) + 8px);}
-  body.tab-obs.tab-left:not(.tab-collapsed) #tabMapLayer .leaflet-left{left:calc(min(340px, 36vw) + 8px);}
-  #tabBar{position:fixed; top:14px; right:16px; z-index:1101; min-height:44px; padding:8px 14px;
+  body.tab-obs:not(.tab-phone):not(.tab-collapsed):not(.tab-left) #tabMapLayer .leaflet-right{right:calc(min(340px, 36vw) + 8px);}
+  body.tab-obs.tab-left:not(.tab-phone):not(.tab-collapsed) #tabMapLayer .leaflet-left{left:calc(min(340px, 36vw) + 8px);}
+  /* 地図の左右・上の端のボタンも、iPhone のノッチ・時計の帯の下に入れない（v235） */
+  body.tab-obs #tabMapLayer .leaflet-left{margin-left:env(safe-area-inset-left, 0px);}
+  body.tab-obs #tabMapLayer .leaflet-right{margin-right:env(safe-area-inset-right, 0px);}
+  #tabBar{position:fixed; top:calc(14px + env(safe-area-inset-top, 0px)); right:calc(16px + env(safe-area-inset-right, 0px)); z-index:1101; min-height:44px; padding:8px 14px;
     border-radius:22px; border:1px solid var(--line); background:var(--accent); color:#fff;
     font-size:15px; font-weight:700; box-shadow:0 2px 8px rgba(0,0,0,.4);}
-  body.tab-left #tabBar{right:auto; left:16px;}
+  body.tab-left #tabBar{right:auto; left:calc(16px + env(safe-area-inset-left, 0px));}
   /* 入力を開かなくても前の画面へ戻れるように（2026-11-07 実機）。小窓が左に開いて重なるときは小窓の「戻る」を使う */
-  #tabBack{position:fixed; top:14px; left:16px; z-index:1101; min-height:44px; padding:8px 14px;
+  /* top はセーフエリアを足す。足さないと iPhone のホーム画面アプリ（viewport-fit=cover・時計の帯が透ける）で
+     時計の帯の下に潜って押せず、観察画面から戻れなかった（2026-11-08 ユーザー。v235） */
+  #tabBack{position:fixed; top:calc(14px + env(safe-area-inset-top, 0px)); left:calc(16px + env(safe-area-inset-left, 0px)); z-index:1101; min-height:44px; padding:8px 14px;
     border-radius:22px; border:1px solid var(--line); background:var(--panel); color:var(--fg);
     font-size:15px; font-weight:700; box-shadow:0 2px 8px rgba(0,0,0,.4);}
   body.tab-left:not(.tab-collapsed) #tabBack{display:none;}
   body.no-back #tabBack{display:none;}   /* 観察の編集では地図の上の戻るも出さない */
-  body.tab-collapsed.tab-left #tabBar{left:auto; right:16px;}
-  body.tab-obs #tabMapLayer .leaflet-top.leaflet-left{top:56px;}
-  body.tab-obs #tabMapLayer .leaflet-top.leaflet-right{top:56px;}   /* 地図の種類ボタンが「入力を開く」帯に隠れないように（v232） */
+  body.tab-collapsed.tab-left #tabBar{left:auto; right:calc(16px + env(safe-area-inset-right, 0px));}
+  body.tab-obs #tabMapLayer .leaflet-top.leaflet-left{top:calc(56px + env(safe-area-inset-top, 0px));}
+  body.tab-obs #tabMapLayer .leaflet-top.leaflet-right{top:calc(56px + env(safe-area-inset-top, 0px));}   /* 地図の種類ボタンが「入力を開く」帯に隠れないように（v232） */
   body:not(.tab-collapsed) #tabBar{background:var(--panel); color:var(--fg);}
   /* タブレット表示ではフリーハンドで描けるので「くるくる」は出さない（2026-11-07 実機での要望） */
   body.tab-obs #flSpiralWrap{display:none !important;}
@@ -282,6 +287,26 @@
     background:var(--panel); color:var(--fg); font-size:14px; font-weight:700; box-shadow:0 1px 4px rgba(0,0,0,.4);}
   .draw-btn.on{background:#e0a030; color:#111; border-color:#e0a030;}
   .leaflet-container.drawing-on{cursor:crosshair;}
+  /* 描いている間は、指のなぞりをページのスクロール・ブラウザの拡大に渡さない。
+     渡すとスクロールに指を取られて線が途中で消える（スマホの小さな地図で起きていた。v235） */
+  .leaflet-container.drawing-on, .leaflet-container.drawing-on *{touch-action:none !important;}
+
+  /* ---------- スマホ（v235）: 地図いっぱい＋下から出る入力欄（引き出し） ----------
+     iPad の左右の小窓と同じ .app を、下端に貼り付けて出す。入力欄は1つも動かさない。
+     高さは画面の半分まで（地図と P・L・N の列を残す）。キーボードが出たら（--kb-h）その上に持ち上げる。
+     地図の下端のボタン・鳴き声AIのボタンは引き出しの上（--sheet-h）へ逃がす */
+  body.tab-obs.tab-phone .app{top:auto; left:0; right:0; bottom:var(--kb-h, 0px); width:auto;
+    max-height:min(50%, calc(100% - var(--kb-h, 0px) - 120px - env(safe-area-inset-top, 0px)));
+    border-radius:14px 14px 0 0; border-bottom:0; padding-top:4px;
+    padding-bottom:env(safe-area-inset-bottom, 0px);}
+  body.tab-obs.tab-phone:not(.tab-collapsed) #tabMapLayer .leaflet-bottom{margin-bottom:var(--sheet-h, 0px);}
+  /* 引き出しを開いている間は「＋／−」を隠す（指2本で拡大縮小できる）。残すと P・L・N・鳥の列が下の「＋」・鳴き声AIに重なる */
+  body.tab-obs.tab-phone:not(.tab-collapsed) #tabMapLayer .leaflet-control-zoom{display:none;}
+  body.tab-obs.tab-phone:not(.tab-collapsed) .aifab{bottom:calc(var(--sheet-h, 0px) + var(--kb-h, 0px) + 60px);}
+  body.tab-obs.tab-phone:not(.tab-collapsed) #aiPops{top:calc(64px + env(safe-area-inset-top, 0px)); bottom:auto;
+    max-height:calc(100% - var(--sheet-h, 0px) - 190px);}
+  body.tab-obs.tab-phone #tabBar{font-size:14px; padding:8px 12px;}
+  body.tab-obs.tab-phone #tabBack{font-size:14px; padding:8px 12px;}
 
   /* 集計テーブル */
   table{width:100%; border-collapse:collapse; font-size:14px;}
@@ -376,7 +401,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v234（2026-11-08 編集で選んでも小窓を閉じない・保存後も編集を続ける／鳥のポイントにメモ／経路まとめを外す／鳥のメモの一覧／種別集計に鳴き声AI）';
+const APP_VERSION = 'v235（2026-11-08 地図を24段まで拡大／図面・空撮を重ねる／スマホも地図いっぱい＋下から入力欄／戻るを時計の帯に隠さない／書き出しに鳴き声AI・経路・調査CSV・source列）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1742,12 +1767,14 @@ SCREENS.home = ()=>{
       <div class="divider"></div>
       <details class="fold" id="foldHomeTools" ${SCREENS._homeToolsOpen?'open':''} ontoggle="SCREENS._homeToolsOpen=this.open">
         <summary><span class="lab" style="display:inline; margin:0;">資料・データの管理</span>
-          <span class="small muted">図鑑PDF・メディア一覧・鳴き声AI・書き出し・取り込み・ごみ箱・点検</span></summary>
+          <span class="small muted">図鑑PDF・メディア一覧・鳴き声AI・図面・空撮・書き出し・取り込み・ごみ箱・点検</span></summary>
         <button class="btn" onclick="nav('refdocs',null)">📚 資料・図鑑（PDF取り込み）</button>
         <div class="sp"></div>
         <button class="btn" onclick="SCREENS._galPage=0; nav('gallery',null)">🖼 メディア一覧（写真・動画・録音）</button>
         <div class="sp"></div>
         <button class="btn" onclick="nav('aiSettings',null)">🐦 鳴き声AI（取り込み・設定）</button>
+        <div class="sp"></div>
+        <button class="btn" onclick="orthoSelReset(); nav('orthos',null)">🗺 図面・空撮（地図に重ねる）</button>
         <div class="sp"></div>
         <div class="btn-grid">
           <button class="btn" onclick="nav('exportHub',null)">⤓ エクスポート</button>
@@ -2343,12 +2370,11 @@ SCREENS.survey = (u)=>{
     </div>
     <details class="fold" id="foldMoreActions" ${SCREENS._actOpen?'open':''} ontoggle="SCREENS._actOpen=this.open">
       <summary><span class="lab" style="display:inline; margin:0;">その他の操作</span>
-        <span class="small muted">地図・聞こえた鳥・鳴き声AIの設定・タブレット表示・ルート・メモ・仮説・集計・調査情報・終了</span></summary>
+        <span class="small muted">地図・聞こえた鳥・鳴き声AIの設定・ルート・メモ・仮説・集計・調査情報・終了</span></summary>
       <div class="actions" style="margin:0;">
         <button type="button" class="act sm" onclick="nav('map','${u}')"><span class="ic">🗺</span>地図</button>
         <button type="button" class="act sm" onclick="nav('aiList','${u}')"><span class="ic">🐦</span>聞こえた鳥</button>
         <button type="button" class="act sm" onclick="const f=document.getElementById('foldAiCfg'); if(f){ f.open=true; f.scrollIntoView({block:'center'}); }"><span class="ic">⚙</span>鳴き声AIの設定</button>
-        <button type="button" class="act sm" id="svTabletBtn" onclick="tabletSet(!tabletOn()); this.innerHTML='<span class=&quot;ic&quot;>📱</span>タブレット表示：'+(tabletOn()?'オン':'オフ')"><span class="ic">📱</span>タブレット表示：${tabletOn()?'オン':'オフ'}</button>
         <button type="button" class="act sm" onclick="nav('routeEdit','${u}')"><span class="ic">🧭</span>調査ルート</button>
         <button type="button" class="act sm" onclick="nav('noteEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">📝</span>メモ</button>
         <button type="button" class="act sm" onclick="nav('hypotheses','${u}')"><span class="ic">💡</span>仮説</button>
@@ -2646,8 +2672,6 @@ SCREENS.obsEdit = (argStr)=>{
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapUndo()" title="1つ戻す">↶</button>
           <button type="button" class="btn ghost" style="width:auto; padding:6px 10px;" onclick="obsMapClear()" title="全部消す">🗑</button>
         </div>
-        <div class="row" style="margin-top:4px;"><button type="button" class="btn ghost small" id="tabToggle" style="width:auto; padding:4px 10px;"
-          onclick="tabletSet(!tabletOn())" title="iPadなど画面の大きい端末向け（試験版）">📱 タブレット表示</button></div>
         <!-- **いま選んでいるトレース（L）の属性を、地図のすぐ下に1行でまとめる。**
              報告書の記号（◎旋回上昇・↠急降下）は L ごとの属性で決まるので、
              線でも面でも同じ場所で選べないと図が作れない。
@@ -3279,19 +3303,815 @@ function destroyMap(){
   if(typeof drawDetach==='function') drawDetach();        // 描くモードの見張り（地図の要素に付けたもの）を外す
   if(typeof tabletRelease==='function') tabletRelease();  // タブレット表示の層から地図を目印の位置へ戻す
   if(typeof mapFullOff==='function') mapFullOff(true);   // 全画面のまま破棄すると固定表示が画面に残るので先に戻す
-  if(mapObj){ try{ mapObj.remove(); }catch(e){} mapObj=null; }
+  if(mapObj){ try{ orthoDetach(mapObj); }catch(e){} try{ mapObj.remove(); }catch(e){} mapObj=null; }   // 図面・空撮の層・見張りも外す
   // 地図上のマーカー参照もここでまとめて破棄する（古い参照が残ると、次に開いた別の地図と取り違える温床になる）
   obsTargetMarker=null; obsPosMarker=null;
   compassStop(); _compassReq++;
 }
+/* ============================================================
+   図面・空撮（v235・2026-11-08 ユーザー要望「魚調査や産卵床調査と同じで、図面や空撮を入れたい」）。
+   魚類調査アプリ v138 の「ドローン写真」（fish_survey.html 4110〜4851。産卵床 v30〜v35 から移植）を移した。
+   PC（QGIS）で位置合わせした画像＋ワールドファイルを取り込み、地図に重ねる（アプリでは位置合わせしない）。
+   置き場は専用（bs_ortho）。観察の写真の置き場（bird_survey_audio）と混ぜない。
+   バックアップ・クラウド保存・書き出し・送信には入れない（PC に元がある。大きい）。
+   鳥アプリでの違い: 地図は mapObj の1枚／出す・消すは地図の種類の選択（右上）／書けるかは WRITE_OK・READ_ONLY ／
+   書けるタブは1つだけなので別タブへの知らせは無し／地図を壊すときは orthoDetach（destroyMap から）。
+   地図をタブレット・スマホの全面の層へ移すときは地図そのものは作り直さないので、重ねた画像は残る
+   ============================================================ */
+const OrthoDB = {
+  _open(){
+    return new Promise((res, rej)=>{
+      if(!window.indexedDB){ rej(new Error('この端末では図面・空撮を保存できません')); return; }
+      let rq; try{ rq = indexedDB.open('bs_ortho', 1); }catch(e){ rej(e); return; }
+      rq.onupgradeneeded = ()=>{
+        const db = rq.result;
+        if(!db.objectStoreNames.contains('ortho')) db.createObjectStore('ortho', {keyPath:'id'});
+      };
+      rq.onsuccess = ()=>{
+        const db = rq.result;
+        // 別のタブが新しい版で開こうとしたら道を空ける（今は版1だけだが、閉じないと相手が永久に待つ）
+        db.onversionchange = ()=>{ try{ db.close(); }catch(e){} };
+        res(db);
+      };
+      rq.onerror = ()=>rej(rq.error);
+      rq.onblocked = ()=>rej(new Error('blocked'));
+    });
+  },
+  // 書き込みは tx.oncomplete まで待つ。失敗は例外で返す（読めないのを「無い」と取り違えない）
+  async _do(mode, fn){
+    const db = await this._open();
+    try{
+      return await new Promise((res, rej)=>{
+        const tx = db.transaction('ortho', mode);
+        const rq = fn(tx.objectStore('ortho'));
+        let reqErr = null;
+        tx.oncomplete = ()=>res(rq && rq.result !== undefined ? rq.result : undefined);
+        tx.onerror = ev=>{ reqErr = (ev && ev.target && ev.target.error) || reqErr; };
+        tx.onabort = ()=>rej(tx.error || reqErr || new Error('abort'));
+      });
+    }finally{ try{ db.close(); }catch(e){} }
+  },
+  all(){ return this._do('readonly', st=>st.getAll()); },
+  put(rec){ return this._do('readwrite', st=>st.put(rec)); },
+  del(id){ return this._do('readwrite', st=>st.delete(id)); },
+};
+const ORTHO_MAX_PX = 4096;        // 長辺。これより大きい画像は縮める（縮められなければ断る）
+const ORTHO_SAFE_PX = 16777216;   // 縮めるために端末で展開してよい総画素数（4096×4096。iOS の canvas の上限と同じ）
+const ORTHO_MAX_KM = 30;          // 1枚の一辺の上限。これを超えるのは座標系の取り違えとみなす
+const ORTHO_JP = {s:20, n:46, w:122, e:154};   // 日本の箱。外なら座標系の取り違え
+const ORTHO_OPACITY = {'濃い':1, '半分':0.5, '薄い':0.25};
+const ORTHO_WORLD_EXT = /\.(pgw|jgw|wld)$/i;
+let ORTHO_LIST = [];                     // 画面用の写し（正本は bs_ortho）。アプリ全体で持つ
+let ORTHO_URLS = {}, ORTHO_GONE = {};    // id → 表示用URL／消した id（読み込み中に消したとき URL を作らないため）
+function orthoList(){ return ORTHO_LIST.slice(); }
+/* 書いてよいか。閲覧のみのタブ・使用権を確かめている途中は書かない */
+function orthoCanWrite(){ return !!window.WRITE_OK && !window.READ_ONLY; }
+/* レコードが揃っているか。揃っていなければ「壊れている」として地図に出さず、削除だけできるようにする */
+function orthoBlobOk(b){
+  if(typeof Blob !== 'undefined') return b instanceof Blob;
+  return !!b && typeof b === 'object';
+}
+function orthoValid(o){
+  return !!(o && typeof o.id === 'string' && o.id && o.bounds && orthoBoundsCheck(o.bounds) === ''
+    && typeof o.w === 'number' && o.w > 0 && typeof o.h === 'number' && o.h > 0 && orthoBlobOk(o.blob));
+}
+function orthoMeta(rec){
+  if(!rec || rec.kind !== 'ortho' || typeof rec.id !== 'string' || !rec.id) return null;
+  const broken = !orthoValid(rec);
+  return { id:rec.id, broken, name:rec.name||'', bounds:rec.bounds||null, w:rec.w, h:rec.h,
+           rw:(rec.rw > 0 ? rec.rw : null), rh:(rec.rh > 0 ? rec.rh : null),
+           size:rec.size||0, type:rec.type||'', shrunk:!!rec.shrunk, added_at:rec.added_at||'' };
+}
+/* 展開したときの画素数（メモリの見積もり用） */
+function orthoRasterPx(o){
+  if(!o) return 0;
+  if(o.rw > 0 && o.rh > 0) return o.rw*o.rh;
+  const w = o.w > 0 ? o.w : 0, h = o.h > 0 ? o.h : 0;
+  if(!w || !h) return 0;
+  if(o.shrunk && Math.max(w,h) > ORTHO_MAX_PX){ const k = ORTHO_MAX_PX/Math.max(w,h); return Math.round(w*k)*Math.round(h*k); }
+  return w*h;
+}
+/* 正本から読み直す。読めなければ例外（前の写しを残す。空と取り違えて「無い」と見せない） */
+let ORTHO_RELOAD_GEN = 0;   // 読み直しの世代。古い読み直しが後から終わっても、新しい写しを上書きしない
+async function orthoReload(){
+  const gen = ++ORTHO_RELOAD_GEN;
+  const recs = (await OrthoDB.all()) || [];
+  const list = recs.map(orthoMeta).filter(Boolean)
+    .sort((x,y)=> String(x.added_at).localeCompare(String(y.added_at)));
+  if(gen !== ORTHO_RELOAD_GEN) return { list, recs, stale:true };
+  ORTHO_LIST = list;
+  orthoSelPrune();
+  return { list, recs, stale:false };
+}
+/* ワールドファイル（6行: A D B E C F）。回転（D・B）があれば null。
+   BOM・CRLF・末尾の空行は許す。A は正、E は負（北が上） */
+function parseWorldFile(text){
+  const v = String(text||'').replace(/^﻿/,'').split(/\r?\n/).map(s=>s.trim()).filter(s=>s!=='');
+  if(v.length !== 6) return null;
+  const n = v.map(Number);
+  if(n.some(x=>!isFinite(x))) return null;
+  const [a,d,b,e,c,f] = n;
+  if(!(a>0) || !(e<0)) return null;
+  const tol = Math.abs(a)*1e-6;
+  if(Math.abs(d) > tol || Math.abs(b) > tol) return null;
+  return {a,d,b,e,c,f};
+}
+/* 緯度経度（EPSG:4326）のままの画像は受けない。四隅は合っても、Leaflet はメルカトルの長方形に
+   線形に引き伸ばすので、画像の中ほどが行ごとにずれる。EPSG:3857 で書き出してもらう */
+function orthoIsDegrees(wf){ return !!wf && Math.abs(wf.c) <= 180 && Math.abs(wf.f) <= 90; }
+const MERC_R = 6378137;
+function merc2ll(x, y){
+  const lon = x / MERC_R * 180 / Math.PI;
+  const lat = (2*Math.atan(Math.exp(y/MERC_R)) - Math.PI/2) * 180 / Math.PI;
+  return [lat, lon];
+}
+/* 画像の境界（緯度経度）。ワールドファイルの C・F は「左上ピクセルの中心」なので半ピクセル戻す */
+function orthoBoundsOf(wf, w, h){
+  if(!wf || !(w>0) || !(h>0) || orthoIsDegrees(wf)) return null;
+  const west = wf.c - wf.a/2, north = wf.f - wf.e/2;
+  const east = west + wf.a*w, south = north + wf.e*h;
+  const nw = merc2ll(west, north), se = merc2ll(east, south);
+  return {s:se[0], w:nw[1], n:nw[0], e:se[1]};
+}
+/* 境界が使えるか。使えなければ理由（空なら使える）。
+   平面直角座標や UTM を 3857 と取り違えると、日本の外の「もっともらしい」場所に置かれて気づけない */
+function orthoBoundsCheck(b){
+  if(!b || [b.s,b.w,b.n,b.e].some(x=>typeof x!=='number' || !isFinite(x))) return '位置を読み取れませんでした';
+  if(!(b.s < b.n && b.w < b.e)) return '位置を読み取れませんでした';
+  if(b.s < ORTHO_JP.s || b.n > ORTHO_JP.n || b.w < ORTHO_JP.w || b.e > ORTHO_JP.e)
+    return '位置が日本の外になります。QGIS で EPSG:3857 に直して書き出してください';
+  const km = Math.max(distMeters([b.s,b.w],[b.s,b.e]), distMeters([b.s,b.w],[b.n,b.w])) / 1000;
+  if(km > ORTHO_MAX_KM) return `1枚が ${ORTHO_MAX_KM}km 四方を超えています。座標系を確かめてください`;
+  return '';
+}
+function orthoIsImage(f){ return /^image\//.test((f && f.type)||'') || /\.(png|jpe?g|webp)$/i.test((f && f.name)||''); }
+function orthoBaseName(name){ return String(name||'').replace(/^.*[\\/]/,'').replace(/\.[^.]+$/,'').toLowerCase(); }
+/* PNG／JPEG／WebP の先頭から幅と高さを読む（展開しない。大きな画像を丸ごと展開するとメモリで落ちる） */
+function orthoHeaderSize(u8){
+  if(!u8 || u8.length < 24) return null;
+  const be32 = i => ((u8[i]<<24) | (u8[i+1]<<16) | (u8[i+2]<<8) | u8[i+3]) >>> 0;
+  const PNG_SIG = [0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A];
+  if(PNG_SIG.every((v,i)=>u8[i]===v)){
+    const ihdr = u8[12]===0x49 && u8[13]===0x48 && u8[14]===0x44 && u8[15]===0x52;
+    if(!ihdr || be32(8) !== 13) return null;
+    const w = be32(16), h = be32(20);
+    return (w>0 && h>0) ? {w, h, type:'png'} : null;
+  }
+  if(u8[0]===0x52 && u8[1]===0x49 && u8[2]===0x46 && u8[3]===0x46 && u8[8]===0x57 && u8[9]===0x45 && u8[10]===0x42 && u8[11]===0x50){
+    const le32 = i => (u8[i] | (u8[i+1]<<8) | (u8[i+2]<<16) | (u8[i+3]<<24)) >>> 0;
+    const tag = String.fromCharCode(u8[12], u8[13], u8[14], u8[15]);
+    const need = tag === 'VP8X' ? 10 : tag === 'VP8 ' ? 10 : tag === 'VP8L' ? 5 : 0;
+    if(!need) return null;
+    const riffLen = le32(4), chunkLen = le32(16);
+    if(chunkLen < need || riffLen < 4 + 8 + chunkLen || u8.length < 20 + need) return null;
+    let w = 0, h = 0;
+    if(tag === 'VP8X'){
+      w = (u8[24] | (u8[25]<<8) | (u8[26]<<16)) + 1; h = (u8[27] | (u8[28]<<8) | (u8[29]<<16)) + 1;
+    }else if(tag === 'VP8 '){
+      if(!(u8[23]===0x9D && u8[24]===0x01 && u8[25]===0x2A)) return null;
+      w = (u8[26] | (u8[27]<<8)) & 0x3FFF; h = (u8[28] | (u8[29]<<8)) & 0x3FFF;
+    }else{
+      if(u8[20] !== 0x2F) return null;
+      const b = le32(21);
+      w = (b & 0x3FFF) + 1; h = ((b >>> 14) & 0x3FFF) + 1;
+    }
+    return (w>0 && h>0) ? {w, h, type:'webp'} : null;
+  }
+  if(u8[0]===0xFF && u8[1]===0xD8){
+    let i = 2;
+    while(i + 9 < u8.length){
+      if(u8[i] !== 0xFF){ i++; continue; }
+      const m = u8[i+1];
+      if(m === 0xFF){ i++; continue; }
+      if(m === 0xD8 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)){ i += 2; continue; }
+      if(m === 0xD9 || m === 0xDA) return null;
+      const len = (u8[i+2]<<8) | u8[i+3];
+      if(m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC){
+        const h = (u8[i+5]<<8) | u8[i+6], w = (u8[i+7]<<8) | u8[i+8];
+        return (w>0 && h>0) ? {w, h, type:'jpg'} : null;
+      }
+      if(len < 2) return null;
+      i += 2 + len;
+    }
+    return null;
+  }
+  return null;
+}
+async function orthoCanDecode(file){
+  if(typeof createImageBitmap === 'function'){
+    try{ const bm = await createImageBitmap(file); if(bm && bm.close) bm.close(); return !!bm; }catch(e){ return false; }
+  }
+  try{ await orthoLoadImage(file); return true; }catch(e){ return false; }
+}
+function orthoLoadImage(file){
+  return new Promise((res, rej)=>{
+    const img = new Image(); const u = URL.createObjectURL(file);
+    img.onload = ()=>{ URL.revokeObjectURL(u); res(img); };
+    img.onerror = ()=>{ URL.revokeObjectURL(u); rej(new Error('画像を読めませんでした')); };
+    img.src = u;
+  });
+}
+/* 画素数は先頭だけ読んで調べ、長辺が上限以下ならそのまま（再圧縮しない。透明な PNG を壊さない）。
+   超えていれば、最初から縮小の指定つきで展開する。指定が効かない端末では、
+   安全な総画素数のときだけ普通に展開して縮め、それより大きければ断る。境界は元の画素数で計算する */
+async function orthoPrepare(file){
+  const head = new Uint8Array(await file.slice(0, 1024*1024).arrayBuffer());
+  const dim = orthoHeaderSize(head);
+  if(!dim) throw new Error('画像の大きさを読めませんでした（PNG・JPEG・WebP を選んでください）');
+  const w = dim.w, h = dim.h;
+  if(Math.max(w,h) <= ORTHO_MAX_PX){
+    if(!(await orthoCanDecode(file))) throw new Error('画像が壊れているか、この端末では開けません');
+    return {blob:file, w, h, rw:w, rh:h, shrunk:false};
+  }
+  const k = ORTHO_MAX_PX / Math.max(w,h);
+  const tw = Math.max(1, Math.round(w*k)), th = Math.max(1, Math.round(h*k));
+  const type = dim.type === 'jpg' ? 'image/jpeg' : 'image/png';
+  const tooBig = new Error(`この端末では縮小できませんでした。PC で長辺 ${ORTHO_MAX_PX}px 以下にして書き出してください`);
+  let srcImg = null;
+  if(typeof createImageBitmap === 'function'){
+    try{ srcImg = await createImageBitmap(file, {resizeWidth:tw, resizeHeight:th, resizeQuality:'high'}); }
+    catch(e){ srcImg = null; }
+    // 縮小の指定を黙って無視する端末がある。返った大きさで見る
+    if(srcImg && srcImg.width !== tw){ if(srcImg.close) srcImg.close(); srcImg = null; }
+  }
+  if(!srcImg){
+    if(w*h > ORTHO_SAFE_PX) throw tooBig;
+    srcImg = await orthoLoadImage(file);
+  }
+  const cv = document.createElement('canvas'); cv.width = tw; cv.height = th;
+  let blob = null;
+  try{
+    cv.getContext('2d').drawImage(srcImg, 0, 0, tw, th);
+    blob = await new Promise(res=>cv.toBlob(res, type, 0.85));
+  }catch(e){ blob = null; }
+  finally{
+    if(srcImg && srcImg.close){ try{ srcImg.close(); }catch(e){} }
+    cv.width = 0; cv.height = 0;
+  }
+  if(!blob) throw tooBig;
+  return {blob, w, h, rw:tw, rh:th, shrunk:true};
+}
+/* 画像とワールドファイルを同じ名前の組にする。何組でもまとめて選べる。
+   file input に accept を付けない（iPhone では .pgw が選べなくなる）ので、中身で仕分ける */
+function orthoPairUp(files){
+  const imgs = new Map(), wfs = new Map(), badExt = [], dup = [];
+  files.forEach(f=>{
+    const name = String((f && f.name)||''), base = orthoBaseName(name);
+    if(orthoIsImage(f)){ if(imgs.has(base)) dup.push(name); else imgs.set(base, f); return; }
+    if(!ORTHO_WORLD_EXT.test(name)){ badExt.push(name); return; }
+    if(wfs.has(base)) dup.push(name); else wfs.set(base, f);
+  });
+  const pairs = [], odd = [];
+  imgs.forEach((f, b)=>{ if(wfs.has(b)) pairs.push({img:f, wfile:wfs.get(b)}); else odd.push(f.name||''); });
+  wfs.forEach((f, b)=>{ if(!imgs.has(b)) odd.push(f.name||''); });
+  return { pairs, odd, dup, badExt, nImg:imgs.size, nWf:wfs.size };
+}
+/* 選んだファイルの組み合わせが悪いときの断り文（良ければ ''） */
+function orthoPairProblem(files, p){
+  const q = s=>`「${s}」`;
+  if(files.length <= 2){
+    const imgs = files.filter(orthoIsImage), others = files.filter(f=>!orthoIsImage(f));
+    if(imgs.length !== 1 || others.length !== 1) return '画像（PNG/JPG/WebP）とワールドファイル（.pgw/.jgw/.wld）の2つを一緒に選んでください';
+    const img = imgs[0], wfile = others[0];
+    if(!ORTHO_WORLD_EXT.test(wfile.name||'')) return `ワールドファイルは .pgw / .jgw / .wld です（選んだのは「${wfile.name||''}」）`;
+    if(orthoBaseName(img.name) !== orthoBaseName(wfile.name)){
+      return `画像とワールドファイルの名前が違います（「${img.name||''}」と「${wfile.name||''}」）。`
+        + 'a.png と a.pgw のように、同じ名前の組を選んでください';
+    }
+    return '';
+  }
+  if(p.badExt.length) return `画像でもワールドファイル（.pgw / .jgw / .wld）でもないものが混じっています（${p.badExt.map(q).join('')}）。外して選び直してください。何も取り込んでいません`;
+  if(p.dup.length) return `同じ名前の画像（またはワールドファイル）が複数あります（${p.dup.map(q).join('')}）。どちらか一方を外してください。何も取り込んでいません`;
+  if(!p.nImg || !p.nWf) return '画像（PNG/JPG/WebP）とワールドファイル（.pgw/.jgw/.wld）を両方選んでください（a.png と a.pgw のように同じ名前の組。何組でもまとめて選べます）';
+  if(p.odd.length) return `組になっていないものがあります（${p.odd.map(q).join('')}）。画像とワールドファイルは a.png と a.pgw のように同じ名前の組で選んでください。何も取り込んでいません`;
+  return '';
+}
+/* 取り込むときに、写真の外側の白を透明にする（選択。既定は「そのまま」）。
+   縁から「白」（RGB がすべて ORTHO_ALPHA_THR 以上）でつながっている画素だけを透明にする。
+   写真の中の白い屋根や車は縁とつながっていないので残る */
+const ORTHO_ALPHA_OPTS = {'そのまま':false, '透明にする':true};
+const ORTHO_ALPHA_THR = 235;
+function orthoPref(k){ try{ return localStorage.getItem('bs_ortho_'+k); }catch(e){ return null; } }
+function orthoPrefSet(k, v){ try{ localStorage.setItem('bs_ortho_'+k, String(v)); }catch(e){} }
+function orthoAlphaName(){ return orthoPref('alpha') === 'true' ? '透明にする' : 'そのまま'; }
+function orthoAlphaOn(){ return orthoPref('alpha') === 'true'; }
+function orthoSetAlpha(name){ if(!(name in ORTHO_ALPHA_OPTS)) return; orthoPrefSet('alpha', ORTHO_ALPHA_OPTS[name]); }
+/* RGBA の並び（幅 w・高さ h）を書き換え、透明にした画素の数を返す（走査線ごとの塗りつぶし） */
+function orthoAlphaFill(data, w, h, thr){
+  thr = thr == null ? ORTHO_ALPHA_THR : thr;
+  const white = i => { const p = i*4; return data[p+3] > 0 && data[p] >= thr && data[p+1] >= thr && data[p+2] >= thr; };
+  const seeds = [];
+  for(let x = 0; x < w; x++){ seeds.push(x, (h-1)*w + x); }
+  for(let y = 1; y < h-1; y++){ seeds.push(y*w, y*w + w-1); }
+  let count = 0;
+  while(seeds.length){
+    const i = seeds.pop();
+    if(!white(i)) continue;
+    const y = Math.floor(i / w), row = y*w;
+    let x0 = i - row, x1 = x0;
+    while(x0 > 0 && white(row + x0 - 1)) x0--;
+    while(x1 < w-1 && white(row + x1 + 1)) x1++;
+    for(let x = x0; x <= x1; x++){ data[(row+x)*4+3] = 0; count++; }
+    for(const ny of [y-1, y+1]){
+      if(ny < 0 || ny >= h) continue;
+      const nrow = ny*w; let inRun = false;
+      for(let x = x0; x <= x1; x++){
+        const isW = white(nrow + x);
+        if(isW && !inRun) seeds.push(nrow + x);
+        inRun = isW;
+      }
+    }
+  }
+  return count;
+}
+/* 準備した画像を展開して外側を透明にし、透明を持てる形式で返す。
+   白い縁が無ければそのまま返す（alpha:'skip'）。失敗は例外 */
+async function orthoAlphaEdges(prep){
+  let src = null;
+  if(typeof createImageBitmap === 'function'){ try{ src = await createImageBitmap(prep.blob); }catch(e){ src = null; } }
+  if(!src) src = await orthoLoadImage(prep.blob);
+  let cv = null, blob = null, cw = 0, ch = 0;
+  try{
+    cw = src.width || src.naturalWidth; ch = src.height || src.naturalHeight;
+    if(!(cw > 0 && ch > 0) || cw*ch > ORTHO_SAFE_PX) throw new Error('透明にするには大きすぎます');
+    cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(src, 0, 0, cw, ch);
+    if(src.close){ try{ src.close(); }catch(e){} }
+    src = null;
+    const id = ctx.getImageData(0, 0, cw, ch);
+    const n = orthoAlphaFill(id.data, cw, ch);
+    if(!n) return Object.assign({}, prep, {alpha:'skip'});
+    ctx.putImageData(id, 0, 0);
+    // WebP で書ける端末（Android）は WebP、書けない端末（iPhone）は PNG になる
+    blob = await new Promise(res=>cv.toBlob(res, 'image/webp', 0.85));
+    if(!blob || blob.type !== 'image/webp') blob = await new Promise(res=>cv.toBlob(res, 'image/png'));
+  }finally{
+    if(src && src.close){ try{ src.close(); }catch(e){} }
+    src = null;
+    if(cv){ cv.width = 0; cv.height = 0; }
+  }
+  if(!blob) throw new Error('透明にした画像を作れませんでした');
+  return {blob, w:prep.w, h:prep.h, rw:cw, rh:ch, shrunk:prep.shrunk, alpha:'done'};
+}
+/* 1組を読んで正本に書く。失敗は {ok:false, why} で返す。
+   書く直前に使用権を確かめ、失っていたら {ok:false, stop:true}（残りもやめる） */
+const ORTHO_LOST = 'このタブは閲覧のみになったので、取り込みをやめました';
+async function orthoImportOne(img, wfile){
+  let wf = null;
+  try{ wf = parseWorldFile(await wfile.text()); }catch(e){ wf = null; }
+  if(!wf) return { ok:false, why:'ワールドファイルを読めませんでした。北が上（回転なし）の6行の数字であることを確かめてください' };
+  if(orthoIsDegrees(wf)){
+    return { ok:false, why:'緯度経度（EPSG:4326）のままの画像は使えません。QGIS で EPSG:3857（Webメルカトル）に直して書き出してください' };
+  }
+  let prep = null;
+  try{ prep = await orthoPrepare(img); }
+  catch(e){ return { ok:false, why:(e && e.message ? e.message : '画像を読めませんでした') }; }
+  const bounds = orthoBoundsOf(wf, prep.w, prep.h);
+  const why = orthoBoundsCheck(bounds);
+  if(why) return { ok:false, why };
+  let alpha = '';
+  if(orthoAlphaOn()){
+    // 透明にできなくても（メモリ不足など）取り込みは止めない。そのまま入れて、あとで知らせる
+    try{ prep = await orthoAlphaEdges(prep); alpha = prep.alpha || 'done'; }
+    catch(e){ console.error(e); alpha = 'ng'; }
+  }
+  const id = uuid();
+  const nm = img.name||'', t = prep.blob.type||'';
+  const ext = t === 'image/webp' ? 'webp' : t === 'image/png' ? 'png' : t === 'image/jpeg' ? 'jpg'
+            : /\.webp$/i.test(nm) ? 'webp' : /\.png$/i.test(nm) ? 'png' : 'jpg';
+  const rec = { id, kind:'ortho', blob:prep.blob, ext, size:prep.blob.size, type:prep.blob.type||'',
+                name:String(img.name||'').replace(/\.[^.]+$/,''), bounds, w:prep.w, h:prep.h,
+                rw:(prep.rw > 0 ? prep.rw : null), rh:(prep.rh > 0 ? prep.rh : null),
+                shrunk:!!prep.shrunk, alpha:alpha === 'done', added_at:nowISO() };
+  // 画像の処理には時間がかかる。その間に使用権を渡していたら書かない
+  if(!orthoCanWrite()) return { ok:false, stop:true, why:ORTHO_LOST };
+  try{ await OrthoDB.put(rec); }
+  catch(e){ return { ok:false, why:'保存できませんでした（端末の空き容量を確かめてください）' }; }
+  if(!ORTHO_URLS[id]){ try{ ORTHO_URLS[id] = URL.createObjectURL(prep.blob); }catch(e){ console.error(e); } }
+  // 正本に書けたら、写しにもその場で足す（あとの読み直しが失敗しても、一覧と地図に出るように）
+  const meta = orthoMeta(rec);
+  if(meta) ORTHO_LIST = ORTHO_LIST.filter(o=>o && o.id !== id).concat([meta]);
+  return { ok:true, shrunk:!!prep.shrunk, alpha };
+}
+let ORTHO_BUSY = false;   // 取り込み中（重ねて始めると、同じ写真を二重に入れやすい。最新に更新するも止める）
+async function orthoImport(input){
+  const files = Array.from((input && input.files) || []);
+  if(input) input.value = '';
+  if(ORTHO_BUSY){ toast('取り込み中です。終わるまでお待ちください'); return false; }
+  if(!orthoCanWrite()){ toast('このタブは閲覧のみなので、取り込めません'); return false; }
+  const p = orthoPairUp(files);
+  const problem = orthoPairProblem(files, p);
+  if(problem){ alert(problem); return false; }
+  ORTHO_BUSY = true;
+  allMaps().forEach(applyOrthos);   // 取り込み中は重ねている写真を外す（展開・透明化のメモリと重ならないように）
+  const n = p.pairs.length, fails = [];
+  let ok = 0, shrunk = false, alphaNg = 0, stopped = false;
+  try{
+    for(let i = 0; i < n; i++){
+      toast(n > 1 ? `読み込んでいます…（${i+1}/${n}）` : '読み込んでいます…');
+      const r = await orthoImportOne(p.pairs[i].img, p.pairs[i].wfile);
+      if(r.ok){ ok++; shrunk = shrunk || r.shrunk; if(r.alpha === 'ng') alphaNg++; }
+      else{
+        fails.push({ name:p.pairs[i].img.name||'', why:r.why });
+        if(r.stop){ stopped = true; break; }
+      }
+    }
+  }finally{ ORTHO_BUSY = false; }
+  // 写し・表示用URL・地図・画面をひとまとめに合わせ直す（読み直しが失敗しても、上で足した分は残る）
+  if(ok){ await orthoResync(); orthoNotify(); }
+  else allMaps().forEach(applyOrthos);   // 外していた写真を戻す
+  const alphaNote = alphaNg ? `${alphaNg}枚は透明にできず、そのまま入れました（端末のメモリ不足かもしれません。PC の道具で透明にしてから入れ直せます）` : '';
+  if(stopped){
+    alert(`${ok}枚を取り込みました。${ORTHO_LOST}（残り ${n-ok}組は入れていません）` + (alphaNote ? '\n' + alphaNote : ''));
+  }else if(fails.length){
+    if(n === 1) alert(fails[0].why);
+    else alert(`${ok}枚を取り込み、${fails.length}枚は取り込めませんでした：\n` + fails.map(f=>`・${f.name}：${f.why}`).join('\n') + (alphaNote ? '\n' + alphaNote : ''));
+  }else if(alphaNote){
+    alert((n === 1 ? '取り込みましたが、' : `${n}枚を取り込みましたが、`) + alphaNote);
+  }else{
+    const note = shrunk ? '（大きかったので縮めました）' : '';
+    toast(n === 1 ? `取り込みました${note}` : `${n}枚を取り込みました${note}`);
+  }
+  return !fails.length;
+}
+function orthoShown(){ return orthoPref('show') !== 'false'; }
+function orthoOpacityName(){ const n = orthoPref('opacity'); return ORTHO_OPACITY[n] ? n : '濃い'; }
+function orthoOpacity(){ return ORTHO_OPACITY[orthoOpacityName()]; }
+/* いま開いている地図（画面ごとに作り直される）。空撮を合わせるときはここを通す */
+function allMaps(){ return (typeof mapObj !== 'undefined' && mapObj) ? [mapObj] : []; }
+/* 地図に重ねる。地図を作るたび（applyBaseMap）と、地図を動かし終えるたびに呼ばれる。
+   重ねるのは「いま見えている範囲とその周り」に掛かる写真だけ。長辺 4096px の写真は展開すると
+   1枚 64MB になるので、全部を重ねるとスマホのメモリが足りない。
+   専用の層をタイルと同じ親（回る地図では回転する層）に作り、タイル(200)と線(400)の間に置く。
+   触っても反応しない（地図のタップで点・角を置く画面を邪魔しない） */
+const ORTHO_VIEW_PAD = 0.5;
+const ORTHO_MIN_ZOOM = 14;    // これより引いた地図には重ねない
+const ORTHO_MAX_ACTIVE = 6;
+const ORTHO_ACTIVE_PX = 40e6; // 展開後の画素数の合計（約160MB）まで
+function orthoZoomLow(map){
+  try{ const z = map.getZoom(); return typeof z === 'number' && z < ORTHO_MIN_ZOOM; }catch(e){ return false; }
+}
+function orthoViewOf(map){
+  try{
+    const b = map.getBounds().pad(ORTHO_VIEW_PAD);
+    return { s:b.getSouth(), w:b.getWest(), n:b.getNorth(), e:b.getEast() };
+  }catch(e){ return null; }
+}
+function orthoInView(b, v){
+  if(!b) return false;
+  if(!v) return true;
+  return !(b.n < v.s || b.s > v.n || b.e < v.w || b.w > v.e);
+}
+function orthoCenterOf(map){
+  try{ const c = map.getCenter(); return (c && typeof c.lat === 'number') ? {lat:c.lat, lng:c.lng} : null; }catch(e){ return null; }
+}
+function orthoPickNearest(list, center, max, maxPx){
+  maxPx = maxPx == null ? ORTHO_ACTIVE_PX : maxPx;
+  let order = list.slice();
+  if(center){
+    const d = o=>{ const b = o.bounds; const la = (b.s+b.n)/2 - center.lat, lo = ((b.w+b.e)/2 - center.lng) * Math.cos(center.lat*Math.PI/180); return la*la + lo*lo; };
+    order = list.map((o,i)=>({o, i, d:d(o)})).sort((a,b)=>a.d - b.d || a.i - b.i).map(x=>x.o);
+  }
+  const out = []; let px = 0;
+  for(const o of order){
+    if(out.length >= max) break;
+    const p = orthoRasterPx(o);
+    if(out.length && px + p > maxPx) break;
+    out.push(o); px += p;
+  }
+  return out;
+}
+function applyOrthos(map){
+  if(!map || typeof L === 'undefined' || !L.imageOverlay) return;
+  if(map._orthoDead) return;   // 片付けた地図（遅れて来た合図）には触らない（作った直後はまだ mapObj に入っていないので印で見る）
+  if(!orthoShown()) return;
+  let pane = null;
+  try{ pane = map.getPane('ortho'); }catch(e){ pane = null; }
+  if(!pane){
+    const tiles = map.getPane('tilePane');
+    pane = map.createPane('ortho', tiles && tiles.parentNode ? tiles.parentNode : undefined);
+    pane.style.zIndex = '250';
+    pane.style.pointerEvents = 'none';
+  }
+  if(!map._orthoLater){
+    // 動かしている最中に何度も入れ替えないよう、止まってから少し待つ
+    map._orthoLater = ()=>{
+      if(map._orthoTimer) clearTimeout(map._orthoTimer);
+      map._orthoTimer = setTimeout(()=>{ map._orthoTimer = null; applyOrthos(map); }, 200);
+    };
+    try{ map.on('moveend resize', map._orthoLater); }catch(e){ console.error(e); }
+  }
+  map._orthoLayers = map._orthoLayers || {};
+  const view = orthoViewOf(map), low = orthoZoomLow(map);
+  // 取り込み中（展開・透明化でメモリを使う）は重ねない。終わったら applyOrthos で戻る
+  let want = (low || ORTHO_BUSY) ? [] : ORTHO_LIST.filter(o=>o && !o.broken && o.bounds && ORTHO_URLS[o.id] && orthoInView(o.bounds, view));
+  want = orthoPickNearest(want, orthoCenterOf(map), ORTHO_MAX_ACTIVE);
+  const keep = new Set(want.map(o=>o.id));
+  Object.keys(map._orthoLayers).forEach(id=>{ if(!keep.has(id)) orthoRemoveFrom(map, id); });
+  want.forEach(o=>{
+    if(map._orthoLayers[o.id]) return;
+    try{
+      map._orthoLayers[o.id] = L.imageOverlay(ORTHO_URLS[o.id], [[o.bounds.s, o.bounds.w],[o.bounds.n, o.bounds.e]],
+        {pane:'ortho', opacity:orthoOpacity(), interactive:false}).addTo(map);
+    }catch(e){ console.error(e); }
+  });
+}
+function orthoRemoveFrom(map, id){
+  if(!map || !map._orthoLayers || !map._orthoLayers[id]) return;
+  try{ map.removeLayer(map._orthoLayers[id]); }catch(e){}
+  delete map._orthoLayers[id];
+}
+function orthoRemoveAll(map){
+  if(!map || !map._orthoLayers) return;
+  Object.keys(map._orthoLayers).forEach(id=>orthoRemoveFrom(map, id));
+}
+/* 地図を片付ける前に呼ぶ（destroyMaps）。層・見張り・待ちのタイマーを外す。表示用URLは残す（次の地図で使う） */
+function orthoDetach(map){
+  if(!map) return;
+  map._orthoDead = true;
+  if(map._orthoTimer){ clearTimeout(map._orthoTimer); map._orthoTimer = null; }
+  if(map._orthoLater){ try{ map.off('moveend resize', map._orthoLater); }catch(e){} map._orthoLater = null; }
+  orthoRemoveAll(map);
+}
+function orthoDropUrl(id){
+  if(ORTHO_URLS[id]){ try{ URL.revokeObjectURL(ORTHO_URLS[id]); }catch(e){} }
+  delete ORTHO_URLS[id];
+}
+/* 正本を読み直し、表示用URLをそろえる（起動時・別のタブが足した／消したとき）。
+   URL は削除するまで持ち続ける（地図は画面ごとに作り直すため）。
+   読んでいる間に消されたもの（ORTHO_GONE）には URL を作らない */
+async function orthoPreload(){
+  let r = null;
+  try{ r = await orthoReload(); }catch(e){ console.error(e); return false; }
+  if(r.stale) return true;
+  r.recs.forEach(rec=>{
+    if(!rec || ORTHO_GONE[rec.id] || ORTHO_URLS[rec.id] || !orthoValid(rec)) return;
+    try{ ORTHO_URLS[rec.id] = URL.createObjectURL(rec.blob); }catch(e){ console.error(e); }
+  });
+  const alive = new Set(ORTHO_LIST.filter(o=>!o.broken).map(o=>o.id));
+  Object.keys(ORTHO_URLS).forEach(id=>{ if(!alive.has(id)) orthoDropUrl(id); });
+  allMaps().forEach(m=>{
+    Object.keys(m._orthoLayers||{}).forEach(id=>{ if(!alive.has(id)) orthoRemoveFrom(m, id); });
+    applyOrthos(m);
+  });
+  orthoSyncButtons();
+  orthoRefreshScreen();
+  return true;
+}
+/* 開いている地図の「ドローン写真」ボタンを写しにそろえる（最初の1枚が増えた・最後の1枚が消えたとき）。
+   地図の画面を丸ごと描き直すと入力中の内容を壊すので、ボタンだけ足す・外す */
+function orthoSyncButtons(){
+  const has = ORTHO_LIST.some(o=>o && !o.broken);
+  // 鳥アプリは地図の種類の選択（右上）に「図面・空撮を重ねる」を出す。開いている地図にも合わせる
+  void has;
+  if(typeof orthoEntrySync==='function') orthoEntrySync();
+}
+/* 「図面・空撮」の画面だけ描き直す（入力中の画面・ホームの検索欄は触らない） */
+function orthoRefreshScreen(){
+  const cur = STACK[STACK.length-1];
+  if(cur && cur.name === 'orthos') render();
+}
+function orthoNotify(){}   // 鳥アプリは書けるタブが1つだけ（Web Locks）なので、別のタブへの知らせは要らない
+function orthoSetShown(on, map){
+  orthoPrefSet('show', !!on);
+  const ms = allMaps(); if(map && ms.indexOf(map) < 0) ms.push(map);
+  ms.forEach(m=>{ if(on) applyOrthos(m); else orthoRemoveAll(m); });
+  if(on && ms.some(orthoZoomLow)) toast('図面・空撮は、地図をもう少し拡大すると出ます');
+}
+function orthoSetOpacity(name){
+  if(!ORTHO_OPACITY[name]) return;
+  orthoPrefSet('opacity', name);
+  allMaps().forEach(m=>Object.keys(m._orthoLayers||{}).forEach(id=>{
+    try{ m._orthoLayers[id].setOpacity(ORTHO_OPACITY[name]); }catch(e){}
+  }));
+}
+/* 削除。先に「消した」印を立ててから正本を消す（読み込み中でも URL を作らせない）。
+   正本を消せなければ、印を戻して何も変えない */
+async function orthoDelete(id){
+  const o = ORTHO_LIST.find(x=>x && x.id===id); if(!o) return false;
+  if(!orthoCanWrite()){ toast('このタブは閲覧のみなので、消せません'); return false; }
+  if(!confirm(`「${o.name||'図面・空撮'}」を消します。よろしいですか？`)) return false;
+  const ok = await orthoDeleteOne(id);
+  // 消す直前に使用権を失ったのか、置き場が失敗したのかを分けて知らせる（監査105回目 Major）
+  if(!ok) toast(orthoCanWrite() ? '消せませんでした' : 'このタブは閲覧のみになったので、消していません');
+  await orthoAfterDelete();
+  return ok;
+}
+/* 1枚を正本から消す。消す直前に使用権を確かめる（確認の間に渡していることがある） */
+async function orthoDeleteOne(id){
+  if(!orthoCanWrite()) return false;
+  ORTHO_GONE[id] = true;
+  try{ await OrthoDB.del(id); }
+  catch(e){ delete ORTHO_GONE[id]; return false; }
+  allMaps().forEach(m=>orthoRemoveFrom(m, id));
+  orthoDropUrl(id);
+  ORTHO_LIST = ORTHO_LIST.filter(o=>o && o.id !== id);
+  ORTHO_SEL.delete(id);
+  return true;
+}
+async function orthoAfterDelete(){
+  await orthoResync();
+  orthoNotify();
+}
+/* 足した・消したあとの合わせ直し。読み直せなければ、その場で更新した写しのまま地図とボタンだけ合わせる */
+async function orthoResync(){
+  let done = false;
+  try{ done = await orthoPreload(); }catch(e){ console.error(e); }
+  if(!done){
+    allMaps().forEach(applyOrthos);
+    orthoSyncButtons();
+    orthoRefreshScreen();
+  }
+}
+/* 選んでまとめて消す。選んだ印は「ドローン写真」の画面を開いている間だけ持つ */
+let ORTHO_SEL = new Set(), ORTHO_SEL_MODE = false;
+function orthoSelIds(){ return Array.from(ORTHO_SEL); }
+function orthoSelReset(){ ORTHO_SEL = new Set(); ORTHO_SEL_MODE = false; }
+function orthoSelPrune(){ const alive = new Set(ORTHO_LIST.filter(Boolean).map(o=>o.id)); ORTHO_SEL = new Set(orthoSelIds().filter(id=>alive.has(id))); }
+/* 写真ごとのボタン・チェック欄・カードの押下。id は HTML の属性（data-ortho-id）で持ち、
+   onclick の JavaScript には埋めない（引用符を含む id でも壊れない）。document に1つだけ登録する */
+function orthoOnClick(ev){
+  const t = ev && ev.target; if(!t || typeof t.closest !== 'function') return;
+  const el = t.closest('[data-ortho-act]'); if(!el) return;
+  const act = el.getAttribute('data-ortho-act'), id = el.getAttribute('data-ortho-id') || '';
+  if(act === 'toggle'){ if(ev.stopPropagation) ev.stopPropagation(); orthoSelToggle(id); }
+  else if(act === 'del'){ if(ev.stopPropagation) ev.stopPropagation(); orthoDelete(id); }
+}
+function orthoSelSetMode(on){ ORTHO_SEL_MODE = !!on; if(!on) ORTHO_SEL = new Set(); render(); }
+function orthoSelToggle(id){
+  if(!ORTHO_SEL_MODE) return;
+  if(ORTHO_SEL.has(id)) ORTHO_SEL.delete(id); else if(ORTHO_LIST.some(o=>o && o.id===id)) ORTHO_SEL.add(id);
+  render();
+}
+function orthoSelAll(on){
+  ORTHO_SEL = new Set(on ? ORTHO_LIST.filter(Boolean).map(o=>o.id) : []);
+  render();
+}
+async function orthoDeleteMany(ids){
+  ids = (ids||[]).filter(id=>ORTHO_LIST.some(o=>o && o.id===id));
+  if(!ids.length){ toast('消すものを選んでください'); return false; }
+  if(!orthoCanWrite()){ toast('このタブは閲覧のみなので、消せません'); return false; }
+  if(!confirm(`選んだ ${ids.length}枚を消します。よろしいですか？`)) return false;
+  let ok = 0, ng = 0, lost = false;
+  for(const id of ids){
+    // 1枚ごとに使用権を確かめ、失ったらそこでやめる（1枚が消せなかっただけなら残りは続ける）
+    if(!orthoCanWrite()){ lost = true; break; }
+    if(await orthoDeleteOne(id)){ ok++; continue; }
+    // 消す直前の確かめで使用権を失っていたら、この1枚も「残り」に数えてやめる（監査105回目 Major）
+    if(!orthoCanWrite()){ lost = true; break; }
+    ng++;
+  }
+  ORTHO_SEL = new Set(); ORTHO_SEL_MODE = false;
+  await orthoAfterDelete();
+  if(lost) alert(`${ok}枚を消しました。消えていないのは ${ids.length-ok}枚です`
+    + (ng ? `（${ng}枚は消せず、` : '（')
+    + `このタブが閲覧のみになったので ${ids.length-ok-ng}枚は消していません）`);
+  else if(ng) alert(`${ok}枚を消しました。${ng}枚は消せませんでした（もう一度試してください）`);
+  else toast(`${ok}枚を消しました`);
+  return !ng && !lost;
+}
+function orthoSelDelete(){ return orthoDeleteMany(orthoSelIds()); }
+/* 透過・透明にするかの選択ボタン（pickSeg は書きかけの印を立てるので使わない） */
+function orthoSegHtml(opts, cur, fn){
+  return `<div class="seg">` + opts.map(o=>
+    `<button type="button" class="${o===cur?'on':''}" onclick="orthoSegPick(this); ${fn}('${esc(o)}')">${esc(o)}</button>`
+  ).join('') + `</div>`;
+}
+function orthoSegPick(btn){
+  btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+}
+function orthoFmtBytes(n){ n=+n||0; return n>=1048576 ? (n/1048576).toFixed(1)+'MB' : Math.max(1, Math.round(n/1024))+'KB'; }
+/* 図面・空撮の管理の画面（ホームの「資料・データの管理」から） */
+SCREENS.orthos = ()=>{
+  const list = orthoList();
+  const sel = ORTHO_SEL_MODE, nSel = orthoSelIds().length;
+  const canW = orthoCanWrite();
+  const total = list.reduce((a,o)=>a + (o.size||0), 0);
+  const cards = list.map(o=>{
+    const b = o.bounds || {};
+    const wm = o.broken ? 0 : distMeters([b.s,b.w],[b.s,b.e]), hm = o.broken ? 0 : distMeters([b.s,b.w],[b.n,b.w]);
+    const on = ORTHO_SEL.has(o.id), idAttr = `data-ortho-id="${esc(o.id)}"`;
+    return `<div class="card${sel?' tap':''}"${sel?` data-ortho-act="toggle" ${idAttr}`:''}>
+      <div class="row">${sel?`<input type="checkbox" style="width:22px;height:22px;margin:0" ${on?'checked':''} data-ortho-act="toggle" ${idAttr}>`:''}
+        <div class="grow" style="min-width:0;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.name||'図面・空撮')}</div>
+        ${sel?'':`<button type="button" class="btn danger" style="width:auto;margin:0;padding:6px 12px" ${canW?'':'disabled'} data-ortho-act="del" ${idAttr}>消す</button>`}</div>
+      ${o.broken ? '<div class="small" style="color:#ff9a92">壊れています（消して入れ直してください）</div>' : `
+      <div class="small muted" style="margin-top:6px">
+        ${fmtDist(wm)} × ${fmtDist(hm)} ／ ${esc(o.w)}×${esc(o.h)}px${o.shrunk?'（縮めて保存）':''}
+        ／ ${orthoFmtBytes(o.size||0)} ／ ${esc(fmtDate(o.added_at))}取り込み</div>`}
+    </div>`; }).join('');
+  return {
+    title:'図面・空撮',
+    html:`
+      <div class="card"><div class="small">
+        PC（QGIS）で位置を合わせた図面や空撮写真を、地図に重ねます。<br>
+        画像（PNG/JPG/WebP）と、一緒に書き出されるワールドファイル（.pgw / .jgw / .wld）を
+        <b>同時に選んで</b>ください（a.png と a.pgw のように同じ名前の組）。何組でもまとめて選べます。<br>
+        北が上で、EPSG:3857（Webメルカトル）で書き出したもの。長辺 ${ORTHO_MAX_PX}px を超えるものは縮めて入れます。
+        魚類調査・産卵床調査アプリ用に作った画像がそのまま使えます（用意のしかたも同じ）。
+      </div></div>
+      ${canW ? '' : '<div class="card small" style="color:#ffcf6b">このタブは閲覧のみなので、取り込み・削除はできません（見る・出す/消す・濃さは使えます）。</div>'}
+      <div class="small muted">取り込むときに、画像の外側の白を透明にする</div>
+      ${orthoSegHtml(Object.keys(ORTHO_ALPHA_OPTS), orthoAlphaName(), 'orthoSetAlpha')}
+      <div class="small muted" style="margin:4px 0 8px">縁から白でつながっている部分だけを透明にします（中の白い屋根などは残る）。
+        1枚あたり1〜2秒かかり、保存は大きくなります。</div>
+      <input type="file" id="fOrthoIn" multiple style="display:none" onchange="orthoImport(this)">
+      <button type="button" class="btn primary" ${canW?'':'disabled'} onclick="document.getElementById('fOrthoIn').click()">取り込む（画像＋ワールドファイル、何組でも）</button>
+      <div class="small muted" style="margin-top:10px">地図での濃さ</div>
+      ${orthoSegHtml(Object.keys(ORTHO_OPACITY), orthoOpacityName(), 'orthoSetOpacity')}
+      <div class="small muted" style="margin:4px 0 10px">出す／消すは、地図の右上の「地図の種類」の中の「図面・空撮を重ねる」で切り替えます（いまは「${orthoShown()?'出す':'消す'}」）。
+        地図をある程度拡大したとき（ズーム${ORTHO_MIN_ZOOM}以上）に、見えている所の周りだけ重ねます。</div>
+      ${list.length ? `<div class="small muted">取り込み済み（${list.length}枚・${orthoFmtBytes(total)}）</div>
+      ${sel ? `<div class="btn-grid">
+          <button type="button" class="btn" onclick="orthoSelAll(true)">すべて選ぶ</button>
+          <button type="button" class="btn" onclick="orthoSelAll(false)">選択を外す</button></div>
+        <div class="sp"></div><div class="btn-grid">
+          <button type="button" class="btn danger" ${nSel?'':'disabled'} onclick="orthoSelDelete()">選んだ ${nSel}枚を消す</button>
+          <button type="button" class="btn" onclick="orthoSelSetMode(false)">やめる</button></div>
+        <div class="small muted">押すと選べます。</div>`
+        : `<button type="button" class="btn" ${canW?'':'disabled'} onclick="orthoSelSetMode(true)">選んでまとめて消す</button>`}
+      ${cards}` : '<div class="card small muted">まだありません。</div>'}
+      <div class="note">この端末の中だけに置きます。バックアップ・クラウド保存・書き出し・データベースへの送信には入りません（PC に元があり、大きいため）。
+        ブラウザでこのサイトのデータを消すと消えます。端末を変えたら入れ直してください。</div>`
+  };
+};
+document.addEventListener('click', orthoOnClick);
+// 起動したら置き場を読む（閲覧のみのタブでも見るだけはできる）
+setTimeout(()=>{ orthoPreload().catch(e=>console.error(e)); }, 0);
+const ORTHO_LAYER_NAME='図面・空撮を重ねる';
+/* 地図の種類の選択（右上）に足す「図面・空撮を重ねる」。中身の無い目印の層で、出す／消すの切り替えだけに使う。
+   1枚も無ければ出さない */
+function orthoControlEntry(m, overlays){
+  if(!ORTHO_LIST.some(o=>o && !o.broken)) return;
+  const g=L.layerGroup();
+  overlays[ORTHO_LAYER_NAME]=g;
+  m._orthoEntry=g;
+  if(orthoShown()) g.addTo(m);
+  m.on('overlayadd', e=>{ if(e.layer===g) orthoSetShown(true, m); });
+  m.on('overlayremove', e=>{ if(e.layer===g) orthoSetShown(false, m); });
+}
+/* 開いている地図の切り替え項目を、図面の有無に合わせる（起動時の読み込みが地図を開いた後に終わった・
+   最初の1枚を入れた・最後の1枚を消したとき。差分監査 Minor）。地図は作り直さない */
+function orthoEntrySync(){
+  const has=ORTHO_LIST.some(o=>o && !o.broken);
+  allMaps().forEach(m=>{
+    const ctl=m._layersCtl; if(!ctl || m._orthoDead) return;
+    if(has && !m._orthoEntry){
+      const ov={}; orthoControlEntry(m, ov);
+      if(m._orthoEntry){ try{ ctl.addOverlay(m._orthoEntry, ORTHO_LAYER_NAME); }catch(e){} }
+    }else if(!has && m._orthoEntry){
+      try{ ctl.removeLayer(m._orthoEntry); m.removeLayer(m._orthoEntry); }catch(e){}
+      m._orthoEntry=null;
+    }
+  });
+}
+
+/* 地図の拡大の上限（v235 ユーザー要望「もう少しズームしたい」）。地理院タイルは18段までなので、
+   19〜24段は18段のタイルを引き伸ばして見せる（図面・空撮は画像そのものなので細かく見える）。
+   記録全体に合わせて表示するとき（fitBounds）は今までどおり FIT_MAX_ZOOM で止める
+  （近い記録だけの調査で24段まで寄ってしまわないように） */
+const MAP_MAX_ZOOM=24, FIT_MAX_ZOOM=18;
+/* タイルが取れなかった場所に、上の段のタイルを切り出して入れる（魚類アプリ v 系から移植）。
+   圏外で保存済みの地図（16段まで）より寄ったとき・航空写真が17段までしか無い場所で、真っ白にしない。
+   上の段も無ければ、さらに上を試す（4段まで） */
+function tileParentInfo(z, x, y, up){
+  const size = 256 >> up;
+  return { z: z - up, x: x >> up, y: y >> up,
+    sx: (x - ((x >> up) << up)) * size, sy: (y - ((y >> up) << up)) * size, size };
+}
+function tileErrorFill(img, coords, url, up){
+  if(!img || !coords || up > 4) return;
+  const p = tileParentInfo(coords.z, coords.x, coords.y, up);
+  if(p.z < 5) return;
+  const parent = new Image();
+  parent.crossOrigin = 'anonymous';
+  parent.onload = ()=>{
+    try{
+      const cv = document.createElement('canvas'); cv.width = 256; cv.height = 256;
+      const ctx = cv.getContext('2d'); ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(parent, p.sx, p.sy, p.size, p.size, 0, 0, 256, 256);
+      img.src = cv.toDataURL('image/png');
+    }catch(e){}
+  };
+  parent.onerror = ()=>tileErrorFill(img, coords, url, up + 1);
+  parent.src = url.replace('{z}', p.z).replace('{x}', p.x).replace('{y}', p.y);
+}
 function createBaseMap(elId, center, zoom, opts){
   opts=opts||{};
   const rotatable=!!(L.Map && L.Map.prototype.setBearing);
-  const m=L.map(elId, rotatable?{ rotate:true, rotateControl:false, touchRotate:true, shiftKeyRotate:true, bearing:mapBearing }:{}).setView(center, zoom);
+  const m=L.map(elId, Object.assign({maxZoom:MAP_MAX_ZOOM}, rotatable?{ rotate:true, rotateControl:false, touchRotate:true, shiftKeyRotate:true, bearing:mapBearing }:{})).setView(center, zoom);
   const gsiAttr='<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>';
   // crossOrigin必須: 無指定だとタイル取得がno-cors＝応答がopaqueになり、Service Workerがキャッシュできず
   // 圏外表示（受動キャッシュ・オフライン地図の保存）が全く効かない
-  const gsi=(name,ext,mx,opt)=>L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/'+name+'/{z}/{x}/{y}.'+ext, Object.assign({maxZoom:18, maxNativeZoom:mx||18, attribution:gsiAttr, crossOrigin:'anonymous'}, opt||{}));
+  // 最大は MAP_MAX_ZOOM（v235: 18→24。魚・産卵床と同じ）。タイルの無い段は maxNativeZoom の段を引き伸ばす
+  const gsi=(name,ext,mx,opt)=>{
+    const url='https://cyberjapandata.gsi.go.jp/xyz/'+name+'/{z}/{x}/{y}.'+ext;
+    const t=L.tileLayer(url, Object.assign({maxZoom:MAP_MAX_ZOOM, maxNativeZoom:mx||18, attribution:gsiAttr, crossOrigin:'anonymous'}, opt||{}));
+    t.on('tileerror', ev=>{ try{ tileErrorFill(ev.tile, ev.coords, url, 1); }catch(e){} });
+    return t;
+  };
   const bases={ '標準地図':gsi('std','png',18), '淡色地図':gsi('pale','png',18), '写真（航空・衛星）':gsi('seamlessphoto','jpg',18) };
   let savedBase=localStorage.getItem('bs_basemap'); if(!bases[savedBase]) savedBase='標準地図';
   bases[savedBase].addTo(m);
@@ -3303,10 +4123,12 @@ function createBaseMap(elId, center, zoom, opts){
     let savedOv=[]; try{ savedOv=JSON.parse(localStorage.getItem('bs_overlays')||'[]'); }catch(e){}
     savedOv.forEach(n=>{ if(overlays[n]) overlays[n].addTo(m); });
     m.on('overlayadd overlayremove', ()=>{ try{
-      localStorage.setItem('bs_overlays', JSON.stringify(Object.keys(overlays).filter(n=>m.hasLayer(overlays[n]))));
+      localStorage.setItem('bs_overlays', JSON.stringify(Object.keys(overlays).filter(n=>n!==ORTHO_LAYER_NAME && m.hasLayer(overlays[n]))));
     }catch(err){} });
   }
-  L.control.layers(bases, overlays, {position:'topright', collapsed:true}).addTo(m);
+  orthoControlEntry(m, overlays);   // 図面・空撮（v235）
+  m._layersCtl=L.control.layers(bases, overlays, {position:'topright', collapsed:true}).addTo(m);
+  applyOrthos(m);
   m.on('baselayerchange', e=>{ try{ localStorage.setItem('bs_basemap', e.name); }catch(err){} });
   if(rotatable) addCompassControls(m);
   addFullscreenControl(m);
@@ -3589,22 +4411,46 @@ function compassToggle(btn){
 const CROSS_SVG='<svg width="33" height="33" viewBox="0 0 33 33">'
   +'<g fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"><path d="M16.5 3v9.5M16.5 20.5V30M3 16.5h9.5M20.5 16.5H30"/></g>'
   +'<g fill="none" stroke="#111" stroke-width="1.6" stroke-linecap="round"><path d="M16.5 3v9.5M16.5 20.5V30M3 16.5h9.5M20.5 16.5H30"/></g></svg>';
-/* ---------- タブレット表示（2026-11 試験版） ----------
-   設定 bs_tablet: 'on' のときだけ有効（試験版の間は既定オフ。実機で確かめてから「幅768px以上は既定オン」にする。
-   計画レビュー m1/m2）。観察記録の地図の要素だけを body 直下の層へ移し、元の場所には目印を置く。
-   **入力欄は動かさない**。戻すときは必ず目印の位置へ（「元の親・次の兄弟」では戻さない）。 */
-function tabletOn(){ try{ return localStorage.getItem('bs_tablet')==='on'; }catch(e){ return false; } }
-function tabletSet(on){
-  try{ localStorage.setItem('bs_tablet', on?'on':'off'); }catch(e){}
-  if(!on){ tabletRelease(); try{ mapObj && mapObj.invalidateSize(); }catch(e){} }
-  else if($('#obsPosMap') && mapObj){ tabletAttach(); }
-  tabletToggleSync();
-  toast(on?'タブレット表示にしました（試験版）。地図が画面いっぱいになり、入力は小窓で行います'
-          :'タブレット表示をやめました', 3500);
+/* ---------- 地図いっぱいの観察入力（v235 で常に使う） ----------
+   観察記録の地図の要素だけを body 直下の層へ移し、元の場所には目印を置く。**入力欄は動かさない**。
+   戻すときは必ず目印の位置へ（「元の親・次の兄弟」では戻さない）。
+   v223〜v234 は設定 bs_tablet で手動オンの試験版だったが、スマホで外すと地図が小さく操作しづらい・
+   誤ってオンのまま入ると戻れない（2026-11-08 ユーザー）ため、v235 から**いつも**この表示にし、
+   入力欄の出し方だけを画面の大きさで変える:
+     スマホ（表示領域の短い辺 600px 未満）… body.tab-phone。入力欄は下から出る引き出し
+     それ以外（iPad など）… 今までの左右の小窓
+   判定し直すのは幅が変わったとき（回転・分割表示）だけ。キーボードで高さだけ縮んでも変えない。
+   切り替えでは作り直さない（地図・入力・選択・履歴はそのまま。クラスを替えるだけ。計画レビュー M3）。
+   localStorage bs_layout='classic' は**試験専用**の逃げ道（旧来の小さな地図の配置で既存の試験を回すため）。
+   画面には出さない */
+// 試験の逃げ道: bs_layout='classic' でも、v234 までの試験が旧設定 bs_tablet='on' を入れていれば地図いっぱい（その試験の前提どおり）
+function tabletOn(){ try{ return !(localStorage.getItem('bs_layout')==='classic' && localStorage.getItem('bs_tablet')!=='on'); }catch(e){ return true; } }
+function layoutIsPhone(){
+  const de=document.documentElement;
+  return Math.min(de.clientWidth||window.innerWidth, de.clientHeight||window.innerHeight) < 600;
 }
-function tabletToggleSync(){
-  const b=$('#tabToggle'); if(!b) return;
-  b.textContent = tabletOn() ? '📱 タブレット表示：オン' : '📱 タブレット表示：オフ';
+let _layoutW=-1;
+function layoutSync(force){
+  const w=document.documentElement.clientWidth||window.innerWidth;
+  if(!force && w===_layoutW) return;   // 高さだけの変化（キーボード）では判定し直さない
+  _layoutW=w;
+  const ph=layoutIsPhone();
+  document.body.classList.toggle('tab-phone', ph);
+  if(ph) document.body.classList.remove('tab-left');   // スマホの引き出しに左右は無い
+  sheetSync();
+}
+/* スマホの引き出しの高さ（--sheet-h）とキーボードの高さ（--kb-h）を body に持たせる。
+   地図の下端のボタン・鳴き声AIのボタンを引き出しの上へ逃がすのに使う */
+function sheetSync(){
+  const b=document.body;
+  let kb=0;
+  try{ const vv=window.visualViewport; if(vv) kb=Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)); }catch(e){}
+  b.style.setProperty('--kb-h', kb+'px');
+  let sh=0;
+  if(b.classList.contains('tab-obs') && b.classList.contains('tab-phone') && !b.classList.contains('tab-collapsed')){
+    const app=document.querySelector('.app'); if(app) sh=Math.round(app.getBoundingClientRect().height);
+  }
+  b.style.setProperty('--sheet-h', sh+'px');
 }
 let _tab=null;   // {el, mark, layer}。同時に1つ（地図が1枚のため）
 function tabletAttach(){
@@ -3631,6 +4477,7 @@ function tabletAttach(){
   document.body.classList.add('tab-obs');
   document.body.classList.toggle('tab-collapsed', !keepOpen);
   document.body.classList.remove('tab-left');
+  layoutSync(true);
   tabletBarSync();
   mapUndoBtnSync(true, el);   // 「↶ 1つ戻す」を地図の上に出す（地図の下の ↶ は小窓の中にある）
   if(typeof pfNewLineSync==='function') pfNewLineSync();   // 「✎ この線で入力」の出し入れを合わせる
@@ -3640,6 +4487,7 @@ function tabletAttach(){
 // 地図の要素を目印の位置へ戻し、層・帯・印を片付ける。目印が文書に無ければ（画面ごと消えた）層ごと捨てる
 function tabletRelease(){
   document.body.classList.remove('tab-obs','tab-collapsed','tab-left');
+  try{ document.body.style.setProperty('--sheet-h','0px'); }catch(e){}
   const bar=$('#tabBar'); if(bar) bar.remove();
   const bk=$('#tabBack'); if(bk) bk.remove();
   if(!_tab){ const ly=$('#tabMapLayer'); if(ly) ly.remove(); return; }
@@ -3664,17 +4512,33 @@ function tabletKeepOpen(){
 function tabletPanel(open, target, at){
   if(!document.body.classList.contains('tab-obs')) return;
   document.body.classList.toggle('tab-collapsed', !open);
-  if(open && at && mapObj){
+  const phone=document.body.classList.contains('tab-phone');
+  if(open && at && mapObj && !phone){
     try{ const p=mapObj.latLngToContainerPoint(at); document.body.classList.toggle('tab-left', p.x > window.innerWidth/2); }catch(e){}
   }
   tabletBarSync();
+  sheetSync();
+  // スマホ: いま置いた・描いた地点が引き出しに隠れるなら、地図をずらして引き出しの上に見せる。
+  // 呼ばれるのは置いた・描き終えた後なので、描いている途中の座標はずらさない（計画レビュー M3）
+  if(open && at && mapObj && phone){
+    setTimeout(()=>{ try{
+      if(!mapObj) return;
+      sheetSync();
+      const sh=parseFloat(getComputedStyle(document.body).getPropertyValue('--sheet-h'))||0;
+      const p=mapObj.latLngToContainerPoint(at), H=window.innerHeight, free=H-sh;
+      if(p.y > free-40) mapObj.panBy([0, p.y - free/2]);
+    }catch(e){} }, 80);
+  }
   if(open && target){
     const el=$(target);
     if(el){ if(el.tagName==='DETAILS') el.open=true;
       setTimeout(()=>{ try{ el.scrollIntoView({block:'start', behavior:'smooth'}); }catch(e){} }, 30); }
   }
 }
-window.addEventListener('resize', ()=>{ if(_tab && mapObj){ try{ mapObj.invalidateSize(); }catch(e){} } });
+window.addEventListener('resize', ()=>{ layoutSync(false); sheetSync(); if(_tab && mapObj){ try{ mapObj.invalidateSize(); }catch(e){} } });
+try{ if(window.visualViewport) window.visualViewport.addEventListener('resize', ()=>sheetSync()); }catch(e){}
+// 引き出しの中身が変わって高さが変わったら、地図のボタンの逃がし先も合わせる
+try{ if(window.ResizeObserver){ const ro=new ResizeObserver(()=>sheetSync()); document.addEventListener('DOMContentLoaded', ()=>{ const a=document.querySelector('.app'); if(a) ro.observe(a); }); const a=document.querySelector('.app'); if(a) ro.observe(a); } }catch(e){}
 
 /* ---------- 描くモード（✏ 描く）。観察の地図・飛翔の地図で共用 ----------
    状態: 'idle'（待機）／'draw'（1本のペン・指でなぞっている）／'gesture'（2本指の操作中）。
@@ -5428,7 +6292,11 @@ function pfTryClose(sg,lat,lon){
 function pfDrop(lat,lon){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;   // 保存の後処理中は地図も触らせない
   if(PF_PT && PF_SEL===-1){ ptOpen(lat, lon); return; }   // 「鳥」: ポイントの小窓（いまの観察の地図には何も足さない）
-  if(pfPanBlocks()) return;   // カーソル（✋ 移動）のときは何も置かない
+  if(pfPanBlocks()){   // カーソル（✋ 移動）のときは何も置かない
+    // 何も起きないと「操作できない」と見える（2026-11-08 ユーザー: スマホで操作できない）。短く知らせる（連打で積まない）
+    if(Date.now() > (pfDrop._hintUntil||0)){ pfDrop._hintUntil=Date.now()+4000; toast('いまは「✋ 移動」です。置くときは P・L・N・鳥 を押してください', 3000); }
+    return;
+  }
   pfSnap();   // 「↶」で戻せるように、変える前の状態を控える
   const now=localDatetimeValue();
   // 「直す」で対象が選ばれているときは、新しく落とさずその対象を動かす／描き足す
@@ -5762,8 +6630,7 @@ function initObsPosMap(){
   const all=[]; PF_SEGS.forEach(sg=>{ if(sg.t==='P') all.push(sg.pt); else sg.pts.forEach(x=>all.push(x)); });
   if(PF_NEST) all.push(PF_NEST);
   if(tabletOn()) tabletAttach();   // タブレット表示: 地図を画面いっぱいの層へ（入力欄は動かさない）
-  if(all.length>1){ try{ mapObj.fitBounds(all,{padding:[40,40]}); }catch(e){} }
-  tabletToggleSync();
+  if(all.length>1){ try{ mapObj.fitBounds(all,{padding:[40,40], maxZoom:FIT_MAX_ZOOM}); }catch(e){} }
 }
 /* タブレット表示のときだけ出す「✎ この線で入力」。タップで描いた線の属性を入れる小窓を**開くだけ**
    （保存・新しいL・面への変換はしない。1つの操作に2つの意味を持たせない） */
@@ -8467,16 +9334,21 @@ function aiWorkerEnsure(){
   return AI.workerP;
 }
 
-/* ---------- 保存（端末内だけ。書き出し・同期・バックアップには含めない） ---------- */
+/* ---------- 保存（端末内だけ。同期・自動保存には含めない） ----------
+   v235 から持ち出せる: 検出CSV・録音ZIP（声のWAV）・手動の全部のバックアップ（検出＋声）・DBへ送る（検出の一覧）。
+   版2で「消した印」gone を足した（消した検出を、古いバックアップの読み込みで戻さないため。計画レビュー Major 2）。
+   gone は検出・声の削除と**同じ取引**で書く */
 let _aiDbP=null;
 function aiDb(){
   if(!_aiDbP) _aiDbP=new Promise((res,rej)=>{
-    const r=indexedDB.open('bird-ai', 1);
+    const r=indexedDB.open('bird-ai', 2);
     r.onupgradeneeded=()=>{ const db=r.result;
       if(!db.objectStoreNames.contains('det')) db.createObjectStore('det',{keyPath:'id'}).createIndex('sv','sv');
-      if(!db.objectStoreNames.contains('clip')) db.createObjectStore('clip',{keyPath:'id'}).createIndex('sv','sv'); };
+      if(!db.objectStoreNames.contains('clip')) db.createObjectStore('clip',{keyPath:'id'}).createIndex('sv','sv');
+      if(!db.objectStoreNames.contains('gone')) db.createObjectStore('gone',{keyPath:'id'}).createIndex('sv','sv'); };
     r.onsuccess=()=>{ const db=r.result; db.onversionchange=()=>{ db.close(); _aiDbP=null; }; res(db); };
     r.onerror=()=>{ _aiDbP=null; rej(r.error); };
+    r.onblocked=()=>{ _aiDbP=null; rej(new Error('bird-ai blocked')); };
   });
   return _aiDbP;
 }
@@ -8500,6 +9372,8 @@ const AI_CLIP_KEYS=['clip','clip_sec','clip_bytes','clip_note'];
 function aiPutDet(rec){
   // 作られた時点の「消した回数」（このページの中だけで使う。記録には保存しない＝開き直すと数え直しになるため。監査 Major）
   if(rec._dg===undefined) rec._dg=AI_DGEN[rec.sv]||0;
+  // DB へ送る項目（回数・時刻・確からしさ・★・声の有無）が変わる書き込みは、いつも更新日時を一緒に書く（rereview2 Major）
+  rec.updated_at=nowISO();
   const snap=Object.assign({}, rec); delete snap._dg; delete snap._clipSaving;
   return aiQ(rec.sv, async()=>{
     const db=await aiDb(); const tx=db.transaction('det','readwrite'); const st=tx.objectStore('det');
@@ -8519,11 +9393,14 @@ async function aiDeleteSurveys(svs){
   if(!window.WRITE_OK) return false;
   try{
     const db=await aiDb();
-    const tx=db.transaction(['det','clip'],'readwrite');
+    const tx=db.transaction(['det','clip','gone'],'readwrite');
+    const at=nowISO();
     for(const sv of svs){
       for(const st of ['det','clip']){
         const keys=await aiReq(tx.objectStore(st).index('sv').getAllKeys(sv));
         keys.forEach(k=>tx.objectStore(st).delete(k));
+        // 消した検出の id を同じ取引で控える（どちらかだけ確定することはない。v235 計画レビュー Major 2）
+        if(st==='det') keys.forEach(k=>tx.objectStore('gone').put({id:k, sv, at}));
       }
     }
     await aiTxDone(tx);
@@ -8542,6 +9419,223 @@ async function aiTotalsReload(sv){
   AI_TOT.clipSec=mine.reduce((a,d)=>a+(d.clip?(d.clip_sec||0):0),0);
   AI_TOT.clipSp=Object.create(null);
   mine.forEach(d=>{ if(d.clip) AI_TOT.clipSp[d.ja]=(AI_TOT.clipSp[d.ja]||0)+1; });
+}
+
+/* ---------- 鳴き声AIの持ち出しと読み戻し（v235・2026-11-08 ユーザー決定「音も含めて全部。同期には乗せない」） ----------
+   計画: tasks/todo.md「v235」補足・補足2（Codex 計画レビュー済み）。
+   - 読むときは det・clip を1つの読み取りの取引で読み、その時点の一貫した写しを使う
+   - 書き出す項目は AI_DET_KEYS だけ（内部の印 _dg などを出さない）
+   - 読み戻しは「足りないものを足すだけ」。既にある検出は変えない（★・回数・更新日時も上書きしない）
+     既に正常な声がある検出は声も変えない。声が無い・読めない検出だけ、読み込んだ正常な声で補う
+   - 消した印（gone）のある検出・調査が無い/削除済みの検出は入れない。1件ずつ aiQ（削除と同じ列）で、
+     同じ取引の中で gone と det を確かめてから書く（削除と重なっても消したものは戻らない）
+   - 上限（1調査500件・声は1種10件〈自分で残した音は対象外〉・1調査30分・端末200MB）を超える分は入れない */
+const AI_DET_KEYS=['id','kind','manual','sv','ja','sci','species_id','max','count','t0','t1','lat','lng','acc','pos_t',
+  'model','clip','clip_sec','clip_bytes','clip_note','marked','reason','created_at','updated_at'];
+function aiDetPlain(d){ const o={}; AI_DET_KEYS.forEach(k=>{ if(d && d[k]!==undefined) o[k]=d[k]; }); return o; }
+// svs: 調査の uuid の並び（null なら全部）。withClips: 声の中身も読む
+async function aiSnapshot(svs, withClips){
+  const db=await aiDb();
+  const tx=db.transaction(withClips?['det','clip']:['det'], 'readonly');
+  const set=svs?new Set(svs):null;
+  const all=(await aiReq(tx.objectStore('det').getAll()))||[];
+  const dets=all.filter(d=>d && typeof d.id==='string' && (!set || set.has(d.sv)));
+  const clips=[];
+  if(withClips){
+    const st=tx.objectStore('clip');
+    for(const d of dets){ if(!d.clip) continue;
+      const c=await aiReq(st.get(d.clip));
+      if(c && c.pcm && c.pcm.length) clips.push(c); }
+  }
+  return { dets, clips };
+}
+function aiWavName(d){ return `ai_${d.id}.wav`; }
+// WAV（16bit・モノラル・PCM）を { pcm:Int16Array, sr } に戻す。形式が違えば null
+function aiWavParse(u8){
+  try{
+    if(!u8 || u8.length<44) return null;
+    const v=new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const tag=o=>String.fromCharCode(u8[o],u8[o+1],u8[o+2],u8[o+3]);
+    if(tag(0)!=='RIFF' || tag(8)!=='WAVE') return null;
+    let o=12, fmt=null, data=null;
+    while(o+8<=u8.length){
+      const id=tag(o), len=v.getUint32(o+4,true), body=o+8;
+      if(body+len>u8.length) break;
+      if(id==='fmt ' && len>=16) fmt={ af:v.getUint16(body,true), ch:v.getUint16(body+2,true), sr:v.getUint32(body+4,true), bits:v.getUint16(body+14,true) };
+      else if(id==='data') data={ at:body, len };
+      o=body+len+(len&1);
+    }
+    if(!fmt || !data || fmt.af!==1 || fmt.ch!==1 || fmt.bits!==16 || !(fmt.sr>=8000 && fmt.sr<=192000)) return null;
+    const n=Math.floor(data.len/2); if(n<1) return null;
+    const pcm=new Int16Array(n);
+    for(let i=0;i<n;i++) pcm[i]=v.getInt16(data.at+i*2,true);
+    return { pcm, sr:fmt.sr };
+  }catch(e){ return null; }
+}
+// 手動の全部のバックアップに入れる形。声は WAV の base64
+async function aiBackupPart(){
+  const snap=await aiSnapshot(null, true);
+  const clips=[];
+  for(const c of snap.clips){
+    clips.push({ id:c.id, sv:c.sv, det:c.det, sr:c.sr||AI_SR, t0:c.t0, wav_b64:await blobToB64(aiWav(c.pcm, c.sr||AI_SR)) });
+  }
+  return { version:1, dets:snap.dets.map(aiDetPlain), clips };
+}
+function aiDetOk(d){
+  if(!d || typeof d!=='object' || typeof d.id!=='string' || !d.id || !safeId(d.id)) return false;
+  if(typeof d.sv!=='string' || !d.sv || !safeId(d.sv)) return false;
+  if(d.kind!=='det' && d.kind!=='gap') return false;
+  const num=x=>x==null || (typeof x==='number' && isFinite(x));
+  if(!(typeof d.t0==='number' && isFinite(d.t0))) return false;
+  if(!num(d.t1) || !num(d.max) || !num(d.count) || !num(d.lat) || !num(d.lng) || !num(d.acc)) return false;
+  if(d.lat!=null && d.lng!=null && !validPathPt([d.lat, d.lng])) return false;
+  if(d.kind==='det' && (typeof d.ja!=='string' || (d.count!=null && d.count<0))) return false;
+  if(d.clip!=null && typeof d.clip!=='string') return false;
+  return true;
+}
+function aiTallyNew(){ return { det:{ added:0, existed:0, gone:0, nosurvey:0, limit:0, broken:0 },
+  clip:{ filled:0, ok:0, limit:0, broken:0 }, failed:0 }; }
+function aiTallyText(t){
+  const d=t.det, c=t.clip, parts=[];
+  parts.push(`足した ${d.added}件`);
+  if(d.existed) parts.push(`既にあった ${d.existed}件`);
+  if(d.gone) parts.push(`この端末で消した ${d.gone}件は戻さず`);
+  if(d.nosurvey) parts.push(`調査が無い ${d.nosurvey}件は入れず`);
+  if(d.limit) parts.push(`上限（1調査${AI_CAP_DET}件）で ${d.limit}件は入れず`);
+  if(d.broken) parts.push(`壊れていた ${d.broken}件`);
+  const cp=[];
+  if(c.filled) cp.push(`入れた・補った ${c.filled}件`);
+  if(c.ok) cp.push(`既に正常 ${c.ok}件`);
+  if(c.limit) cp.push(`上限で入れず ${c.limit}件`);
+  if(c.broken) cp.push(`壊れていた ${c.broken}件`);
+  return '鳴き声AIの検出: '+parts.join('・')+(cp.length?'\n声: '+cp.join('・'):'')+(t.failed?`\n書き込みに失敗 ${t.failed}件（確定していません）`:'');
+}
+// 全部のバックアップの ai を読み戻す。記録（調査）の読み込みが確定した後に呼ぶ
+async function aiRestore(part){
+  const t=aiTallyNew();
+  if(!part || typeof part!=='object' || !Array.isArray(part.dets)) return t;
+  const clipsIn=new Map();
+  (Array.isArray(part.clips)?part.clips:[]).forEach(c=>{ if(c && typeof c.det==='string' && typeof c.id==='string' && safeId(c.id)
+    && typeof c.wav_b64==='string' && c.wav_b64.length<=MEDIA_B64_MAX) clipsIn.set(c.det, c); });
+  // いまの量（上限の判定用）。足すたびに数え足す
+  let all=[]; try{ all=await aiDetsAll(); }catch(e){ t.failed=part.dets.length; return t; }
+  const svDet=Object.create(null), svSec=Object.create(null), svSp=Object.create(null);
+  let dev=0;
+  const spKey=(sv,ja)=>sv+'\u0000'+ja;
+  all.forEach(d=>{ if(!d) return;
+    if(d.kind==='det') svDet[d.sv]=(svDet[d.sv]||0)+1;
+    if(d.clip){ dev+=(d.clip_bytes||0); svSec[d.sv]=(svSec[d.sv]||0)+(d.clip_sec||0);
+      if(!d.manual) svSp[spKey(d.sv,d.ja)]=(svSp[spKey(d.sv,d.ja)]||0)+1; } });
+  const dets=part.dets.slice().sort((a,b)=>String(a&&a.created_at||'').localeCompare(String(b&&b.created_at||'')));
+  for(const raw of dets){
+    if(!aiDetOk(raw)){ t.det.broken++; continue; }
+    const s=DB.survey(raw.sv);
+    if(!s || s.deleted_at){ t.det.nosurvey++; continue; }
+    // 声を先に読む（取引の外で。取引の中で時間のかかる処理をすると取引が閉じる）
+    const cin=raw.kind==='det' ? clipsIn.get(raw.id) : null;
+    let wav=null, clipBroken=false;
+    if(cin){ try{ wav=aiWavParse(new Uint8Array(await b64ToBlob(cin.wav_b64||'','audio/wav').arrayBuffer())); }catch(e){ wav=null; }
+      if(!wav) clipBroken=true; }
+    const sec=wav?wav.pcm.length/wav.sr:0, bytes=wav?wav.pcm.length*2:0;
+    // prev: 声を補う検出の今の姿。実体が失われた声も参照・容量・秒数が残って数えられているので、
+    // その分を差し引いてから判定する（上限ちょうどから1件欠けた声を、正常な控えから戻せるように。差分監査 Major 2）
+    const clipRoom=(prev)=>{
+      if(!wav) return false;
+      const had=!!(prev && prev.clip);
+      const pSp=had && !prev.manual ? 1 : 0, pSec=had ? (prev.clip_sec||0) : 0, pBytes=had ? (prev.clip_bytes||0) : 0;
+      if(!raw.manual && (svSp[spKey(raw.sv,raw.ja)]||0)-pSp>=AI_CAP_CLIP_SP) return false;
+      if((svSec[raw.sv]||0)-pSec+sec>AI_CAP_CLIP_SEC) return false;
+      if(dev-pBytes+bytes>AI_CAP_DEV_BYTES) return false;
+      return true; };
+    let prevClip=null;   // 補った検出の、補う前の勘定（数え直しで二重に足さない）
+    let r=null;
+    try{
+      r=await aiQ(raw.sv, async()=>{
+        // 取引の直前にもう一度、調査が残っているかを見る（読み込みの間に調査を消したとき）
+        const s2=DB.survey(raw.sv); if(!s2 || s2.deleted_at) return {res:'nosurvey'};
+        const db=await aiDb(); const tx=db.transaction(['det','clip','gone'],'readwrite');
+        const gone=await aiReq(tx.objectStore('gone').get(raw.id));
+        if(gone){ await aiTxDone(tx); return {res:'gone'}; }
+        const cur=await aiReq(tx.objectStore('det').get(raw.id));
+        if(cur){
+          // 既にある検出は変えない。声が無い・読めないときだけ補う
+          if(cur.kind!=='det' || !cin){ await aiTxDone(tx); return {res:'existed', clip:cin?'ok':null}; }
+          let have=null; if(cur.clip) have=await aiReq(tx.objectStore('clip').get(cur.clip));
+          if(have && have.pcm && have.pcm.length){ await aiTxDone(tx); return {res:'existed', clip:'ok'}; }
+          if(!wav){ await aiTxDone(tx); return {res:'existed', clip:'broken'}; }
+          if(!clipRoom(cur)){ await aiTxDone(tx); return {res:'existed', clip:'limit'}; }
+          const cid=uuid();
+          tx.objectStore('clip').put({ id:cid, sv:cur.sv, det:cur.id, pcm:wav.pcm, sr:wav.sr, t0:(typeof cin.t0==='number'?cin.t0:cur.t0) });
+          if(cur.clip) tx.objectStore('clip').delete(cur.clip);   // 読めなかった古い声の片付け（同じ取引）
+          const next=Object.assign({}, cur, { clip:cid, clip_sec:sec, clip_bytes:bytes, clip_note:'' });
+          // DB へ送る項目（声の有無・秒数・声のメモ）が変わるなら、内容と更新日時を一緒に書く（差分監査 Major 1）。
+          // 実体を直しただけで送る項目が同じなら、元の日時のまま
+          if(!cur.clip !== !next.clip || (cur.clip_sec||0)!==next.clip_sec || (cur.clip_note||'')!==next.clip_note) next.updated_at=nowISO();
+          tx.objectStore('det').put(next);
+          await aiTxDone(tx);
+          prevClip=cur.clip ? { sec:cur.clip_sec||0, bytes:cur.clip_bytes||0, sp:cur.manual?0:1 } : null;
+          return {res:'existed', clip:'filled'};
+        }
+        if(raw.kind==='det' && (svDet[raw.sv]||0)>=AI_CAP_DET){ await aiTxDone(tx); return {res:'limit'}; }
+        const rec=aiDetPlain(raw);
+        let clipRes=null;
+        rec.clip=null; rec.clip_sec=0; rec.clip_bytes=0;
+        if(raw.kind==='det'){
+          if(wav && clipRoom()){
+            const cid=uuid();
+            tx.objectStore('clip').put({ id:cid, sv:rec.sv, det:rec.id, pcm:wav.pcm, sr:wav.sr, t0:(typeof cin.t0==='number'?cin.t0:rec.t0) });
+            Object.assign(rec, { clip:cid, clip_sec:sec, clip_bytes:bytes, clip_note:raw.clip_note||'' });
+            clipRes='filled';
+          }else if(cin){
+            clipRes=clipBroken?'broken':'limit';
+            rec.clip_note=clipBroken?'バックアップの声が壊れていたため声なし':'バックアップから戻すときに上限のため声なし';
+          }
+        }
+        tx.objectStore('det').put(rec);
+        await aiTxDone(tx);
+        return {res:'added', clip:clipRes, kind:raw.kind};
+      });
+    }catch(e){ console.warn('鳴き声AIの読み戻しに失敗', e); r=null; }
+    if(!r || r===false){ t.failed++; continue; }
+    if(r.res==='added'){ t.det.added++; if(r.kind==='det') svDet[raw.sv]=(svDet[raw.sv]||0)+1; }
+    else if(r.res==='existed') t.det.existed++;
+    else if(r.res==='gone') t.det.gone++;
+    else if(r.res==='nosurvey') t.det.nosurvey++;
+    else if(r.res==='limit') t.det.limit++;
+    if(r.clip==='filled'){ t.clip.filled++;
+      const pv=prevClip||{sec:0, bytes:0, sp:0};   // 欠けていた声の勘定は差し替える（二重に数えない）
+      dev+=bytes-pv.bytes; svSec[raw.sv]=(svSec[raw.sv]||0)+sec-pv.sec;
+      if(!raw.manual) svSp[spKey(raw.sv,raw.ja)]=(svSp[spKey(raw.sv,raw.ja)]||0)+1-pv.sp; }
+    else if(r.clip==='ok') t.clip.ok++;
+    else if(r.clip==='limit') t.clip.limit++;
+    else if(r.clip==='broken') t.clip.broken++;
+  }
+  try{ await aiTotalsReload(); }catch(e){}
+  return t;
+}
+// 鳴き声AIの検出CSV
+const AI_CSV_COLS=['survey_id','survey_name','survey_date','detection_id','species_name','scientific_name','species_id',
+  'max_confidence','count','start_time','end_time','latitude','longitude','gps_accuracy_m','manual','marked',
+  'clip_file','clip_sec','clip_note','model','created_at','updated_at'];
+function aiTimeIso(ms){ return (typeof ms==='number' && isFinite(ms)) ? isoLocal(new Date(ms).toISOString()) : ''; }
+async function exportAiCSV(surveys, base){
+  let snap;
+  try{ snap=await aiSnapshot(surveys.map(s=>s.uuid), false); }
+  catch(e){ toast('鳴き声AIの記録を読めませんでした（書き出していません）', 5000); return; }
+  const bySv=new Map(surveys.map(s=>[s.uuid, s]));
+  const dets=snap.dets.filter(d=>d.kind==='det').sort((a,b)=>String(a.sv).localeCompare(String(b.sv)) || (a.t0||0)-(b.t0||0));
+  if(!dets.length){ toast('書き出す鳴き声AIの記録がありません'); return; }
+  const rows=dets.map(d=>{ const s=bySv.get(d.sv)||{};
+    const ll=(d.lat!=null && d.lng!=null && validPathPt([d.lat,d.lng])) ? [d.lat, d.lng] : ['',''];
+    return { survey_id:d.sv, survey_name:s.name||'', survey_date:fmtDate(s.survey_date), detection_id:d.id,
+      species_name:d.ja||'', scientific_name:d.sci||'', species_id:d.species_id||'',
+      max_confidence:d.manual?'':(typeof d.max==='number'?Math.round(d.max*1000)/1000:''), count:d.manual?'':(d.count||0),
+      start_time:aiTimeIso(d.t0), end_time:aiTimeIso(d.t1), latitude:ll[0], longitude:ll[1], gps_accuracy_m:accuracyM(d.acc),
+      manual:d.manual?1:0, marked:d.marked?1:0, clip_file:d.clip?'ai/'+aiWavName(d):'', clip_sec:d.clip?Math.round((d.clip_sec||0)*10)/10:'',
+      clip_note:d.clip_note||'', model:d.model||'', created_at:isoLocal(d.created_at), updated_at:isoLocal(d.updated_at||d.created_at) }; });
+  const body=[AI_CSV_COLS.join(',')].concat(rows.map(r=>AI_CSV_COLS.map(c=>csvCell(r[c])).join(','))).join('\r\n');
+  download(`${base}_ai_detections.csv`, '﻿'+body, 'text/csv;charset=utf-8');
+  toast('鳴き声AIの検出CSVを書き出しました');
 }
 
 /* ---------- 聞き取りの状態 ---------- */
@@ -8833,10 +9927,10 @@ function aiQueueFlush(){
       const tx=db.transaction(['det','clip'],'readwrite');
       const cur=await aiReq(tx.objectStore('det').get(rec.id));
       if(cur && cur.clip) return false;   // 保存済みの声があれば足さない（予約した勘定は呼び出し側で戻す）
-      const next=Object.assign({}, cur||rec, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'' }); delete next._dg; delete next._clipSaving;
+      const next=Object.assign({}, cur||rec, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', updated_at:nowISO() }); delete next._dg; delete next._clipSaving;
       tx.objectStore('clip').put(clip); tx.objectStore('det').put(next);   // 声と検出は同じ処理で一緒に確定する
       await aiTxDone(tx);
-      Object.assign(rec, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'' });
+      Object.assign(rec, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', updated_at:next.updated_at });
       return true;
     }, rec._dg).then(ok=>{
       if(ok) return;
@@ -8982,6 +10076,7 @@ function aiSaveNow(){
   const rec={ id:uuid(), kind:'det', manual:true, sv, ja:'（録音のみ）', sci:'', species_id:'', max:0, count:0, t0, t1,
     lat:posOk?pos.lat:null, lng:posOk?pos.lng:null, acc:posOk?pos.acc:null, pos_t:posOk?pos.t:null,
     model:'', clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', marked:true, obs_uuid:null, created_at:nowISO() };
+  rec.updated_at=rec.created_at;
   clip.det=rec.id;
   const dg=AI_DGEN[sv]||0;
   // 上限の勘定は先に押さえ、保存できなければ戻す
@@ -9008,7 +10103,7 @@ function aiMark(rec, on){
   rec.marked=!!on;
   aiQ(rec.sv, async()=>{ const db=await aiDb(); const tx=db.transaction('det','readwrite'); const st=tx.objectStore('det');
     const cur=await aiReq(st.get(rec.id)); if(!cur) return false;   // 消した後なら何もしない（復活させない）
-    cur.marked=!!on; st.put(cur); return aiTxDone(tx); }, rec._dg).then(()=>aiListLive());
+    cur.marked=!!on; cur.updated_at=nowISO(); rec.updated_at=cur.updated_at; st.put(cur); return aiTxDone(tx); }, rec._dg).then(()=>aiListLive());
 }
 
 /* ---------- 聞こえた鳥の一覧 ---------- */
@@ -9300,7 +10395,7 @@ function initRouteMap(){
   mapObj=createBaseMap('rmap', center, zoom, {});
   mapObj.on('click', e=>{ if(routeMode==='draw'){ routePath.push([e.latlng.lat, e.latlng.lng]); SCREENS._dirty=true; redrawRoute(); } });
   redrawRoute();
-  if(routePath.length>1){ try{ mapObj.fitBounds(routePath,{padding:[40,40]}); }catch(e){} }
+  if(routePath.length>1){ try{ mapObj.fitBounds(routePath,{padding:[40,40], maxZoom:FIT_MAX_ZOOM}); }catch(e){} }
   addLocateControl();
   if(!routePath.length) locateOnMap([]);
 }
@@ -10167,7 +11262,7 @@ function initFlightMap(){
     else L.polyline(smoothPath(p),{color:'#e0a030',weight:3,opacity:.3,dashArray:'4,4'}).addTo(mapObj);
   }); }
   redrawFlight();
-  if(flightPath.length>1){ try{ mapObj.fitBounds(flightPath,{padding:[40,40]}); }catch(e){} }
+  if(flightPath.length>1){ try{ mapObj.fitBounds(flightPath,{padding:[40,40], maxZoom:FIT_MAX_ZOOM}); }catch(e){} }
   addLocateControl();
   if(!flightPath.length) locateOnMap([]);
 }
@@ -11080,7 +12175,7 @@ function drawMap(obs,notes,flights,targets,route,nests){
   if(Object.keys(legend).length) addFlightLegend(legend, fMode);
   mapCurMarker=null; mapCurCircle=null;
   if(lastFix){ addCurrentPos(lastFix.lat,lastFix.lon,lastFix.acc); }
-  if(group.length>1){ try{ mapObj.fitBounds(group,{padding:[40,40]}); }catch(e){} }
+  if(group.length>1){ try{ mapObj.fitBounds(group,{padding:[40,40], maxZoom:FIT_MAX_ZOOM}); }catch(e){} }
   else if(group.length===1 && !lastFix){ mapObj.setView(group[0],15); }
   addLocateControl();   // 右上に「現在地へ」ボタンを設置
   locateOnMap(group);   // 現在地を取得し、自動で表示範囲に含める
@@ -12509,7 +13604,7 @@ function recallPack(id){
   document.querySelectorAll('[data-seg="packLayers"] button').forEach(b=>{
     b.classList.toggle('on', (p.layers||[]).includes(b.textContent)); });
   offlineRedrawShape(); offlineEstimate();
-  try{ mapObj.fitBounds(p.poly, {padding:[30,30]}); }catch(e){}
+  try{ mapObj.fitBounds(p.poly, {padding:[30,30], maxZoom:FIT_MAX_ZOOM}); }catch(e){}
   toast('保存済みの範囲を呼び出しました。「💾 この範囲を保存」で補完・更新できます', 3500);
 }
 async function deleteMapPack(id){
@@ -12603,10 +13698,17 @@ async function exportMediaZip(surveys, base){
     (f.audio||[]).forEach((a,i)=>flAudioItems.push({s,f,a,i}));
     (f.media||[]).forEach((m,i)=>flMediaItems.push({s,f,m,i}));
   }); });
-  if(!audioItems.length && !mediaItems.length && !flAudioItems.length && !flMediaItems.length){ toast('書き出す録音・写真・動画がありません'); return; }
+  // 鳴き声AIの声（v235）。読めなければ中止する（声が欠けたZIPを「全部」として出さない）
+  let aiSnap;
+  try{ aiSnap=await aiSnapshot(surveys.map(s=>s.uuid), true); }
+  catch(e){ toast('鳴き声AIの声を読めませんでした（書き出していません）', 5000); return; }
+  const aiClipById=new Map(aiSnap.clips.map(c=>[c.id, c]));
+  const aiItems=aiSnap.dets.filter(d=>d.kind==='det' && d.clip && aiClipById.has(d.clip));
+  if(!audioItems.length && !mediaItems.length && !flAudioItems.length && !flMediaItems.length && !aiItems.length){ toast('書き出す録音・写真・動画がありません'); return; }
   // 全データをメモリ上でZIP化するため、大きすぎると失敗する。事前にサイズを見積り、危険域は確認・中止する
   const totalBytes=[...audioItems,...flAudioItems].reduce((n,it)=>n+((it.a&&it.a.size)||0),0)
-    + [...mediaItems,...flMediaItems].reduce((n,it)=>n+((it.m&&it.m.size)||0),0);
+    + [...mediaItems,...flMediaItems].reduce((n,it)=>n+((it.m&&it.m.size)||0),0)
+    + aiItems.reduce((n,d)=>n+(d.clip_bytes||0)+44,0);
   const GB=1024*1024*1024;
   if(totalBytes >= 3.5*GB){ toast('データが大きすぎます（約'+(totalBytes/GB).toFixed(1)+'GB）。ZIPは作れません。フォルダ保存やクラウド保存をお使いください'); return; }
   if(totalBytes >= 0.8*GB && !confirm('約'+(totalBytes/GB).toFixed(1)+'GBあります。ZIP作成に時間がかかり、端末によっては失敗します。続けますか？')) return;
@@ -12640,6 +13742,14 @@ async function exportMediaZip(surveys, base){
     files.push({ name, u8:new Uint8Array(await r.blob.arrayBuffer()) });
     idxRows.push([name,(it.m.kind==='video'?'動画(飛翔)':'写真(飛翔)'),csvCell(it.s.name),isoLocal(it.f.start_time),csvCell(it.f.species_name_snapshot),'',''].join(','));
   }
+  const svName=new Map(surveys.map(s=>[s.uuid, s.name||'']));
+  for(const d of aiItems){
+    const c=aiClipById.get(d.clip);
+    const name='ai/'+aiWavName(d);
+    files.push({ name, u8:new Uint8Array(await aiWav(c.pcm, c.sr||AI_SR).arrayBuffer()) });
+    const ll=(d.lat!=null && d.lng!=null && validPathPt([d.lat,d.lng])) ? [d.lat,d.lng] : ['',''];
+    idxRows.push([name,(d.manual?'鳴き声AI(自分で残した音)':'鳴き声AI'),csvCell(svName.get(d.sv)||''),aiTimeIso(d.t0),csvCell(d.ja||''),ll[0],ll[1]].join(','));
+  }
   if(!files.length){ toast('データが見つかりません'); return; }
   const idx=['file,type,survey_name,observed_at,species_name,latitude,longitude'].concat(idxRows).join('\r\n');
   files.push({ name:'index.csv', u8:new TextEncoder().encode('﻿'+idx) });
@@ -12666,7 +13776,9 @@ const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','survey_
   // individual_key も同じ値になり、集計では1羽として数える。**必ず末尾に足す**
   'individual_label',
   // 環境・営巣木それぞれの写真とメモ（2026-08-14 追加）。**必ず末尾に足す**
-  'env_media_file','nest_media_file','env_note','nest_note'];
+  'env_media_file','nest_media_file','env_note','nest_note',
+  // source: 記録の入れ方。「鳥」ポイント（v232）で入れた記録は point、ほかは空（v235）。**必ず末尾に足す**
+  'source'];
 function csvCell(v){ v=v==null?'':String(v);
   // 数式インジェクション対策は「数値でない」文字列にだけ適用する。
   // 負の緯度経度(-73.98)や個体数を ' 付きの文字列に変えてGIS/R/Pythonの数値処理を壊さないため。
@@ -12703,7 +13815,7 @@ function buildRows(surveys){
       media_file:(o.media||[]).map((m,i)=>mediaFilename(o,i,m,'media')).join(';'),
       env_media_file:(o.env_media||[]).map((m,i)=>mediaFilename(o,i,m,'env_media')).join(';'),
       nest_media_file:(o.nest_media||[]).map((m,i)=>mediaFilename(o,i,m,'nest_media')).join(';'),
-      env_note:o.env_note||'', nest_note:o.nest_note||'',
+      env_note:o.env_note||'', nest_note:o.nest_note||'', source:o.source||'',
       external_photo_reference:o.external_photo_reference });
   });});
   return rows;
@@ -12717,7 +13829,13 @@ function exportCSV(surveys, base){
 }
 /* ---------- 報告書向け出力（種一覧表・地点×種マトリクス） #9 ---------- */
 const BREED_ORDER={A:3,B:2,C:1,'':0};
-function exportReport(surveys, base){
+async function exportReport(surveys, base){
+  // 鳴き声AIの回数（画面の種別集計と同じ: kind==='det' かつ自分で残した音を除く件数。個体数・種数には混ぜない）
+  let aiSnapR;
+  try{ aiSnapR=await aiSnapshot(surveys.map(s=>s.uuid), false); }
+  catch(e){ toast('鳴き声AIの記録を読めませんでした（書き出していません）', 5000); return; }
+  const aiCnt=Object.create(null);
+  aiSnapR.dets.forEach(d=>{ if(d && d.kind==='det' && !d.manual && d.ja) aiCnt[d.ja]=(aiCnt[d.ja]||0)+1; });
   // 種ごとに集計（延べ個体数・記録件数・確認方法・繁殖ランク最高・保全指定）。観察＋飛翔経路を合流
   const bySp={}; const svCols=[];   // svCols: {uuid,label} 調査ごとに一意の列
   const svLabel=s=>`${s.name||'（無題）'}${s.round_no?` 第${s.round_no}回`:''}${s.survey_date?' '+fmtDate(s.survey_date):''}`;
@@ -12750,7 +13868,10 @@ function exportReport(surveys, base){
         '飛翔', f.behavior, !!f.species_name_snapshot, countsAsIndividuals(f)); });
   });
   const names=Object.keys(bySp);
-  if(!names.length){ toast('書き出す観察記録がありません'); return; }
+  // AIだけで出た種（目視・飛翔の記録が無い）。確認種には数えず、表の末尾に「AIのみ」として並べる
+  const aiOnly=Object.keys(aiCnt).filter(n=>!bySp[n]).sort((a,b)=>{ const sa=speciesByName(a), sb=speciesByName(b);
+    return (sa?sa.species_id:99999)-(sb?sb.species_id:99999) || a.localeCompare(b); });
+  if(!names.length && !aiOnly.length){ toast('書き出す観察記録がありません'); return; }
   // 目印が同じ記録は「同じ1羽」。いちばん多い個体数を、その記録の種に1回だけ足す
   svRecs.forEach((list, su)=>{
     const best=new Map();
@@ -12773,10 +13894,13 @@ function exportReport(surveys, base){
   // 1) 種一覧表
   // 「延べ個体数」＝記録された数の単純合計、「実数」＝同じ鳥（目印が同じ記録）を1羽と数えた値。
   // 集計画面と同じ分け方。1つの数字だけ出すと、どちらの意味か取り違えられる
-  const listCols=['和名','学名','延べ個体数','実数（同一個体の重複除外）','記録件数','確認方法','繁殖ランク','環境省RL','北海道RL','種の保存法','天然記念物'];
+  // 「鳴き声AI（回数）」は末尾に足す（列の順番で読む外部の表をずらさない）。AIの候補なので聞き違いを含む
+  const listCols=['和名','学名','延べ個体数','実数（同一個体の重複除外）','記録件数','確認方法','繁殖ランク','環境省RL','北海道RL','種の保存法','天然記念物','鳴き声AI（回数）'];
   const listRows=names.map(nm=>{ const m=bySp[nm]; const sp=speciesByName(nm);
     return [nm, sp?sp.scientific_name:'', m.totalRaw, m.total, m.records, [...m.methods].join('・'),
-      (BREED_LABEL[m.rank]||''), csvConserv(nm,'e'), csvConserv(nm,'k'), csvConserv(nm,'h'), csvConserv(nm,'t')]; });
+      (BREED_LABEL[m.rank]||''), csvConserv(nm,'e'), csvConserv(nm,'k'), csvConserv(nm,'h'), csvConserv(nm,'t'), aiCnt[nm]||''];
+  }).concat(aiOnly.map(nm=>{ const sp=speciesByName(nm);
+    return [nm, sp?sp.scientific_name:'', '', '', '', '鳴き声AIのみ（確認種には数えない）', '', csvConserv(nm,'e'), csvConserv(nm,'k'), csvConserv(nm,'h'), csvConserv(nm,'t'), aiCnt[nm]]; }));
   const listCsv='﻿'+[listCols.join(',')].concat(listRows.map(r=>r.map(csvCell).join(','))).join('\r\n');
   download(`${base}_species_list.csv`, listCsv, 'text/csv;charset=utf-8');
 
@@ -12914,6 +14038,41 @@ const HYP_COLS=['survey_id','survey_name','hypothesis_id','title','hypothesis_te
   'rationale','required_data','target_species','target_location','status'];
 const HYPRES_COLS=['survey_id','hypothesis_id','hypothesis_title','result_id','verified_at','observed_result',
   'judgment','judgment_reason','missing_information','alternative_explanation','next_action','next_method','note'];
+/* 調査の一覧（v235）。調査の項目すべて。振り返り（review）は JSON の文字列 */
+const SURVEY_CSV_COLS=['survey_id','name','survey_date','location_name','survey_method','investigator_name','weather','temperature',
+  'wind','wind_direction','visibility','season','round_no','purpose','pre_survey_notes','pre_hypothesis','status',
+  'start_datetime','end_datetime','paused_min','route_length_m','observation_count','flight_count','review'];
+function exportSurveysCSV(surveys, base){
+  const list=(surveys||[]).filter(Boolean);
+  if(!list.length){ toast('書き出す調査がありません'); return; }
+  const rows=list.map(s=>({ survey_id:s.uuid, name:s.name||'', survey_date:fmtDate(s.survey_date), location_name:s.location_name||'',
+    survey_method:s.survey_method||'', investigator_name:s.investigator_name||'', weather:s.weather||'', temperature:s.temperature==null?'':s.temperature,
+    wind:s.wind||'', wind_direction:s.wind_direction||'', visibility:s.visibility||'', season:s.season||'', round_no:s.round_no||'',
+    purpose:s.purpose||'', pre_survey_notes:s.pre_survey_notes||'', pre_hypothesis:s.pre_hypothesis||'', status:s.status||'',
+    start_datetime:isoLocal(s.start_datetime), end_datetime:isoLocal(s.end_datetime),
+    paused_min:(typeof s.paused_ms==='number' && s.paused_ms>0)?Math.round(s.paused_ms/60000):'',
+    route_length_m:(typeof s.route_length_m==='number')?Math.round(s.route_length_m):'',
+    observation_count:DB.obsOf(s.uuid).length, flight_count:DB.flightsOf(s.uuid).length,
+    review:(s.review && typeof s.review==='object')?JSON.stringify(s.review):'' }));
+  const body=[SURVEY_CSV_COLS.join(',')].concat(rows.map(r=>SURVEY_CSV_COLS.map(c=>csvCell(r[c])).join(','))).join('\r\n');
+  download(`${base}_surveys.csv`, '\ufeff'+body, 'text/csv;charset=utf-8');
+  toast('調査の一覧CSVを書き出しました');
+}
+/* 歩いた経路（survey.route）の GeoJSON（v235）。調査ごとに1本の線＋調査の主な項目 */
+function exportRouteGeoJSON(surveys, base){
+  const features=[];
+  (surveys||[]).filter(Boolean).forEach(s=>{
+    const pts=(Array.isArray(s.route)?s.route:[]).filter(validPathPt);
+    if(pts.length<2) return;
+    features.push({ type:'Feature', geometry:{ type:'LineString', coordinates:pts.map(p=>[+p[1], +p[0]]) },
+      properties:{ survey_id:s.uuid, survey_name:s.name||'', survey_date:fmtDate(s.survey_date), survey_method:s.survey_method||'',
+        investigator_name:s.investigator_name||'', start_datetime:isoLocal(s.start_datetime), end_datetime:isoLocal(s.end_datetime),
+        points:pts.length, length_m:Math.round(pathLength(pts)) } });
+  });
+  if(!features.length){ toast('書き出す歩いた経路がありません'); return; }
+  download(`${base}_route.geojson`, JSON.stringify({type:'FeatureCollection', features},null,1), 'application/geo+json');
+  toast('歩いた経路GeoJSONを書き出しました');
+}
 function exportHypCSV(surveys, base){
   const hrows=[], rrows=[];
   surveys.forEach(s=>{ DB.hypOf(s.uuid).forEach(h=>{
@@ -12987,7 +14146,11 @@ function buildRecordsBackup(opts){
     recent, myguide:guide, tombstones:tombs };
 }
 // 全部（録音・写真をbase64同梱）。重い。メディア読取や記録読取に失敗したら例外を投げて中止（空上書き防止）
-async function buildFullBackup(){
+// opts.withAi: 鳴き声AIの検出と声も入れる。**手動の「JSONバックアップ」だけ**（exportBackup）。
+// フォルダへの自動保存・クラウド保存・救出ファイルは今までどおり入れない（v235 ユーザー決定「同期には乗せない」）。
+// AI を読めなければ例外で中止する（AI が欠けた控えを「全部」として書かない）
+async function buildFullBackup(opts){
+  opts=opts||{};
   const c=coreCollectionsRaw();   // 先に記録を厳格読取（失敗ならここで throw）
   const audio=[], media=[];
   const metasA=await AudioDB.all();   // 失敗時は reject が伝播し buildFullBackup 全体が失敗する
@@ -12998,14 +14161,16 @@ async function buildFullBackup(){
   for(const m of metasM){ if(!m||!m.blob) continue;
     media.push({ id:m.id, kind:m.kind, mime:m.mime, ext:m.ext, size:m.size, name:m.name, obs_uuid:m.obs_uuid, flight_uuid:m.flight_uuid,
       created_at:m.created_at, b64:await blobToB64(m.blob) }); }
-  return { app:'bird_survey', version:6, exported_at:nowISO(),
+  const out={ app:'bird_survey', version:6, exported_at:nowISO(),
     surveys:c.surveys, observations:c.observations, notes:c.notes,
     hypotheses:c.hypotheses, hyp_results:c.hyp_results, flights:c.flights,
     recent:DB.recentSpecies(), myguide:myguideList(), tombstones:tombstonesList(), audio, media };
+  if(opts.withAi) out.ai=await aiBackupPart();
+  return out;
 }
 async function exportBackup(){
   toast('バックアップを作成中…（写真・動画が多いと時間がかかります）');
-  let data; try{ data=await buildFullBackup(); }
+  let data; try{ data=await buildFullBackup({withAi:true}); }
   catch(e){ toast('バックアップを中止しました（データを読めませんでした。書き出していません）'); return; }
   download(`bird_survey_backup_${dateValue().replace(/-/g,'')}.json`, JSON.stringify(data), 'application/json');
   toast('バックアップを書き出しました');
@@ -13240,6 +14405,27 @@ function dbSendRecords(){
       dropped += (Array.isArray(raw[k])?raw[k].length:0) - data[k].length; }
     if(dropped<0) dropped=0;
   }catch(e){ dropped=null; }
+  // 鳴き声AIの検出の一覧（声の音は送らない。v235）。送る調査の分だけ。読めなければ送らない
+  const svSent=data.surveys.map(x=>x && x.uuid).filter(Boolean);
+  return aiSnapshot(svSent, false).then(snap=>{
+    data.ai_detections=snap.dets.filter(d=>d.kind==='det').map(aiDetPlain);
+    return dbSendPost(c, data, gen0, dropped);
+  }, e=>{
+    toast('鳴き声AIの記録を読めなかったので、送っていません。もう一度押してください', 6000);
+    throw e;
+  });
+}
+/* DBの返事の AI の件数を確かめる。inserted+updated+unchanged が送った重複しない id の数と合い、rejected が0なら true。
+   AI の件数が無い返事（古いDB）・合わない・おかしな返事は false（「AIも保存済み」と言わない。計画レビュー Major 5・補足2） */
+function dbSendAiOk(body, sent){
+  const a=body && body.ai;
+  if(!a || typeof a!=='object') return false;
+  const n=x=>(typeof x==='number' && isFinite(x) && x>=0) ? x : NaN;
+  const ids=new Set((sent||[]).map(d=>d && d.id).filter(Boolean)).size;
+  const got=n(a.inserted)+n(a.updated)+n(a.unchanged);
+  return got===ids && n(a.received)===(sent||[]).length && n(a.rejected)===0;
+}
+function dbSendPost(c, data, gen0, dropped){
   // 送る直前にも確認（用意している間に記録が変わっていたら送らない）
   if(gen0!==BACKUP_GEN || backupBlocked()){
     toast('記録が変わりました。もう一度押してください', 4000); return Promise.resolve(null); }
@@ -13263,13 +14449,19 @@ function dbSendRecords(){
     if(gen0!==BACKUP_GEN){ _backupPending=true;
       toast('送りましたが、その間に記録が変わりました。もう一度押してください', 5000);
       return body; }
+    const aiSent=data.ai_detections||[];
+    const aiOk=dbSendAiOk(body, aiSent);
     localStorage.setItem('bs_dbsend_sent', nowISO());
     localStorage.setItem('bs_dbsend_last', JSON.stringify({
       at:nowISO(), receipt:String(body.receipt||''),
       surveys:body.surveys|0, observations:body.observations|0, flights:body.flights|0,
       unmatched:body.unmatched|0, unchanged:body.unchanged|0,
-      dropped:(dropped===null?-1:dropped) }));
+      dropped:(dropped===null?-1:dropped),
+      ai_sent:aiSent.length, ai_ok:aiOk }));
     let msg='データベースに届きました（受領証 '+(body.receipt||'—')+'）';
+    if(aiSent.length) msg += aiOk ? ' ／ 鳴き声AI '+aiSent.length+'件も保存されました'
+      : ((body && body.ai) ? ' ／ ⚠ 鳴き声AIの検出はDBで確認できませんでした（件数が合いません）'
+                           : ' ／ ⚠ 記録は送りました。鳴き声AIの検出はDBが古く入っていません');
     if(dropped===null) msg+=' ／ ⚠ 送れなかった記録があるか確かめられませんでした。ホームの「データ点検・修復」を見てください';
     else if(dropped>0) msg+=' ／ ⚠ 壊れていて送れなかった記録が'+dropped+'件あります';
     // 届いたのに「変わらなかった」記録がある＝直したつもりが反映されていない。
@@ -13552,11 +14744,16 @@ async function gdriveFetchRaw(path, token){
    写真とメモが消える（そのあと掃除で実体まで失われる）。
    **項目が有って空**なら「消した」という意思なので、そのまま尊重する。
    無い（undefined）ときだけ引き継ぐ。同期・控えの取り込みの両方で使う */
-const NEW_OBS_FIELDS=['env_media','nest_media','env_note','nest_note'];
-function keepNewFields(mine, theirs){
+const NEW_OBS_FIELDS=['env_media','nest_media','env_note','nest_note',
+  'source'];   // v232 の「鳥」ポイントの印（v235 で追加）
+// 飛翔（線・面）の新しい項目（v235 で追加）。線の途中の旋回上昇◎
+const NEW_FL_FIELDS=['soar_spots'];
+// key: どの入れ物の記録か（DB.key.ob / DB.key.fl）。省くと観察として扱う（v234 までの呼び方）
+function keepNewFields(mine, theirs, key){
   if(!mine || !theirs) return theirs;
+  const fields = key===DB.key.fl ? NEW_FL_FIELDS : (key===undefined || key===DB.key.ob) ? NEW_OBS_FIELDS : [];
   let out=theirs;
-  NEW_OBS_FIELDS.forEach(f=>{
+  fields.forEach(f=>{
     if(theirs[f]===undefined && mine[f]!==undefined){
       if(out===theirs) out=Object.assign({}, theirs);
       out[f]=mine[f];
@@ -13756,8 +14953,8 @@ function mergeRemoteRecords(d){
       // 環境・営巣木を持っていることがある（相手が新しい版で入れて、
       // こちらが古い版で直した場合）。片方向だけだと、次の同期で消えていく
       //（2026-08-14 監査2巡目 Critical）
-      if(!newer(mine,x)){ byId[x.uuid]=keepNewFields(mine, x); changed++; }
-      else { const 補った=keepNewFields(x, mine);
+      if(!newer(mine,x)){ byId[x.uuid]=keepNewFields(mine, x, key); changed++; }
+      else { const 補った=keepNewFields(x, mine, key);
         if(補った!==mine){ byId[x.uuid]=補った; changed++; } }
     });
     for(const u in byId){ if(buried(byId[u])){ delete byId[u]; changed++; } }
@@ -14276,10 +15473,13 @@ SCREENS.exportHub = ()=>{
           <button class="btn" onclick="exportGeoJSON(DB.surveys(),'BirdSurvey_all')">位置GeoJSON（観察者・鳥・巣）</button>
           <button class="btn" onclick="exportFlightsGeoJSON(DB.surveys(),'BirdSurvey_all')">🛩 飛翔経路・範囲GeoJSON</button>
           <button class="btn" onclick="exportHypCSV(DB.surveys(),'BirdSurvey_all')">仮説CSV</button>
-          <button class="btn" onclick="exportMediaZip(DB.surveys(),'BirdSurvey_all')">🎤📷 録音・写真ZIP</button>
+          <button class="btn" onclick="exportMediaZip(DB.surveys(),'BirdSurvey_all')">🎤📷 録音・写真ZIP（鳴き声AIの声も）</button>
+          <button class="btn" onclick="exportAiCSV(DB.surveys(),'BirdSurvey_all')">🐦 鳴き声AIの検出CSV</button>
+          <button class="btn" onclick="exportRouteGeoJSON(DB.surveys(),'BirdSurvey_all')">🧭 歩いた経路GeoJSON</button>
+          <button class="btn" onclick="exportSurveysCSV(DB.surveys(),'BirdSurvey_all')">📋 調査の一覧CSV</button>
         </div>
         <div class="sp"></div>
-        <button class="btn primary" onclick="exportBackup()">💾 JSONバックアップ（全データ・録音・写真含む）</button>
+        <button class="btn primary" onclick="exportBackup()">💾 JSONバックアップ（全データ・録音・写真・鳴き声AI含む）</button>
       </div>
       <h3 class="muted small">調査ごとに書き出し</h3>
       ${surveys.length? surveys.map(s=>`<div class="card tap" onclick="nav('exportSurvey','${s.uuid}')">
@@ -14299,7 +15499,10 @@ SCREENS.exportSurvey = (u)=>{
         <button class="btn primary" onclick="exportGeoJSON([DB.survey('${u}')],'${base}')">位置GeoJSON（観察者・鳥・巣）</button>
         <button class="btn" onclick="exportFlightsGeoJSON([DB.survey('${u}')],'${base}')">🛩 飛翔経路・範囲GeoJSON</button>
         <button class="btn" onclick="exportHypCSV([DB.survey('${u}')],'${base}')">仮説CSV</button>
-        <button class="btn" onclick="exportMediaZip([DB.survey('${u}')],'${base}')">🎤📷 録音・写真ZIP</button>
+        <button class="btn" onclick="exportMediaZip([DB.survey('${u}')],'${base}')">🎤📷 録音・写真ZIP（鳴き声AIの声も）</button>
+        <button class="btn" onclick="exportAiCSV([DB.survey('${u}')],'${base}')">🐦 鳴き声AIの検出CSV</button>
+        <button class="btn" onclick="exportRouteGeoJSON([DB.survey('${u}')],'${base}')">🧭 歩いた経路GeoJSON</button>
+        <button class="btn" onclick="exportSurveysCSV([DB.survey('${u}')],'${base}')">📋 調査の情報CSV</button>
       </div>
       <div class="sp"></div>
       <div class="note">観察 ${DB.obsOf(u).length}件（観察者の位置 ${DB.obsOf(u).filter(o=>validLatLon(o.latitude,o.longitude)).length}件・鳥がいた場所 ${DB.obsOf(u).filter(o=>validLatLon(o.target_latitude,o.target_longitude)).length}件・巣 ${nestRecords(DB.obsOf(u)).length}件（位置付き ${uniqNests(DB.obsOf(u)).length}件）・録音 ${DB.obsOf(u).reduce((n,o)=>n+((o.audio||[]).length),0)}件・写真動画 ${DB.obsOf(u).reduce((n,o)=>n+((o.media||[]).length),0)}件）・飛翔経路 ${DB.flightsOf(u).length}件（録音 ${DB.flightsOf(u).reduce((n,f)=>n+((f.audio||[]).length),0)}件・写真動画 ${DB.flightsOf(u).reduce((n,f)=>n+((f.media||[]).length),0)}件）・仮説 ${DB.hypOf(u).length}件を書き出します。飛翔GeoJSONは、線（経路）を生データ版と曲線版の2ファイル、面（範囲）を1ファイル（_areas）で出します。面は滑らかにしません（丸めると囲った範囲が変わるため）。</div>
@@ -14495,7 +15698,7 @@ function doImport(){
       // v218以前の控えには環境・営巣木の項目そのものが無い。丸ごと入れ替えると、
       // いま持っている写真とメモの参照が消え、掃除で実体まで失われる
       (arr||[]).forEach(x=>{ if(x&&x.uuid)
-        byId[x.uuid]=(key===DB.key.ob && byId[x.uuid]) ? keepNewFields(byId[x.uuid], x) : x; });
+        byId[x.uuid]=byId[x.uuid] ? keepNewFields(byId[x.uuid], x, key) : x; });
       書く[key]=Object.values(byId).filter(alive);
     }
     // 3) マイ図鑑も同じ一括の中で作る（別扱いにすると、ここだけ半端に残る）
@@ -14536,6 +15739,11 @@ function doImport(){
     else toast(total? `取り込みました（記録＋メディア${total}件）` : '取り込みました');
     確定した=true;   // ここまで来たら取り込みは成立。以後は後片付けだけ
     rescanLocalData();
+    // 鳴き声AI（v235）。記録の読み込みとは別に終わる。失敗しても記録の読み込みは取り消さず、結果を別に知らせる
+    if(d.ai && typeof d.ai==='object'){
+      let t=null; try{ t=await aiRestore(d.ai); }catch(e){ t=null; }
+      alert(t ? aiTallyText(t) : '鳴き声AIの記録を読み戻せませんでした（調査の記録は取り込み済みです）');
+    }
     reset('home');
     }catch(e){
       // **後片付けは、覆いを外す前にここで済ませる。**
