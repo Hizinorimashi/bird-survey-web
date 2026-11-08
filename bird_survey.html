@@ -376,7 +376,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v233（2026-11-08 編集タブで記録を選んで直す／保存済みの記録に種名の印／すぐ録音を削除／鳴き声AIの設定）';
+const APP_VERSION = 'v234（2026-11-08 編集で選んでも小窓を閉じない・保存後も編集を続ける／鳥のポイントにメモ／経路まとめを外す／鳥のメモの一覧／種別集計に鳴き声AI）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2340,16 +2340,15 @@ SCREENS.survey = (u)=>{
   const actions = running ? `
     <div class="actions">
       <button type="button" class="act sm primary wide" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🐦</span>観察を追加</button>
-      <button type="button" class="act sm" onclick="nav('map','${u}')"><span class="ic">🗺</span>地図</button>
     </div>
     <details class="fold" id="foldMoreActions" ${SCREENS._actOpen?'open':''} ontoggle="SCREENS._actOpen=this.open">
       <summary><span class="lab" style="display:inline; margin:0;">その他の操作</span>
-        <span class="small muted">聞こえた鳥・鳴き声AIの設定・タブレット表示・経路まとめ・ルート・メモ・仮説・集計・調査情報・終了</span></summary>
+        <span class="small muted">地図・聞こえた鳥・鳴き声AIの設定・タブレット表示・ルート・メモ・仮説・集計・調査情報・終了</span></summary>
       <div class="actions" style="margin:0;">
+        <button type="button" class="act sm" onclick="nav('map','${u}')"><span class="ic">🗺</span>地図</button>
         <button type="button" class="act sm" onclick="nav('aiList','${u}')"><span class="ic">🐦</span>聞こえた鳥</button>
         <button type="button" class="act sm" onclick="const f=document.getElementById('foldAiCfg'); if(f){ f.open=true; f.scrollIntoView({block:'center'}); }"><span class="ic">⚙</span>鳴き声AIの設定</button>
         <button type="button" class="act sm" id="svTabletBtn" onclick="tabletSet(!tabletOn()); this.innerHTML='<span class=&quot;ic&quot;>📱</span>タブレット表示：'+(tabletOn()?'オン':'オフ')"><span class="ic">📱</span>タブレット表示：${tabletOn()?'オン':'オフ'}</button>
-        <button type="button" class="act sm" onclick="nav('flightList','${u}')"><span class="ic">🛩</span>経路まとめ</button>
         <button type="button" class="act sm" onclick="nav('routeEdit','${u}')"><span class="ic">🧭</span>調査ルート</button>
         <button type="button" class="act sm" onclick="nav('noteEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">📝</span>メモ</button>
         <button type="button" class="act sm" onclick="nav('hypotheses','${u}')"><span class="ic">💡</span>仮説</button>
@@ -2382,6 +2381,19 @@ SCREENS.survey = (u)=>{
     ? `<div class="sp"></div><button class="btn danger big" id="selDelBtn" ${SCREENS._sel.set.size?'':'disabled'} onclick="deleteSelected()">選択した${SCREENS._sel.set.size}件を削除</button>`
     : '';
   const notes = DB.notesOf(u);
+  // 鳥（観察・経路）に付けたメモ。新しい順。押すとその記録を開く（v234 ユーザー）
+  const _tv=x=>{ const v=Date.parse(x||''); return isNaN(v)?-Infinity:v; };
+  const birdMemos = obs.map(o=>({ t:o.observed_at, name:o.species_name_snapshot||'（未同定）',
+      text:[o.note?String(o.note):'', o.nest_note?'巣: '+o.nest_note:'', o.env_note?'環境: '+o.env_note:''].filter(x=>String(x).trim()).join(' ／ '),
+      arg:{sv:u, id:o.uuid} }))
+    .concat(DB.flightsOf(u).map(f=>({ t:f.start_time, name:'🛩 '+(f.species_name_snapshot||'（未同定）'),
+      text:String(f.memo||''), arg:null, fl:f })))
+    .filter(m=>String(m.text).trim())
+    .sort((a,b)=>_tv(b.t)-_tv(a.t));
+  // 経路のメモは、同じ鳥の観察があればそちらを開く（観察が無ければ経路を軸に開く）
+  birdMemos.forEach(m=>{ if(m.arg) return;
+    const k=m.fl.individual_key; const o2=k ? obs.find(o=>o.individual_key===k) : null;
+    m.arg = o2 ? {sv:u, id:o2.uuid} : {sv:u, fl:m.fl.uuid}; });
 
   return {
     title: s.name||'調査', sub,
@@ -2394,7 +2406,6 @@ SCREENS.survey = (u)=>{
         <button class="btn" onclick="nav('summary','${u}')">📊 集計</button>
         <button class="btn" onclick="nav('hypotheses','${u}')">💡 仮説・検証</button>
         <button class="btn" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))">🐦 観察を追加</button>
-        <button class="btn" onclick="nav('flightList','${u}')">🛩 飛翔経路まとめ</button>
         <button class="btn" onclick="nav('routeEdit','${u}')">🧭 調査ルート</button>
         ${(s.route&&s.route.length)?roBtn(`<button class="btn" onclick="newSurveyFromRoute('${u}')">🧭 このルートで新規調査</button>`):''}
         <button class="btn" onclick="nav('surveyEdit','${u}')">✎ 調査情報を編集</button>
@@ -2408,6 +2419,10 @@ SCREENS.survey = (u)=>{
         ${notes.map(n=>`<div class="card tap" onclick="nav('noteEdit', JSON.stringify({sv:'${u}',id:'${n.uuid}'}))">
           <div class="small"><span class="badge">${esc(n.category||'')}</span> ${fmtTime(n.recorded_at)}</div>
           <div>${esc((n.content||'').slice(0,120))}</div></div>`).join('')}`:''}
+      ${birdMemos.length?`<div class="divider"></div><h3>鳥のメモ <span class="muted small">(${birdMemos.length})</span></h3>
+        ${birdMemos.map(m=>`<div class="card tap" data-arg="${esc(JSON.stringify(m.arg))}" onclick="${window.READ_ONLY?'':`nav('obsEdit', this.dataset.arg)`}">
+          <div class="small"><b>${esc(m.name)}</b> <span class="muted">${fmtTime(m.t)}</span></div>
+          <div>${esc(String(m.text).slice(0,200))}</div></div>`).join('')}`:''}
     `,
     onMount:()=>{ if(running && gpsWatchId==null) startGpsIndicator(); }   // 再描画では張り直さない（瞬断防止）
   };
@@ -2610,14 +2625,17 @@ SCREENS.obsEdit = (argStr)=>{
     ${segMulti(field,opts)}
   </details></div>`;
 
+  // 経路だけの記録（観察の無い鳥）を開いたときも、見た目は「編集中」にする（v234。追加タブに見えていた）
+  const editView = editing || !!flAnchor;
+  SCREENS._obsEditView = editView;
   return {
-    title: editing?'観察を編集':'観察を追加',
-    hideBack: !!editing,
+    title: editView?'観察を編集':'観察を追加',
+    hideBack: editView,
     html:`
       <!-- 追加と編集をタブで分ける（2026-11-07 ユーザー決定）。編集中の「＋ 追加」は、保存してから新しい観察へ -->
       <div class="seg obs-tabs" id="obsTabs" style="margin-bottom:8px;">
-        <button type="button" class="${editing?'':'on'}" onclick="obsTabAdd('${o.uuid}','${svUuid}',${editing?'true':'false'})">＋ 追加</button>
-        <button type="button" class="${editing?'on':''}" onclick="obsTabEdit(${editing?'true':'false'})">✎ 編集${editing?'中':''} ▾</button>
+        <button type="button" class="${editView?'':'on'}" onclick="obsTabAdd('${o.uuid}','${svUuid}',${editing?'true':'false'},${editView?'true':'false'})">＋ 追加</button>
+        <button type="button" class="${editView?'on':''}" onclick="obsTabEdit(${editView?'true':'false'})">✎ 編集${editView?'中':''} ▾</button>
       </div>
       <div id="obsPickBox" class="obs-pick-box" style="display:none;"></div>
       <!-- 地図が主役。P=鳥がいた場所（点）、F=飛翔経路（線）。何を保存するかは地図の中身で決まる -->
@@ -2869,11 +2887,11 @@ SCREENS.obsEdit = (argStr)=>{
       <div class="note">地図の <b>P</b> で鳥がいた場所、<b>L</b> で飛んだ経路を記録します。範囲（旋回上昇・行動範囲など）は、囲ってから<b>始点をもう一度タップ</b>すると面になります。落とした内容に応じて記録が作られ、時刻と距離帯は自動で入ります。</div>
       <!-- 現場でいちばん押すのは「保存して次の個体へ」なので、こちらを常に見える位置に置く。
            記録を直しているとき（editing）は次の個体に進む場面ではないので「保存する」を前に出す -->
-      <div class="savebar">${editing
+      <div class="savebar">${editView
         ? `<button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing},false)">保存する</button>`
         : `<button class="btn primary big" onclick="saveObs('${o.uuid}','${svUuid}',${editing},'addBird')">💾 保存して次の個体へ</button>`}</div>
       <div style="display:flex; gap:8px; margin-top:8px;">
-        ${editing
+        ${editView
           ? `<button type="button" class="btn" style="flex:1;" onclick="saveObs('${o.uuid}','${svUuid}',${editing},'addBird')">💾 保存して次の個体へ</button>`
           : `<button type="button" class="btn" style="flex:1;" onclick="saveObs('${o.uuid}','${svUuid}',${editing},false)">保存する</button>`}
         ${BIRDS.length>1?`<button type="button" class="btn danger" style="flex:1;" onclick="birdDrop()">この個体を消す</button>`:''}
@@ -3608,7 +3626,10 @@ function tabletAttach(){
     document.body.appendChild(bar); }
   _tab={el, mark, layer};
   if(typeof PF_SPIRAL!=='undefined' && PF_SPIRAL && typeof spiralToggle==='function') spiralToggle();   // くるくるは使わない（欄も隠す）
-  document.body.classList.add('tab-obs','tab-collapsed');   // 既定は畳んだ帯（地図を広く）
+  // 既定は畳んだ帯（地図を広く）。編集で記録を選んだ・保存して読み直した直後は、開いていた小窓を保つ（v234）
+  const keepOpen = Date.now() < (SCREENS._tabOpenUntil||0); SCREENS._tabOpenUntil=0;
+  document.body.classList.add('tab-obs');
+  document.body.classList.toggle('tab-collapsed', !keepOpen);
   document.body.classList.remove('tab-left');
   tabletBarSync();
   mapUndoBtnSync(true, el);   // 「↶ 1つ戻す」を地図の上に出す（地図の下の ↶ は小窓の中にある）
@@ -3636,6 +3657,10 @@ function tabletBarSync(){
 }
 /* 小窓を開く／畳む。target … 開いたときに寄せて見せる欄（P:止まり情報 / N:巣 / L:線の属性）。
    at … いま置いた・描いた地点。地図の右半分なら小窓を左へ寄せて、描いた場所を隠さない */
+// いま小窓が開いていれば、この後の描き直しで開いたままにする目印を付ける（少し経ったら無効）
+function tabletKeepOpen(){
+  SCREENS._tabOpenUntil = (document.body.classList.contains('tab-obs') && !document.body.classList.contains('tab-collapsed')) ? Date.now()+3000 : 0;
+}
 function tabletPanel(open, target, at){
   if(!document.body.classList.contains('tab-obs')) return;
   document.body.classList.toggle('tab-collapsed', !open);
@@ -4267,8 +4292,9 @@ function birdDrop(){
 }
 // 保存が成功したあとの受け皿。複数個体のときは画面に留まり、
 // この個体を「保存済みの記録の編集」として読み直す（追加なら新しい個体も開く）
-function birdAfterSave(u2, add, flU){
-  if(!add && BIRDS.length<=1) return false;
+function birdAfterSave(u2, add, flU, stay){
+  if(!add && BIRDS.length<=1 && !stay) return false;
+  tabletKeepOpen();
   if(typeof spiralReset==='function') spiralReset();   // 押している状態を次の個体へ持ち越さない
   PF_PAN=true; PF_PT=false;   // 保存後に読み直す・次の個体も「✋ 移動」から
   const nb=newBird();
@@ -4311,14 +4337,14 @@ function birdAfterSave(u2, add, flU){
 // 営巣木・巣の欄は、N モード・巣を置いた・巣の入力がある（開き直した記録を含む）ときだけ出す（2026-11-07 ユーザー要望）。
 // 隠しても欄はフォームの中にあるので、値は今までどおり保存・復元される
 // 観察の画面のタブ。編集中の「＋ 追加」は、いまの編集を保存してから新しい観察の入力へ（保存できなければ留まる）
-function obsTabAdd(u, sv, editing){
-  if(!editing) return;
+function obsTabAdd(u, sv, editing, editView){
+  if(!editing && !editView) return;
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;
   // この画面にほかの個体の入力があるときは進まない。保存のあとの画面移動で書きかけの確認が出て、
   // 取り消すと画面と保存済みの記録が食い違うため（v228 監査 Major）
   if(typeof BIRDS!=='undefined' && BIRDS.length>1){
     toast('この画面には複数の個体があります。新しい個体は、下の「💾 保存して次の個体へ」で追加してください', 6000); return; }   // 案内どおりに進める操作を示す（監査 Minor）
-  saveObs(u, sv, true, true);
+  saveObs(u, sv, !!editing, true);   // 経路だけの記録（editing=false）は新規の観察として扱う（保存後は追加へ）
 }
 // 「✎ 編集」: この調査の記録の一覧（新しい順）を開け閉めし、押した記録を直す（v233・2026-11-08 ユーザー）
 function obsTabEdit(editing){
@@ -4352,6 +4378,7 @@ function obsOpenEdit(a){
   // 確認が通ったら、書きかけの個体（切替で退避した分も含む）を捨てて仕切り直す。
   // 残すと画面の復元処理が選んだ記録ではなく元の個体を開いてしまう（v233 監査 Major）
   BIRDS=[newBird()]; BIRD_IDX=0; SCREENS._birdKeep=false;
+  tabletKeepOpen();   // タブレット表示で小窓を開いていたら、開き直した後も開いたままにする（v234）
   STACK[STACK.length-1]={ name:'obsEdit', arg:JSON.stringify(a.id?{sv, id:a.id}:{sv, fl:a.fl}) };
   render();
 }
@@ -4430,7 +4457,8 @@ function ptSet(){
   pfBtnSync();
   pfInfo(); pfSyncFlightFields(); nestFoldSync();
 }
-function ptHasInput(){ const i=document.getElementById('ptSp'); return !!(PT_CUR && i && String(i.value||'').trim()); }
+function ptHasInput(){ const i=document.getElementById('ptSp'), m=document.getElementById('ptMemo');
+  return !!(PT_CUR && ((i && String(i.value||'').trim()) || (m && String(m.value||'').trim()))); }
 // 小窓を閉じてよいか（入力が残っていれば確かめる。取り消したら閉じない）
 function ptCloseOk(){ return !ptHasInput() || confirm('ポイントに入力中の鳥があります。捨ててよいですか？'); }
 function ptClose(){
@@ -4457,6 +4485,7 @@ function ptOpen(lat, lon){
       <datalist id="ptDatalist">${SPECIES.map(sp=>`<option value="${esc(sp.japanese_name)}"></option>`).join('')}</datalist>
       <div class="pt-row"><input id="ptSp" list="ptDatalist" autocomplete="off" placeholder="種名（和名）" enterkeyhint="done">
         <input id="ptCnt" type="number" inputmode="numeric" min="1" step="1" value="1" aria-label="個体数"><span class="small muted">羽</span></div>
+      <div class="pt-row"><input id="ptMemo" autocomplete="off" maxlength="500" placeholder="メモ（任意）" enterkeyhint="done"></div>
       <div class="pt-row"><button type="button" class="btn primary" id="ptAdd" onclick="ptSave()">追加</button>
         <button type="button" class="btn ghost" onclick="ptClose()">やめる</button></div>`;
     ['pointerdown','mousedown','touchstart','click','dblclick','wheel'].forEach(t=>box.addEventListener(t, e=>e.stopPropagation()));
@@ -4464,6 +4493,7 @@ function ptOpen(lat, lon){
   } else if(keep){ /* 置き直し: 入力は確認の上で捨てた（または空だった） */ }
   const sp=document.getElementById('ptSp'); if(sp){ sp.value=''; try{ sp.focus(); }catch(e){} }
   const cn=document.getElementById('ptCnt'); if(cn) cn.value='1';
+  const mm=document.getElementById('ptMemo'); if(mm) mm.value='';
 }
 // 1件だけ保存する。いまの観察の状態（SCREENS._dirty など）は変えない
 function ptSave(){
@@ -4475,6 +4505,7 @@ function ptSave(){
   const cntRaw=String((document.getElementById('ptCnt')||{}).value||'').trim();
   const cnt=cntRaw===''?NaN:Number(cntRaw);
   if(!Number.isInteger(cnt) || cnt<1 || cnt>100000){ toast('個体数は1以上の整数で入れてください'); return; }   // 1.9 を黙って1羽にしない（v232 監査 Major）
+  const memo=String((document.getElementById('ptMemo')||{}).value||'').trim().slice(0,500);
   if(!writeAllowed()) return;
   const c=PT_CUR, s=DB.survey(c.sv);
   if(!s || s.deleted_at){ toast('調査が見つからないため保存できませんでした'); return; }
@@ -4491,7 +4522,7 @@ function ptSave(){
       target_latitude:c.lat.toFixed(6), target_longitude:c.lon.toFixed(6), perch_size:'', perch_class:'',
       nest_tree_species:'', nest_tree_height:'', nest_state:'',
       identification_status:'確定', confidence:'中', needs_review:!sp,
-      note:'', external_photo_reference:'', audio:[], media:[], env_note:'', nest_note:'', env_media:[], nest_media:[],
+      note:memo, external_photo_reference:'', audio:[], media:[], env_note:'', nest_note:'', env_media:[], nest_media:[],
       source:'point', created_at:nowISO(), updated_at:nowISO() };
     arr.push(rec);
     if(!DB.save(DB.key.ob, arr)) return;   // 失敗は DB.save が知らせる。成功とは言わず入力を残す
@@ -7600,9 +7631,10 @@ function saveObs(u, svUuid, editing, cont){
       PF_SEGS=[]; PF_NEWLINE=true;
       toast(flRecs.length ? ('飛翔経路を'+flRecs.length+'本保存しました') : '経路を削除しました');
       // 複数個体: 飛翔だけの保存でも画面に留まる
-      if(typeof birdAfterSave==='function' && (cont==='addBird' || (BIRDS.length>1 && cont!==true))){
+      const stayEditF = cont===false && !!SCREENS._obsEditView;   // 直している記録の「保存する」は画面に留まる（v234）
+      if(typeof birdAfterSave==='function' && (cont==='addBird' || (BIRDS.length>1 && cont!==true) || stayEditF)){
         const flU0=((flRecs[0]&&flRecs[0].uuid) || anchorFlId || null);   // 今回書けた生存の経路を優先
-        if(birdAfterSave(null, cont==='addBird', flU0)) return true;
+        if(birdAfterSave(null, cont==='addBird', flU0, stayEditF)) return true;
       }
       if(cont===true){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid})); } else goBack();
       return true;
@@ -7766,8 +7798,10 @@ function saveObs(u, svUuid, editing, cont){
   if(reasons.length) toast((rec.needs_review?'保存しました ⚠ 要確認を付けました: ':'保存しました（⚠ ')+reasons.join('・')+(rec.needs_review?'':'）'), 4000);
   else toast('保存しました');
   // 複数個体: 保存後は画面に留まり、この個体を「保存済み」として読み直す
-  if(typeof birdAfterSave==='function' && (cont==='addBird' || (BIRDS.length>1 && !cont))){
-    if(birdAfterSave(rec.uuid, cont==='addBird', null)) return;
+  // 記録を直している（経路だけの記録を含む）ときの「保存する」も画面に留まり、直した記録を読み直す（v234 ユーザー）
+  const stayEdit = cont===false && !!SCREENS._obsEditView;
+  if(typeof birdAfterSave==='function' && (cont==='addBird' || (BIRDS.length>1 && !cont) || stayEdit)){
+    if(birdAfterSave(rec.uuid, cont==='addBird', null, stayEdit)) return;
   }
   if(cont==='flight'){
     // 同じ鳥の飛翔経路へ。目印を付けておくと、集計で二重に数えられない
@@ -10818,6 +10852,10 @@ SCREENS.summary = (u)=>{
     touchTime(m,f.start_time);
   });
   const rows=Object.values(map).sort((a,b)=>b.total-a.total);
+  // 鳴き声AIの検出回数（この端末に溜まった「聞こえた鳥」。自分で残した音は除く）。読み込みは画面を出した後（v234）。
+  // 個体数・回数・種数には混ぜない。AIだけで出た種は、目視の行の下に「AIのみ」として並べる
+  const aiCnt=(SCREENS._sumAi && SCREENS._sumAi.sv===u) ? SCREENS._sumAi.cnt : null;
+  const aiOnly=aiCnt ? Object.keys(aiCnt).filter(n=>!map[n]).sort((a,b)=>aiCnt[b]-aiCnt[a]) : [];
   // 同一個体として結び付けた記録を1つに数えた個体数。
   // 目印ごとの最大羽数は**種をまたいで**先に求める（同じ目印がトビ2羽とノスリ5羽なら5羽が1組）。
   // そのうえで、その目印は「最初に現れた種」の行だけが数える＝行の合計と全体の実数が必ず一致する
@@ -10856,17 +10894,19 @@ SCREENS.summary = (u)=>{
       (uniqInd!==totalInd)?`<span class="pill">実数 ${uniqInd}個体</span>`:'',
       flightRoutes?`<span class="pill">飛翔 ${flightRoutes}経路</span>`:''].filter(Boolean),
     html:`
-      ${rows.length? `<div class="tablewrap"><table>
-        <thead><tr><th>種名</th><th class="num">個体</th><th class="num">回数</th><th class="num">経路</th><th>初認</th><th>終認</th><th>確認</th></tr></thead>
+      ${(rows.length||aiOnly.length)? `<div class="tablewrap"><table>
+        <thead><tr><th>種名</th><th class="num">個体</th><th class="num">回数</th><th class="num">経路</th><th>初認</th><th>終認</th><th>確認</th><th class="num">鳴き声AI</th></tr></thead>
         <tbody>${rows.map(r=>`<tr>
           <td>${esc(r.name)}${r.review?` <span class="badge warn tiny">要${r.review}</span>`:''}</td>
           <td class="num">${r.total}${r.uniq!==r.total?`<br><span class="tiny muted">実${r.uniq}</span>`:''}</td><td class="num">${r.count}</td><td class="num">${r.routes||''}${r.areas?`<br><span class="tiny muted">面${r.areas}</span>`:''}</td>
           <td>${fmtTime(r.first)}</td><td>${fmtTime(r.last)}</td>
-          <td class="tiny muted">${[...r.methods].join('/')}</td></tr>`).join('')}</tbody>
+          <td class="tiny muted">${[...r.methods].join('/')}</td><td class="num">${aiCnt?(aiCnt[r.name]||''):'…'}</td></tr>`).join('')}
+        ${aiOnly.map(n=>`<tr class="muted"><td>${esc(n)} <span class="badge tiny">AIのみ</span></td><td class="num"></td><td class="num"></td><td class="num"></td><td></td><td></td><td class="tiny muted">鳴き声AI</td><td class="num">${aiCnt[n]}</td></tr>`).join('')}</tbody>
       </table></div>` : '<div class="empty">観察記録がありません。</div>'}
       <div class="sp"></div>
       <div class="note">合計個体数は延べ数です。同一個体の重複記録を含むため、生息個体数とは限りません。飛翔経路の個体数も延べに含みます。<br>
-      「実数」は、観察と飛翔経路を行き来して<b>同じ鳥として記録した組</b>を1個体として数え直した値です（群れは最大の羽数）。結び付けていない記録は延べのままです。</div>
+      「実数」は、観察と飛翔経路を行き来して<b>同じ鳥として記録した組</b>を1個体として数え直した値です（群れは最大の羽数）。結び付けていない記録は延べのままです。<br>
+      「鳴き声AI」は、この端末の鳴き声AIが聞き取った回数（「聞こえた鳥」の件数）です。AIの候補なので聞き違いを含み、個体数・回数・確認種数には入れていません。「AIのみ」はAIだけが聞き取った種です。</div>
       ${densHtml}
       ${(flightRoutes||flightAreas)?`<div class="sp"></div>
       <h3 style="margin:0 0 6px;">飛翔経路のまとめ</h3>
@@ -10879,9 +10919,21 @@ SCREENS.summary = (u)=>{
       ${flightAreas?'<div class="note">範囲（面）のうち、概略行動範囲・推定営巣範囲・大まかな確認範囲は個体数に数えていません。合計距離は線だけの合計です。</div>':''}`:''}
       <div class="sp"></div>
       <button class="btn" onclick="nav('exportSurvey','${u}')">⤓ この調査を書き出す（CSV/GeoJSON）</button>
-    `
+    `,
+    onMount:()=>sumAiLoad(u)
   };
 };
+// 種別集計の「鳴き声AI」列: 端末の中の検出を数え、変わっていたら集計を描き直す（同じなら描き直さない＝繰り返さない）
+async function sumAiLoad(u){
+  let rows=[]; try{ rows=await aiDetsOf(u); }catch(e){ rows=[]; }
+  const cnt={};
+  rows.forEach(d=>{ if(d && d.kind==='det' && !d.manual && d.ja) cnt[d.ja]=(cnt[d.ja]||0)+1; });
+  const prev=(SCREENS._sumAi && SCREENS._sumAi.sv===u) ? JSON.stringify(SCREENS._sumAi.cnt) : null;
+  if(prev===JSON.stringify(cnt)) return;
+  SCREENS._sumAi={ sv:u, cnt };
+  const cur=STACK[STACK.length-1]||{};
+  if(cur.name==='summary' && cur.arg===u) render();
+}
 
 /* ============================================================
    地図
