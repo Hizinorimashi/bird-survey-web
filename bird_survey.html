@@ -144,25 +144,37 @@
     background:var(--panel); color:var(--fg); border:1px solid var(--line);
     border-radius:10px; cursor:pointer; box-shadow:0 1px 5px rgba(0,0,0,.4);}
   .map-undo-btn:active{background:var(--panel2);}
-  /* 鳴き声AI: どの画面でも出る浮きボタンと、検出のポップアップ（#main の外） */
-  .aifab{position:fixed; left:10px; bottom:calc(88px + env(safe-area-inset-bottom, 0px)); z-index:1200; display:flex; gap:6px; align-items:center;}
-  .aifab button{border:1px solid var(--line); background:var(--panel); color:var(--fg); border-radius:999px; padding:10px 14px;
-    font-size:14px; font-weight:700; min-height:44px; box-shadow:0 2px 10px rgba(0,0,0,.4); cursor:pointer;}
+  /* 鳴き声AI: どの画面でも出る小さな浮きボタンと、押したときだけ開く「新しく聞こえた鳥」（#main の外）。
+     聞こえた鳥を画面に積まない（入力の邪魔になるため。2026-11-08 ユーザー） */
+  .aifab{position:fixed; left:8px; bottom:calc(88px + env(safe-area-inset-bottom, 0px)); z-index:1200; display:flex; gap:5px; align-items:center; max-width:calc(100vw - 16px);}
+  .aifab button{border:1px solid var(--line); background:var(--panel); color:var(--fg); border-radius:999px; padding:6px 11px;
+    font-size:13px; font-weight:700; min-height:38px; box-shadow:0 2px 8px rgba(0,0,0,.35); cursor:pointer; opacity:.94;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .aifab .aifab-main{max-width:min(260px, 62vw);}
   .aifab.on .aifab-main{border-color:var(--accent);}
+  .aifab.has .aifab-main{border-color:var(--accent); background:var(--panel2);}
+  .aifab .aifab-new{color:var(--accent); margin-left:4px;}
   .aifab.warn .aifab-main{background:var(--warn); color:#0a0f0d;}
-  .aifab .aifab-stop{padding:10px 12px;}
+  .aifab .aifab-stop{padding:6px 10px;}
   .aifab .aifab-res{background:var(--accent); color:#0a0f0d;}
-  #aiPops{position:fixed; right:8px; top:calc(58px + env(safe-area-inset-top, 0px)); z-index:1210; width:min(300px, 82vw);
-    display:flex; flex-direction:column; gap:6px; pointer-events:none;}
-  .aipop{pointer-events:auto; background:var(--panel); border:1px solid var(--accent); border-radius:12px; padding:8px 10px;
-    box-shadow:0 4px 16px rgba(0,0,0,.45); font-size:14px;}
-  .aipop.small{padding:5px 10px; font-size:12px; opacity:.92; border-color:var(--line); display:flex; justify-content:space-between; align-items:center;}
-  .aipop-b{display:flex; gap:6px; margin-top:6px;}
-  .aipop.small .aipop-b{margin-top:0;}
-  .aipop-b button{flex:1; min-height:38px; border:1px solid var(--line); background:var(--panel2); color:var(--fg); border-radius:8px; font-weight:700; cursor:pointer;}
-  .aipop.small .aipop-b button{flex:none; min-height:30px; padding:0 10px;}
-  .aipop-b button:disabled{opacity:.5;}
-  .aipop.more{cursor:pointer; text-align:center; font-size:12px; border-color:var(--line);}
+  #aiPops{position:fixed; left:8px; bottom:calc(134px + env(safe-area-inset-bottom, 0px)); z-index:1210; width:min(320px, 86vw);
+    max-height:min(52vh, 420px); overflow-y:auto; background:var(--panel); border:1px solid var(--accent); border-radius:12px;
+    padding:6px 8px; box-shadow:0 4px 16px rgba(0,0,0,.45);}
+  .aipop-hd{display:flex; justify-content:space-between; align-items:center; padding:2px 2px 6px; font-size:13px;}
+  .aipop-hd button,.aipop-ft button{border:1px solid var(--line); background:var(--panel2); color:var(--fg); border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer;}
+  .aipop{display:flex; justify-content:space-between; align-items:center; gap:6px; padding:5px 2px; border-top:1px solid var(--line); font-size:13px;}
+  .aipop-h{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .aipop-b{display:flex; gap:5px; flex:none;}
+  .aipop-b button{min-width:38px; min-height:36px; border:1px solid var(--line); background:var(--panel2); color:var(--fg); border-radius:8px; font-weight:700; cursor:pointer;}
+  .aipop-b button:disabled{opacity:.5; font-size:11px;}
+  body.tab-obs.tab-left:not(.tab-collapsed) .aifab, body.tab-obs.tab-left:not(.tab-collapsed) #aiPops{left:auto; right:8px;}
+  .pf-pan-row{display:flex; gap:6px; align-items:center;}
+  .pf-pan-row > .leaflet-control, .pf-pan-row > button{margin:0 !important; float:none !important;}
+  .aipop-ft{display:flex; gap:6px; justify-content:flex-end; padding-top:6px; border-top:1px solid var(--line);}
+  /* タブレットの観察入力（地図いっぱい）以外では、見出しの右端に置く（スマホで入力欄にかからないように） */
+  body:not(.tab-obs) .aifab{top:calc(8px + env(safe-area-inset-top, 0px)); bottom:auto; left:auto; right:8px;}
+  body:not(.tab-obs) .aifab .aifab-main{max-width:min(240px, 40vw);}
+  body:not(.tab-obs) #aiPops{top:calc(56px + env(safe-area-inset-top, 0px)); bottom:auto; left:auto; right:8px;}
   .aidet.marked{border-color:var(--accent);}
   /* 地図の P / F。いまどちらで落とすのかが一目で分かるよう、選んでいる方を塗りつぶす */
   .pf-btn{font-weight:800; font-size:17px;}
@@ -340,7 +352,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v229（2026-11-08 鳴き声AI（聞こえた鳥を知らせる）／話した言葉の音声入力を撤去）';
+const APP_VERSION = 'v231（2026-11-08 ✋ 移動（カーソル）ボタン：選んだボタンのときだけ P・L・N を置ける／開いたときは移動）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2924,6 +2936,7 @@ SCREENS.obsEdit = (argStr)=>{
       // 記録モードは毎回「止まっている」から始める（前の画面の経路を持ち越さない）
       // 地図の状態は毎回まっさらから始める（前の画面の内容を持ち越さない）
       PF_MODE='P'; PF_SEGS=[]; PF_NEWLINE=true; PF_SPIRAL=false; flightPath=[]; flightLayer=null; pfLayer=null;
+      PF_PAN=true;   // 開いたときは「✋ 移動」（地図を動かすだけ）。置くときは P・L・N を押す（2026-11-08 ユーザー決定）
       PF_NEST=null; PF_NEST_ID=nestId(o); PERCH_IDX=0; PF_SEL=-1;
       SCREENS._flSeg=null; PF_HIST=[]; PF_SEQ=0;
       // 「保存して続けて」で位置を引き継いだときは、その位置を守る（空のまま引き継いだ場合も）
@@ -4231,6 +4244,7 @@ function birdSwitch(i){
   if(birdBusy()) return;
   birdStash();
   BIRD_IDX=i;
+  PF_PAN=true;   // 切り替えた個体も「✋ 移動」から始める（v231 監査）
   SCREENS._birdKeep=true;
   render();
 }
@@ -4239,6 +4253,7 @@ function birdAdd(){
   birdStash();
   BIRDS.push(newBird());
   BIRD_IDX=BIRDS.length-1;
+  PF_PAN=true;   // 足した個体も「✋ 移動」から
   SCREENS._birdKeep=true;
   render();
   SCREENS._dirty=false;   // 追加したばかりの個体はまだ書きかけではない
@@ -4261,6 +4276,7 @@ function birdDrop(){
   if(!keptRealD && b.st && b.st.obs && !b.st.obsEditing) DISCARDED.add(b.st.obs.uuid);   // 正式化された記録は名簿に入れない
   BIRDS.splice(BIRD_IDX,1);
   if(BIRD_IDX>=BIRDS.length) BIRD_IDX=BIRDS.length-1;
+  PF_PAN=true;   // 残った個体も「✋ 移動」から
   SCREENS._birdKeep=true;
   render();
   SCREENS._dirty=!!CUR().dirty;
@@ -4270,6 +4286,7 @@ function birdDrop(){
 function birdAfterSave(u2, add, flU){
   if(!add && BIRDS.length<=1) return false;
   if(typeof spiralReset==='function') spiralReset();   // 押している状態を次の個体へ持ち越さない
+  PF_PAN=true;   // 保存後に読み直す・次の個体も「✋ 移動」から
   const nb=newBird();
   const b=CUR();
   b.dirty=false; b.form=null; b.st=nb.st; b.map=nb.map; b.media=nb.media;
@@ -4346,11 +4363,34 @@ function pfSet(mode){
   //（押し直しても前の線が伸びる、という取り違えを防ぐ）
   PF_NEWLINE=true; PF_STROKE_SEG=null;   // なぞった線を入力の対象にするのもここまで
   PF_MODE=mode;
+  PF_PAN=false;   // P・L・N を押したら、そのボタンで置ける
   PF_SEL=-1;   // モードを選び直したら「新しく落とす」に戻す
   if(typeof segChips==='function') segChips();
-  ['P','F','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', mode===m); });
+  pfBtnSync();
   pfInfo(); pfSyncFlightFields(); nestFoldSync();
 }
+/* カーソル（✋ 移動）。選ばれている間は、地図を押しても何も置かない（地図の移動・拡大縮小だけ）。
+   長押しで選んで直す操作は使える（選んでいる間のタップは、選んだものを動かす・描き足す）。2026-11-08 ユーザー要望 */
+let PF_PAN=true;
+function pfPan(){
+  if(typeof spiralReset==='function') spiralReset();
+  if(typeof drawIsOn==='function' && drawIsOn()) drawSet(false);
+  if(typeof perchStore==='function') perchStore();
+  PF_PAN=true; PF_SEL=-1; PF_NEWLINE=true; PF_STROKE_SEG=null;
+  SCREENS._soarSel=null; SCREENS._soarPlace=false;
+  if(typeof segChips==='function') segChips();
+  pfBtnSync();
+  pfInfo(); pfSyncFlightFields(); nestFoldSync();
+}
+// 地図のボタンの点灯: カーソルのときは P・L・N を消灯
+function pfBtnSync(){
+  ['P','F','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', !PF_PAN && PF_MODE===m); });
+  const c=$('#pfPan'); if(c) c.classList.toggle('on', !!PF_PAN);
+  if(typeof spiralInfo==='function') spiralInfo();   // 「くるくる」の出し入れ
+  if(typeof pfNewLineSync==='function') pfNewLineSync();   // 「＋ 新しいL」の出し入れ
+}
+// カーソルのとき、押しても置かない（選んでいるものがあるときは置ける＝動かす・描き足す）
+function pfPanBlocks(){ return !!PF_PAN && PF_SEL===-1; }
 function pfPoints(){ return PF_SEGS.filter(x=>x.t==='P'); }
 // PF_NEST=巣の位置 [lat,lon]（1つだけ） / PF_NEST_ID=巣そのものの目印 /
 // PF_SEL=直している対象（PF_SEGSの番号。-1 は「新しく落とす」）。実体は CUR().map（段A）
@@ -4588,7 +4628,7 @@ function spiralInfo(){
   // **経路（L）を描くときの道具**なので、L のときは常に出す。
   // 面を選んでいるときだけ引っ込める（面に「進む向き」は無い）
   const 面を選んでいる = !!one && one.t==='F' && segShape(one)===SHAPE_AREA;
-  w.style.display=(PF_MODE==='F' && !面を選んでいる) ? '' : 'none';
+  w.style.display=(PF_MODE==='F' && !面を選んでいる && !pfPanBlocks()) ? '' : 'none';   // 「✋ 移動」のときは出さない
   if(面を選んでいる) PF_SPIRAL=false;
   b.classList.toggle('primary', PF_SPIRAL);
   b.textContent=(PF_SPIRAL?'◠ くるくる 入れる中':'◠ くるくる（旋回）');
@@ -4819,7 +4859,7 @@ function segPick(i, force){
   // P・N モードのまま「✏ 描く」を押すと pfSet('F') が選択を外し、引き直すつもりが新しい L になるため（計画レビュー Major 2）
   if(PF_SEL>=0 && PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='F' && PF_MODE!=='F'){
     if(typeof spiralReset==='function') spiralReset();
-    PF_MODE='F'; ['P','F','N'].forEach(m=>{ const b=$('#pf'+m); if(b) b.classList.toggle('on', m==='F'); });
+    PF_MODE='F'; pfBtnSync();
   }
   if(typeof pfSyncFlightFields==='function') pfSyncFlightFields();   // 高度・行動の欄を選んだ経路に切り替える
   // 止まりを選んだら「止まっていたもの」の入力もその P に合わせる
@@ -5137,7 +5177,8 @@ function flTimeEdit(which){
 function pfInfo(){
   const el=$('#mapInfo'); if(!el) return;
   const np=pfPoints().length, nf=pfPaths().length;
-  const parts=[PF_MODE==='P'?'P：タップで止まっていた場所'
+  const parts=[PF_PAN?(PF_SEL===-1?'✋ 移動：地図を動かせます。置くときは P・L・N を押す（長押しで選んで直せる）':'選んだものを直しています（タップで動かす・描き足す）')
+    :PF_MODE==='P'?'P：タップで止まっていた場所'
     :(PF_MODE==='F'?'L：タップで線。始点をもう一度タップすると囲み（面）':'N：タップで巣の位置')];
   if(PF_SPIRAL && PF_MODE==='F')
     parts.push(`タップで旋回の輪（${spiralSize().name}・${spiralSide()===-1?'右回り':'左回り'}・${spiralMoves()?'進む':'その場'}）`);
@@ -5187,6 +5228,7 @@ function pfTryClose(sg,lat,lon){
 }
 function pfDrop(lat,lon){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;   // 保存の後処理中は地図も触らせない
+  if(pfPanBlocks()) return;   // カーソル（✋ 移動）のときは何も置かない
   pfSnap();   // 「↶」で戻せるように、変える前の状態を控える
   const now=localDatetimeValue();
   // 「直す」で対象が選ばれているときは、新しく落とさずその対象を動かす／描き足す
@@ -5423,6 +5465,7 @@ function pfRedraw(){
           // 選んでいないときは、L で描いている途中の線だけ。
           // PF_NEWLINE は「次のタップから新しい線を始める」状態＝描いている途中の線は無い
           //（Lを押し直した直後に、前の線が面に変わってしまう。2026-08-13 監査）
+          if(pfPanBlocks()) return;   // 「✋ 移動」のときは面にしない（長押しで選んだ線は閉じられる。v231 監査 Major）
           const target=(PF_SEL>=0) ? PF_SEGS[PF_SEL]
             : ((PF_MODE==='F' && !PF_NEWLINE) ? lastDrawnFl()
               : ((PF_STROKE_SEG && PF_SEGS.includes(PF_STROKE_SEG)) ? PF_STROKE_SEG : null));   // なぞった直後の線も閉じられる
@@ -5489,15 +5532,20 @@ function initObsPosMap(){
     onCommit:(ll, tt)=>pfAddStroke(ll, tt),
     onTap:(la, lo)=>pfDrop(la, lo),   // ペンのタップ（描くモードがオフのとき）
     onToggle:(on)=>{ if(on){
+      PF_PAN=false;   // 「✏ 描く」を押したら L で描く（カーソルは消灯）
       const selL=PF_SEL>=0 && PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='F';
       if(selL){ if(PF_MODE!=='F') segPick(PF_SEL, true); }   // 選んだ L はそのまま（なぞると引き直し）
       else if(PF_MODE!=='F' || PF_SEL===-2) pfSet('F');
-      if(PF_SPIRAL && typeof spiralToggle==='function') spiralToggle(); } },
+      if(PF_SPIRAL && typeof spiralToggle==='function') spiralToggle();
+      pfBtnSync(); pfInfo(); } },
     onDrawTap:(la, lo)=>pfDrawTap(la, lo),   // 描くモード中の軽いタップ
     onLongPress:(cp)=>pfLongPress(cp)   // 長押しで P・L・巣を選ぶ
   });
+  addPanButton();
   addTabLineControl(mapObj);
-  addCrosshairControl(mapObj, (la2,lo2)=>pfDrop(la2,lo2), '＋');
+  addCrosshairControl(mapObj, (la2,lo2)=>{
+    if(pfPanBlocks()){ toast('いまは「✋ 移動」です。置くときは P・L・N を押してください', 4000); return; }
+    pfDrop(la2,lo2); }, '＋');
   // 同じ調査の他の飛翔経路を薄く重ねる
   const svU=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
   if(svU){ DB.flightsOf(svU).forEach(of=>{
@@ -5665,6 +5713,17 @@ function pfAddStroke(ll, tt){
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips();
   tabletPanel(true, '#flAttrRow', ll[ll.length-1]);   // タブレット表示なら線の属性の欄を開く
 }
+// 「✋ 移動」（カーソル）を「✏ 描く」の左隣に並べる。縦の列に足すとスマホの小さな地図で下にはみ出すため横に置く
+function addPanButton(){
+  const db=document.getElementById('drawBtn'); if(!db || document.getElementById('pfPan')) return;
+  const row=document.createElement('div'); row.className='leaflet-control pf-pan-row';
+  const b=document.createElement('button'); b.type='button'; b.id='pfPan'; b.className='draw-btn pan-btn';
+  b.textContent='✋ 移動'; b.title='地図を動かすだけ（押しても何も置かない）。置くときは P・L・N を押す';
+  L.DomEvent.disableClickPropagation(row);
+  L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>pfPan());
+  db.parentNode.insertBefore(row, db); row.appendChild(b); row.appendChild(db);
+  pfBtnSync();
+}
 // 地図の上の P / F 切替（アイコンのみ・仕様書）
 function addPfControl(m){
   const C=L.Control.extend({ onAdd:function(){
@@ -5677,7 +5736,7 @@ function addPfControl(m){
       b.type='button'; b.id=id; b.textContent=txt;
       b.title=(mode==='P')?'止まっていた場所を落とす'
         :(mode==='F'?'線を描く（始点をもう一度タップすると囲みになる）':'巣の位置を指定する');
-      if(PF_MODE===mode) b.classList.add('on');
+      if(!PF_PAN && PF_MODE===mode) b.classList.add('on');
       L.DomEvent.disableClickPropagation(b);
       L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>pfSet(mode));
       return b; };
@@ -5719,7 +5778,7 @@ function pfNewLine(){
 // 「＋ 新しいL」の出し入れ。**描く相手がいるときだけ**出す
 function pfNewLineSync(){
   const b=$('#pfNewLine'); if(!b) return;
-  const 描いている = PF_MODE==='F' && !!lastDrawnFl();
+  const 描いている = PF_MODE==='F' && !!lastDrawnFl() && !pfPanBlocks();   // 「✋ 移動」のときは出さない（押しても置けないため）
   b.style.display = 描いている ? '' : 'none';
   const t=$('#tabLineBtn'); if(t) t.style.display = (描いている && document.body.classList.contains('tab-obs')) ? '' : 'none';
 }
@@ -8343,7 +8402,7 @@ async function aiTotalsReload(sv){
 const AIL={ want:false, sv:null, reasons:new Set(), cap:false, starting:false, gen:0, needResume:false,
   ctx:null, stream:null, node:null, wake:null, geoId:null, pos:null, lastPcm:0, t0:0,
   ring:new Float32Array(AI_SR*AI_RING_SEC), written:0, next:0, judged:0, busy:null, seg:null, segId:0,
-  events:[], pendingClips:[], humanWins:new Set(), lost:[], gap:null, pops:[], popMore:0, lagSec:0, tick:null };
+  events:[], pendingClips:[], humanWins:new Set(), lost:[], gap:null, pops:[], popOpen:false, lagSec:0, tick:null };
 const AI_REASON={ hidden:'画面が消えた・別アプリ', rec:'録音メモ・すぐ録音', cam:'写真・動画の撮影', play:'声の再生', fail:'マイクを使えなかった' };
 function aiSvOk(sv){ const s=sv && DB.survey(sv); return !!(s && !s.deleted_at && s.status==='調査中'); }
 function aiCanRun(){
@@ -8394,6 +8453,12 @@ function aiTick(){
 }
 // 画面が変わるたびに呼ぶ（render の最後）。聞き取りの対象と違う調査を開いたら止める
 function aiOnRender(){
+  if(currentSurveyUuid && AIL._popSv && AIL._popSv!==currentSurveyUuid) AIL.popOpen=false;   // 別の調査では一覧を開いたまま持ち越さない
+  if(currentSurveyUuid) AIL._popSv=currentSurveyUuid;
+  if(_aiPopRec.size && currentSurveyUuid && [..._aiPopRec.values()].some(r=>r.sv!==currentSurveyUuid)){
+    [..._aiPopRec.keys()].forEach(id=>{ if(_aiPopRec.get(id).sv!==currentSurveyUuid) _aiPopRec.delete(id); });
+    AIL.pops=AIL.pops.filter(id=>_aiPopRec.has(id));
+  }
   if(AIL.want){
     if(!aiSvOk(AIL.sv)) aiListenStop('調査が終了・削除されたため、聞き取りを止めました');
     else if(currentSurveyUuid && currentSurveyUuid!==AIL.sv) aiListenStop('別の調査を開いたため、聞き取りを止めました');
@@ -8672,34 +8737,41 @@ async function aiPlay(clipId){
 }
 
 /* ---------- 浮きボタン・ポップアップ（#main の外。画面の組み直しとは無関係に動く） ---------- */
+// 知らせ方（v230・2026-11-08 ユーザー決定「左下のボタンにまとめる」）:
+// 聞こえた鳥は画面に積まない。左下のボタンが「🐦 ウグイス ほか2」と変わるだけで、押すと新しく聞こえた鳥の小さな一覧が開く
 function aiFabUpdate(){
   let fab=document.getElementById('aiFab');
   const cur=(STACK[STACK.length-1]||{}).name||'home';
   const show = AI.state!=='nosupport' && AI.state!=='unknown' &&
     (AIL.want || (cur!=='home' && aiSvOk(currentSurveyUuid)));
-  if(!show){ if(fab) fab.style.display='none'; return; }
+  if(!show){ if(fab) fab.style.display='none'; aiPopRender(); return; }
   if(!fab){ fab=document.createElement('div'); fab.id='aiFab'; document.body.appendChild(fab); }
   fab.style.display='';
   let main, cls='', extra='';
-  if(!AIL.want){ main='🐦 聞く'; }
+  const n=_aiPopRec.size;
+  const latest=n? _aiPopRec.get(AIL.pops[0]) : null;
+  const birds=latest? ` <span class="aifab-new">🐦 ${esc(latest.ja)}${n>1?` ほか${n-1}`:''}</span>` : '';
+  if(!AIL.want){ main= n? birds.trim() : '🐦 聞く'; if(n) cls='has'; }
   else if(!AI.worker || AIL.starting){ main='🐦 '+(AI.progress||'準備中…'); cls='wait'; }
   else if(AIL.needResume || AIL.reasons.has('cam')){ main='⏸ 止まっています'; cls='warn';
     extra=`<button type="button" class="aifab-res" onclick="aiManualResume()">▶ 再開</button>`; }
-  else if(AIL.reasons.size){ main='⏸ 一時停止（'+esc(AI_REASON[[...AIL.reasons][0]]||'')+'）'; cls='wait'; }
+  else if(AIL.reasons.size){ main='⏸ '+esc(AI_REASON[[...AIL.reasons][0]]||'一時停止')+birds; cls='wait'; }
   else if(AIL.cap && Date.now()-AIL.lastPcm>5000){ main='⚠ 音が届いていません'; cls='warn';
     extra=`<button type="button" class="aifab-res" onclick="aiManualResume()">▶ 再開</button>`; }
   else if(AIL.cap){
     const s=Math.round((Date.now()-AIL.t0)/1000);
-    main=`<span class="recdot"></span>聞いています ${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`+(AIL.lagSec>6?' ⚠遅れ':'');
-    cls='on'; }
+    main=`<span class="recdot"></span>${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`+(AIL.lagSec>6?' ⚠遅れ':'')+birds;
+    cls='on'+(n?' has':''); }
   else { main='🐦 待機中'; cls='wait'; }
   fab.className='aifab '+cls;
   fab.innerHTML=`<button type="button" class="aifab-main" onclick="aiFabTap()">${main}</button>`
     +(AIL.want?`<button type="button" class="aifab-stop" onclick="aiListenStop()" title="止める">■</button>`:'')+extra;
+  aiPopRender();
 }
+// 押したとき: 聞いていなければ聞き始める（新しく聞こえた鳥が残っていれば、先にその一覧を開く）。聞いている間は小さな一覧を開け閉めする
 function aiFabTap(){
-  if(!AIL.want){ aiListenStart(); return; }
-  const sv=AIL.sv; if(sv) nav('aiList', sv);   // 聞いている間は一覧を開く（止めるのは ■）
+  if(!AIL.want && !_aiPopRec.size){ aiListenStart(); return; }
+  AIL.popOpen=!AIL.popOpen; aiPopRender();
 }
 // 人が「再開」を押した: 撮影の理由・マイク失敗・音が届かない状態を外して、もう一度マイクを開く（押した操作の中で開く）
 function aiManualResume(){
@@ -8707,38 +8779,43 @@ function aiManualResume(){
   if(AIL.cap && Date.now()-AIL.lastPcm>5000) aiCaptureStop();
   aiSync();
 }
+const _aiPopRec=new Map();   // 新しく聞こえた鳥（まだ ★ も ✕ もしていない検出。id → 記録）
+const AI_POP_MAX=30;         // 小さな一覧に残す数（それより古いものは「聞こえた鳥」の一覧で見る）
 function aiPopAdd(rec){
   _aiPopRec.set(rec.id, rec);
-  AIL.pops.unshift(rec.id); if(AIL.pops.length>3) AIL.pops.length=3;   // 4件目以降は「ほか N件」にまとめる
-  aiPopRender();
+  AIL.pops.unshift(rec.id);
+  while(AIL.pops.length>AI_POP_MAX){ _aiPopRec.delete(AIL.pops.pop()); }
+  aiFabUpdate();   // 画面には何も積まない。左下のボタンの表示だけ変わる
 }
-const _aiPopRec=new Map();   // ポップアップに出している検出（id → 記録）
 function aiPopRender(){
   let box=document.getElementById('aiPops');
+  const fab=document.getElementById('aiFab');
+  const open=AIL.popOpen && fab && fab.style.display!=='none';
+  if(!open){ if(box) box.style.display='none'; return; }
   if(!box){ box=document.createElement('div'); box.id='aiPops'; document.body.appendChild(box); }
   const ids=AIL.pops.filter(id=>_aiPopRec.has(id));
-  const hidden=[..._aiPopRec.keys()].filter(id=>!ids.includes(id)).length;
-  box.innerHTML=ids.map((id,k)=>{ const r=_aiPopRec.get(id);
-    const t=new Date(r.t0).toTimeString().slice(0,5);
-    const play = r.clip ? `<button type="button" onclick="aiPlay('${esc(r.clip)}')">▶ 聞く</button>`
-      : `<button type="button" disabled title="${esc(r.clip_note||'声を保存しています')}">${r.clip_note?'声なし':'声を保存中'}</button>`;
-    return `<div class="aipop${k>0?' small':''}" data-id="${esc(id)}">
-      <div class="aipop-h"><b>${esc(r.ja)}</b> <span class="muted">${Math.round(r.max*100)}% ・ ${t}</span></div>
-      ${k===0?`<div class="aipop-b">${play}<button type="button" onclick="aiPopMark('${esc(id)}')">★ 残す</button><button type="button" onclick="aiPopClose('${esc(id)}')">✕</button></div>`
-        :`<div class="aipop-b"><button type="button" onclick="aiPopMark('${esc(id)}')">★</button><button type="button" onclick="aiPopClose('${esc(id)}')">✕</button></div>`}
-    </div>`; }).join('')
-    + (hidden?`<div class="aipop more" onclick="aiPopMore()">ほか ${hidden}件 → 一覧で見る</div>`:'');
-  box.style.display=(ids.length||hidden)?'':'none';
+  const sv=AIL.sv||currentSurveyUuid;
+  box.innerHTML=`<div class="aipop-hd"><b>新しく聞こえた鳥</b><button type="button" onclick="aiPopToggle(false)">閉じる</button></div>`
+    + (!AIL.want?`<div style="padding:2px 0 6px;"><button type="button" class="btn primary" style="min-height:40px;" onclick="aiPopToggle(false); aiListenStart()">🐦 聞き取りを始める</button></div>`:'')
+    + (ids.length? ids.map(id=>{ const r=_aiPopRec.get(id);
+      const t=new Date(r.t0).toTimeString().slice(0,5);
+      const play = r.clip ? `<button type="button" onclick="aiPlay('${esc(r.clip)}')" title="聞く">▶</button>`
+        : `<button type="button" disabled title="${esc(r.clip_note||'声を保存しています')}">${r.clip_note?'声なし':'…'}</button>`;
+      return `<div class="aipop" data-id="${esc(id)}">
+        <div class="aipop-h"><b>${esc(r.ja)}</b> <span class="muted">${Math.round(r.max*100)}% ・ ${t}</span></div>
+        <div class="aipop-b">${play}<button type="button" onclick="aiPopMark('${esc(id)}')" title="印を付ける">★</button><button type="button" onclick="aiPopClose('${esc(id)}')" title="この知らせを消す">✕</button></div>
+      </div>`; }).join('')
+      : `<div class="tiny muted" style="padding:6px 2px;">まだ新しい鳥はいません</div>`)
+    + `<div class="aipop-ft">${ids.length?`<button type="button" onclick="aiPopClear()">知らせを全部消す</button>`:''}`
+    + (sv?`<button type="button" onclick="aiPopMore()">聞こえた鳥の一覧へ</button>`:'')+`</div>`;
+  box.style.display='';
 }
+function aiPopToggle(on){ AIL.popOpen=!!on; aiPopRender(); }
 function aiPopUpdate(rec){ if(_aiPopRec.has(rec.id)) aiPopRender(); }
-function aiPopClose(id){
-  _aiPopRec.delete(id); AIL.pops=AIL.pops.filter(x=>x!==id);
-  // 押した分が減ったら、隠れていたものを新しい順に繰り上げる
-  const rest=[..._aiPopRec.keys()].filter(x=>!AIL.pops.includes(x)).reverse();
-  while(AIL.pops.length<3 && rest.length) AIL.pops.push(rest.shift());
-  aiPopRender();
-}
-function aiPopMore(){ const sv=AIL.sv||((_aiPopRec.values().next().value||{}).sv); _aiPopRec.clear(); AIL.pops=[]; aiPopRender(); if(sv) nav('aiList', sv); }
+// ✕: この知らせだけ消す（「聞こえた鳥」の一覧には残る）
+function aiPopClose(id){ _aiPopRec.delete(id); AIL.pops=AIL.pops.filter(x=>x!==id); aiFabUpdate(); }
+function aiPopClear(){ _aiPopRec.clear(); AIL.pops=[]; aiFabUpdate(); }
+function aiPopMore(){ const sv=AIL.sv||currentSurveyUuid; AIL.popOpen=false; aiPopRender(); if(sv) nav('aiList', sv); }
 function aiPopMark(id){ const r=_aiPopRec.get(id); if(r) aiMark(r, true); aiPopClose(id); }
 // 印を付ける・外す。観察の記録は作らない（obs_uuid は将来の「観察を開く」用で、今回は使わない）
 function aiMark(rec, on){
@@ -8794,6 +8871,7 @@ async function aiListMark(id, on){
   if(!rec) return;
   const live=AIL.events.find(e=>e.rec.id===id); if(live) live.rec.marked=!!on;
   aiMark(live?live.rec:rec, on);
+  if(on && _aiPopRec.has(id)) aiPopClose(id);   // 印を付けたものは「新しく聞こえた鳥」から外す
 }
 // 一覧だけを消す。消すのは聞こえた鳥の記録と声だけで、成功しても失敗しても調査本体・観察・本体の録音には触らない
 async function aiListClear(sv){
@@ -8801,7 +8879,7 @@ async function aiListClear(sv){
   if(!confirm('この調査の「聞こえた鳥」の記録と声をすべて消します。元に戻せません。\n（調査・観察の記録・録音メモは消えません）')) return;
   aiPlayStop();
   [..._aiPopRec.keys()].forEach(id=>{ if((_aiPopRec.get(id)||{}).sv===sv) _aiPopRec.delete(id); });
-  AIL.pops=AIL.pops.filter(id=>_aiPopRec.has(id)); aiPopRender();
+  AIL.pops=AIL.pops.filter(id=>_aiPopRec.has(id)); aiFabUpdate();
   const ok=await aiDeleteSurveys([sv]);
   toast(ok?'聞こえた鳥の記録を消しました':'聞こえた鳥の記録を消せませんでした。もう一度押してください', 5000);
   aiListLoad(sv);
