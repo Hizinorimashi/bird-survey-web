@@ -169,6 +169,14 @@
   .aipop-b button:disabled{opacity:.5; font-size:11px;}
   body.tab-obs.tab-left:not(.tab-collapsed) .aifab, body.tab-obs.tab-left:not(.tab-collapsed) #aiPops{left:auto; right:8px;}
   .pf-pan-row{display:flex; gap:6px; align-items:center;}
+  /* 編集タブの記録の一覧・保存済みの記録の印（v233） */
+  .obs-pick-box{max-height:46vh; overflow-y:auto; border:1px solid var(--line); border-radius:10px; padding:6px; margin-bottom:8px; background:var(--panel2);}
+  .obs-pick{display:block; width:100%; text-align:left; padding:10px; margin:3px 0; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--fg); cursor:pointer; min-height:44px;}
+  .obs-pick.on{border-color:var(--accent);}
+  .sv-mark-wrap{background:none; border:none;}
+  .sv-ic{display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border-radius:50%; font-size:9px; font-weight:800; color:#fff; border:1px solid #fff; flex:none;}
+  .sv-P{background:#4a7fd0;} .sv-N{background:#8a5a2b;} .sv-L{background:#c08a20;}
+  .cur-lab{background:rgba(255,236,170,.92) !important;}
   /* ポイント（鳥の記録） */
   body:not(.tab-obs) #obsPosMap .pf-btn{width:36px; height:36px; font-size:15px;}   /* スマホの小さな地図では4つ並べて「＋」に重ねない */
   body:not(.tab-obs) #obsPosMap .leaflet-top.leaflet-left > .leaflet-control > div[style*="flex-direction:column"]{gap:5px !important;}
@@ -180,7 +188,7 @@
   #ptBox #ptSp{flex:1; min-width:0;}
   #ptBox #ptCnt{width:70px; flex:none;}
   #ptBox .btn{flex:1; min-height:44px;}
-  .pt-mark{display:flex; align-items:center; gap:3px; white-space:nowrap; pointer-events:none;}
+  .pt-mark{display:flex; align-items:center; gap:3px; white-space:nowrap;}
   .pt-dot{width:10px; height:10px; border-radius:50%; background:#e8b04b; border:2px solid #fff; flex:none;}
   .pt-lab{font-size:11px; font-weight:700; color:#111; background:rgba(255,255,255,.85); border-radius:4px; padding:0 3px;}
   body.tab-obs .pf-pan-row{flex-direction:column; align-items:flex-end;}   /* タブレットでは縦に並べる（v232） */
@@ -368,7 +376,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v232（2026-11-08 ポイント（鳥の記録）／いまの音を残す／地図の種類ボタンの重なり／移動と描くを縦に／タブレット表示の切り替え／まとめて記録を削除）';
+const APP_VERSION = 'v233（2026-11-08 編集タブで記録を選んで直す／保存済みの記録に種名の印／すぐ録音を削除／鳴き声AIの設定）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -2332,14 +2340,14 @@ SCREENS.survey = (u)=>{
   const actions = running ? `
     <div class="actions">
       <button type="button" class="act sm primary wide" onclick="nav('obsEdit', JSON.stringify({sv:'${u}'}))"><span class="ic">🐦</span>観察を追加</button>
-      ${roBtn(`<button type="button" class="act sm wide" id="quickRecBtn" onclick="quickRec('${u}')"><span class="ic">🎤</span>すぐ録音（種名はあとで）</button>`)}
       <button type="button" class="act sm" onclick="nav('map','${u}')"><span class="ic">🗺</span>地図</button>
     </div>
     <details class="fold" id="foldMoreActions" ${SCREENS._actOpen?'open':''} ontoggle="SCREENS._actOpen=this.open">
       <summary><span class="lab" style="display:inline; margin:0;">その他の操作</span>
-        <span class="small muted">聞こえた鳥・タブレット表示・経路まとめ・ルート・メモ・仮説・集計・調査情報・終了</span></summary>
+        <span class="small muted">聞こえた鳥・鳴き声AIの設定・タブレット表示・経路まとめ・ルート・メモ・仮説・集計・調査情報・終了</span></summary>
       <div class="actions" style="margin:0;">
         <button type="button" class="act sm" onclick="nav('aiList','${u}')"><span class="ic">🐦</span>聞こえた鳥</button>
+        <button type="button" class="act sm" onclick="const f=document.getElementById('foldAiCfg'); if(f){ f.open=true; f.scrollIntoView({block:'center'}); }"><span class="ic">⚙</span>鳴き声AIの設定</button>
         <button type="button" class="act sm" id="svTabletBtn" onclick="tabletSet(!tabletOn()); this.innerHTML='<span class=&quot;ic&quot;>📱</span>タブレット表示：'+(tabletOn()?'オン':'オフ')"><span class="ic">📱</span>タブレット表示：${tabletOn()?'オン':'オフ'}</button>
         <button type="button" class="act sm" onclick="nav('flightList','${u}')"><span class="ic">🛩</span>経路まとめ</button>
         <button type="button" class="act sm" onclick="nav('routeEdit','${u}')"><span class="ic">🧭</span>調査ルート</button>
@@ -2349,6 +2357,12 @@ SCREENS.survey = (u)=>{
         <button type="button" class="act sm" onclick="nav('surveyEdit','${u}')"><span class="ic">✎</span>調査情報</button>
         <button type="button" class="act sm wide" onclick="nav('surveyEnd','${u}')"><span class="ic">⏹</span>調査を終了</button>
       </div>
+    </details>
+    <details class="fold" id="foldAiCfg" ${SCREENS._aiCfgOpen?'open':''} ontoggle="SCREENS._aiCfgOpen=this.open">
+      <summary><span class="lab" style="display:inline; margin:0;">🐦 鳴き声AIの設定</span>
+        <span class="small muted">知らせる基準・北海道に絞る・声の長さ・同時の種数・マイク</span></summary>
+      ${aiCfgHtml()}
+      <div class="tiny muted">この端末のすべての調査で同じ設定を使います。AIの取り込み・出典は <a href="#" onclick="nav('aiSettings',null); return false;">鳴き声AIの画面</a>。</div>
     </details>` : '';
 
   // 一覧の表示件数と「要確認のみ」絞り込み（別の調査に移ったらリセット）
@@ -2410,57 +2424,7 @@ function obsReviewToggle(){
   SCREENS._obsGrpShown=new Map(); if(recBusy()){ toast('録音を停止してから操作してください'); return; }
   SCREENS._sel=null;   // 絞り込みで見えなくなった記録が選択されたまま削除されるのを防ぐ（選択は解除）
   SCREENS._obsReviewOnly=!SCREENS._obsReviewOnly; SCREENS._obsLimit=50; render(); }
-/* ---------- すぐ録音（調査中画面からワンタップ・種名は後付け） ----------
-   押した瞬間に観察レコード（未同定・要確認・現在地・今の時刻・確認方法=鳴き声）を本保存して録音の帰属先にし、
-   既存の録音機構（recToggle）をそのまま使う。停止で音声が自動添付される */
-let QUICKREC=null;   // すぐ録音セッション中の観察uuid
-async function quickRec(svUuid){
-  if(REC){ recStop(); return; }   // 録音中に押したら停止＝保存
-  if(_recStarting) return;        // マイク許可待ち中の連打は無視（空レコードの量産・録音先の取り違え防止）
-  if(!recSupported()){ toast('この端末では録音を利用できません（ホーム画面のアイコンから起動してください）'); return; }
-  const fx=freshFix();
-  const rec={ uuid:uuid(), survey_uuid:svUuid, observed_at:nowISO(),
-    latitude:fx?fx.lat.toFixed(6):'', longitude:fx?fx.lon.toFixed(6):'', gps_accuracy:fx?Math.round(fx.acc):'',
-    species_id:'', species_name_snapshot:'', count:1, detection_method:'鳴き声',
-    behavior:'', habitat:'', age_class:'不明', sex:'不明', distance_band:'', direction:'',
-    target_latitude:'', target_longitude:'', perch_size:'', perch_class:'',
-    nest_tree_species:'', nest_tree_height:'', nest_state:'',
-    identification_status:'未同定', confidence:'中', needs_review:true,
-    note:'', external_photo_reference:'', audio:[], media:[],
-    env_note:'', nest_note:'', env_media:[], nest_media:[] };
-  if(!DB.upsertObs(rec)) return;
-  SCREENS._mediaCtx={ kind:'obs', uuid:rec.uuid, sv:svUuid };
-  QUICKREC=rec.uuid;
-  await recToggle();
-  if(REC && REC.target && REC.target.uuid===rec.uuid){ quickRecUi(true); }
-  else{ // マイク不可・許可待ち中の画面移動などで開始できなかった→空レコードを片付け
-    if(QUICKREC===rec.uuid) QUICKREC=null;
-    if(SCREENS._mediaCtx && SCREENS._mediaCtx.uuid===rec.uuid) SCREENS._mediaCtx=null;   // 別画面が設定したctxは触らない
-    DB.hardDelete(DB.key.ob, rec.uuid);
-  }
-}
-function quickRecUi(on){
-  const b=document.getElementById('quickRecBtn'); if(!b) return;
-  if(on){ b.classList.add('recing'); b.innerHTML='<span class="ic"><span class="recdot"></span></span>録音中… タップで停止 <span id="recTime">0:00</span>'; }
-  else{ b.classList.remove('recing'); b.innerHTML='<span class="ic">🎤</span>すぐ録音（種名はあとで）'; }
-}
-// 録音の停止処理（recToggleのonstop）から呼ばれる。すぐ録音セッションの後始末。
-// finは音声保存のPromise（成功=true）。保存が終わってから成功表示と一覧更新を行う
-function quickRecEnded(wasAbort, fin){
-  if(!QUICKREC) return;
-  const u=QUICKREC; QUICKREC=null;
-  if(SCREENS._mediaCtx && SCREENS._mediaCtx.uuid===u) SCREENS._mediaCtx=null;   // 別画面が設定し直したctxは触らない
-  quickRecUi(false);
-  if(wasAbort) return;   // 画面遷移で破棄（レコードは音声なし・要確認付きで残るので後から見つけられる）
-  const done=(ok)=>{
-    if(!ok) return;   // 失敗トーストはrecFinalize側で表示済み（レコード自体は残る）
-    toast('録音を記録として保存しました。一覧から開いて種名を書けます', 3000);
-    const cur=STACK[STACK.length-1]||{};
-    if(cur.name==='survey' && !REC) render();   // 一覧に今の記録を🎤付きで出す
-  };
-  if(fin && fin.then) fin.then(done).catch(()=>{});
-  else done(false);
-}
+// 「すぐ録音」は v233 で削除（鳴き声AIの「🎙 いまの音を残す」で代わりにする）
 // 終了した調査を再開する（終了ボタンの押し間違い・帰り際の追加観察に対応）。振り返りはそのまま残る。
 // 「終了〜再開」の中断時間は paused_ms に積み、経過時間の表示から差し引く（翌日再開でも水増しされない）
 function resumeSurvey(u){ const s=DB.survey(u); if(!s) return;
@@ -2653,8 +2617,9 @@ SCREENS.obsEdit = (argStr)=>{
       <!-- 追加と編集をタブで分ける（2026-11-07 ユーザー決定）。編集中の「＋ 追加」は、保存してから新しい観察へ -->
       <div class="seg obs-tabs" id="obsTabs" style="margin-bottom:8px;">
         <button type="button" class="${editing?'':'on'}" onclick="obsTabAdd('${o.uuid}','${svUuid}',${editing?'true':'false'})">＋ 追加</button>
-        <button type="button" class="${editing?'on':''}" onclick="obsTabEdit(${editing?'true':'false'})">✎ 編集${editing?'中':''}</button>
+        <button type="button" class="${editing?'on':''}" onclick="obsTabEdit(${editing?'true':'false'})">✎ 編集${editing?'中':''} ▾</button>
       </div>
+      <div id="obsPickBox" class="obs-pick-box" style="display:none;"></div>
       <!-- 地図が主役。P=鳥がいた場所（点）、F=飛翔経路（線）。何を保存するかは地図の中身で決まる -->
       <div class="card" style="background:var(--panel2); padding:8px;">
         <div id="obsPosMap" style="height:300px; border-radius:var(--radius); border:1px solid var(--line);"></div>
@@ -3246,7 +3211,7 @@ function spSearch(q){
     <div class="item" style="color:var(--muted)" onclick="chooseSpecies('','')">「${esc(q)}」は候補になし → 未同定で保存</div></div>`
     : `<div class="suggest"><div class="item" style="color:var(--muted)" onclick="chooseSpecies('','')">候補なし → 未同定で保存</div></div>`;
 }
-function chooseSpecies(id,name){ $('#spInput').value=name; $('#spSuggest').innerHTML=''; updateSpRefLinks(name);
+function chooseSpecies(id,name){ $('#spInput').value=name; try{ if(typeof curLabels==='function') curLabels(); }catch(e){} $('#spSuggest').innerHTML=''; updateSpRefLinks(name);
   try{ if(typeof birdListSync==='function' && BIRDS.length>1) birdListSync(); }catch(_e){}
   try{ if(typeof indLabelChips==='function') indLabelChips(); }catch(_e){}
   SCREENS._dirty=true;
@@ -4355,9 +4320,40 @@ function obsTabAdd(u, sv, editing){
     toast('この画面には複数の個体があります。新しい個体は、下の「💾 保存して次の個体へ」で追加してください', 6000); return; }   // 案内どおりに進める操作を示す（監査 Minor）
   saveObs(u, sv, true, true);
 }
+// 「✎ 編集」: この調査の記録の一覧（新しい順）を開け閉めし、押した記録を直す（v233・2026-11-08 ユーザー）
 function obsTabEdit(editing){
-  if(editing) return;
-  toast('調査の画面の観察一覧で直したい記録を押すと、編集になります', 4000);
+  const box=document.getElementById('obsPickBox'); if(!box) return;
+  if(box.style.display!=='none'){ box.style.display='none'; return; }
+  const sv=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
+  const cur=(SCREENS._obs&&SCREENS._obs.uuid)||'';
+  const tv=x=>{ const v=Date.parse(x||''); return isNaN(v)?-Infinity:v; };   // 表記が混ざっても実際の時刻で並べる。読めない日時は最後
+  const obs=DB.obsOf(sv).slice().sort((a,b)=>tv(b.observed_at)-tv(a.observed_at));
+  const keys=new Set(obs.map(o=>o.individual_key).filter(Boolean));
+  // 観察の無い経路だけの記録も出す（同じ鳥の観察があればそちらから開ける）
+  const fls=DB.flightsOf(sv).filter(f=>!(f.individual_key && keys.has(f.individual_key)))
+    .sort((a,b)=>tv(b.start_time)-tv(a.start_time));
+  const t=x=>{ const d=new Date(x||''); return isNaN(d)?'':`${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`; };
+  const rows=obs.map(o=>({ t:o.observed_at, html:`<button type="button" class="obs-pick${o.uuid===cur?' on':''}" data-id="${esc(o.uuid)}" onclick="obsOpenEdit({id:this.dataset.id})">
+      <b>${esc(o.species_name_snapshot||'（未同定）')}</b> <span class="small muted">${esc(String(o.count||''))}羽 ・ ${t(o.observed_at)}${o.source==='point'?' ・ 鳥':''}${o.uuid===cur?' ・ いま直している':''}</span></button>` }))
+    .concat(fls.map(f=>({ t:f.start_time, html:`<button type="button" class="obs-pick" data-fl="${esc(f.uuid)}" onclick="obsOpenEdit({fl:this.dataset.fl})">
+      <b>🛩 ${esc(f.species_name_snapshot||'（未同定）')}</b> <span class="small muted">経路だけ ・ ${t(f.start_time)}</span></button>` })))
+    .sort((a,b)=>tv(b.t)-tv(a.t));
+  box.innerHTML = rows.length
+    ? `<div class="small muted" style="margin-bottom:4px;">直したい記録を押してください（この調査の記録・新しい順）</div>${rows.map(r=>r.html).join('')}`
+    : '<div class="small muted">この調査にはまだ記録がありません</div>';
+  box.style.display='';
+}
+// 記録を開いて直す（いまの入力に書きかけがあれば、いつもの確認を通す）
+function obsOpenEdit(a){
+  const sv=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid; if(!sv) return;
+  if(a.id && SCREENS._obs && SCREENS._obsEditing && SCREENS._obs.uuid===a.id){ const b=document.getElementById('obsPickBox'); if(b) b.style.display='none'; return; }
+  if(!leaveGuardOk()) return;
+  SCREENS._sel=null;
+  // 確認が通ったら、書きかけの個体（切替で退避した分も含む）を捨てて仕切り直す。
+  // 残すと画面の復元処理が選んだ記録ではなく元の個体を開いてしまう（v233 監査 Major）
+  BIRDS=[newBird()]; BIRD_IDX=0; SCREENS._birdKeep=false;
+  STACK[STACK.length-1]={ name:'obsEdit', arg:JSON.stringify(a.id?{sv, id:a.id}:{sv, fl:a.fl}) };
+  render();
 }
 function nestFoldSync(){
   const d=document.getElementById('foldNest'); if(!d) return;
@@ -4506,18 +4502,60 @@ function ptSave(){
     ptDrawMarks();
   } finally { PT_BUSY=false; }
 }
-// 同じ調査のポイントの記録を地図に小さな印で出す（毎回 DB から）
+// 同じ調査で保存済みの記録を、種名つきの印で地図に出す（毎回 DB から。v233 で P・巣・経路にも広げた）。
+// 「✋ 移動」のときに印を押すと、確かめてからその記録を開いて直す。P・L・N・鳥を選んでいるときは、印の上でも今までどおり置ける
 function ptDrawMarks(){
   if(!mapObj || !document.getElementById('obsPosMap')) return;
   if(ptLayer){ try{ mapObj.removeLayer(ptLayer); }catch(e){} }
   ptLayer=L.layerGroup().addTo(mapObj);
   const sv=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid; if(!sv) return;
-  DB.obsOf(sv).filter(o=>o.source==='point').forEach(o=>{
-    const la=parseFloat(o.target_latitude), lo=parseFloat(o.target_longitude);
+  // いま直している記録（とその鳥の経路）は、入力中の印として別に出すので除く
+  const mine=new Set([(SCREENS._obs&&SCREENS._obs.uuid)||''].concat(PF_SEGS.map(g=>g.srcUuid).filter(Boolean)));
+  const mk=(la, lo, kind, label, open)=>{
     if(!isFinite(la) || !isFinite(lo)) return;
-    try{ L.marker([la,lo], { interactive:false, keyboard:false, icon:L.divIcon({ className:'', iconSize:[12,12], iconAnchor:[6,6],
-      html:`<div class="pt-mark"><span class="pt-dot"></span><span class="pt-lab">${esc(o.species_name_snapshot||'')}${(o.count>1)?' '+esc(o.count):''}</span></div>` }) }).addTo(ptLayer); }catch(e){}
+    const dot = kind==='pt' ? '<span class="pt-dot"></span>' : `<span class="sv-ic sv-${kind}">${kind==='P'?'P':(kind==='N'?'N':'L')}</span>`;
+    try{ const m=L.marker([la,lo], { keyboard:false, zIndexOffset:-500, icon:L.divIcon({ className:'sv-mark-wrap', iconSize:[14,14], iconAnchor:[7,7],
+      html:`<div class="pt-mark">${dot}<span class="pt-lab">${esc(label)}</span></div>` }) }).addTo(ptLayer);
+      m.on('click', ev=>{
+        if(ev && ev.originalEvent) L.DomEvent.stop(ev.originalEvent);
+        if(drawClickBlocked && drawClickBlocked()) return;
+        if(pfPanBlocks() && !PF_PT){   // 「✋ 移動」のとき: 確かめてから開く
+          if(confirm(`「${label}」の記録を開いて直しますか？`)) obsOpenEdit(open);
+          return; }
+        pfDrop(ev.latlng.lat, ev.latlng.lng);   // それ以外は地図を押したのと同じ（印の上でも置ける）
+      });
+    }catch(e){}
+  };
+  DB.obsOf(sv).forEach(o=>{
+    if(mine.has(o.uuid)) return;
+    const name=(o.species_name_snapshot||'（未同定）')+((o.count>1)?' '+o.count:'');
+    const tla=parseFloat(o.target_latitude), tlo=parseFloat(o.target_longitude);
+    if(isFinite(tla) && isFinite(tlo)) mk(tla, tlo, o.source==='point'?'pt':'P', name, {id:o.uuid});
+    if(nestHasPos(o)) mk(parseFloat(o.nest_latitude), parseFloat(o.nest_longitude), 'N', name, {id:o.uuid});
   });
+  const obsKeys=new Map(DB.obsOf(sv).filter(o=>o.individual_key).map(o=>[o.individual_key, o.uuid]));
+  DB.flightsOf(sv).forEach(f=>{
+    if(mine.has(f.uuid)) return;
+    const p0=(f.path||[]).filter(validPathPt)[0]; if(!p0) return;
+    const oid=f.individual_key && obsKeys.get(f.individual_key);
+    if(oid && mine.has(oid)) return;
+    mk(p0[0], p0[1], 'L', f.species_name_snapshot||'（未同定）', oid?{id:oid}:{fl:f.uuid});
+  });
+}
+// 入力中の記録の P・L・N に種名を添える（種名欄の値。変わったら描き直す）
+let curLabelLayer=null;
+function curLabels(){
+  if(!mapObj || !document.getElementById('obsPosMap')) return;
+  if(curLabelLayer){ try{ mapObj.removeLayer(curLabelLayer); }catch(e){} curLabelLayer=null; }
+  const name=String((document.getElementById('spInput')||{}).value||'').trim(); if(!name) return;
+  curLabelLayer=L.layerGroup().addTo(mapObj);
+  const lab=(la, lo)=>{ if(!isFinite(la)||!isFinite(lo)) return;
+    try{ L.marker([la,lo], { interactive:false, keyboard:false, icon:L.divIcon({ className:'', iconSize:[0,0], iconAnchor:[-14,8],
+      html:`<span class="pt-lab cur-lab">${esc(name)}</span>` }) }).addTo(curLabelLayer); }catch(e){} };
+  // 線ごとに種を指定した線・面は、番号の印がその種名を出す（保存も線の種名が優先）ので、ここでは付けない
+  PF_SEGS.forEach(g=>{ if(g.t==='P' && g.pt) lab(g.pt[0], g.pt[1]);
+    else if(g.t==='F' && !String((g.fl&&g.fl.sp_name)||'').trim()){ const q=(g.pts||[]).filter(validPathPt)[0]; if(q) lab(q[0], q[1]); } });
+  if(PF_NEST) lab(PF_NEST[0], PF_NEST[1]);
 }
 
 function pfPoints(){ return PF_SEGS.filter(x=>x.t==='P'); }
@@ -5478,6 +5516,7 @@ let pfLayer=null;
 function pfRedraw(){
   nestFoldSync();
   if(!mapObj) return;
+  try{ curLabels(); }catch(e){}   // 入力中の P・L・N に種名を添える
   try{ if(typeof birdListSync==='function' && BIRDS.length>1) birdListSync(); }catch(e){}   // 一覧の止まり/経路数を追随させる
   if(pfLayer){ try{ mapObj.removeLayer(pfLayer); }catch(e){} }
   pfLayer=L.layerGroup().addTo(mapObj);
@@ -5545,7 +5584,7 @@ function pfRedraw(){
           L.polyline(seg.pts,{color:'#9b59b6',weight:3,opacity:.6,dashArray:'5,4',interactive:false}).addTo(pfLayer);
         // 面がどれか分かるよう、1点目に番号（または「面」）だけ置く。
         // **丸い印にはしない**。◎（旋回上昇）の上に丸を重ねると記号が読めない
-        L.marker(seg.pts[0],{icon:numIcon(nLines>1?segLabel(segIdx):'面',selL?'#7d3fb0':'#6b3f96'), interactive:false}).addTo(pfLayer);
+        L.marker(seg.pts[0],{icon:numIcon((nLines>1?segLabel(segIdx):'面')+((seg.fl&&seg.fl.sp_name)?(' '+seg.fl.sp_name):''),selL?'#7d3fb0':'#6b3f96'), interactive:false}).addTo(pfLayer);   // 種を指定した面は種名も添える（v233 再監査）
         seg.pts.forEach(pt=>L.circleMarker(pt,{radius:4,color:'#fff',weight:1,fillColor:'#9b59b6',fillOpacity:1,interactive:false}).addTo(pfLayer));
         // 旋回上昇（◎）は、前後の飛翔経路と線で結ぶ（2026-08-13 指摘）
         soarJoins(PF_SEGS, segIdx).forEach(j=>{
@@ -5658,7 +5697,8 @@ function initObsPosMap(){
     if(drawClickBlocked()) return;   // なぞり終えた直後の click で点が二重に入らないように
     pfDrop(e.latlng.lat, e.latlng.lng); });
   addPfControl(mapObj);
-  ptDrawMarks();   // 同じ調査のポイントの記録を小さな印で出す
+  ptDrawMarks();   // 同じ調査で保存済みの記録を種名つきの印で出す
+  { const si=document.getElementById('spInput'); if(si) si.addEventListener('input', ()=>{ try{ curLabels(); }catch(e){} }); }
   // 描くモード（✏ 描く）: なぞった線を1回の操作としてまとめて L に加える
   drawAttach(mapObj, {
     onCommit:(ll, tt)=>pfAddStroke(ll, tt),
@@ -8191,7 +8231,35 @@ const AI_SR=48000, AI_WIN=144000;            // 3秒区間（重ねずに順に�
 const AI_RING_SEC=45;                         // 直近45秒の音を持っておく（切り出し用）
 const AI_BATCH=4;                             // 一度にAIへ渡す区間の数
 const AI_GAP_MERGE=5;                         // 同じ種をまとめる間隔（区間数＝15秒）
-const AI_THR=0.3;                             // 記録する確からしさの基準
+// 設定（v233）: 調査の画面の「🐦 鳴き声AIの設定」で変えられる。端末に保存し、どの調査でも同じ。決まった選択肢の値だけ受け付ける
+const AI_CFG_OPT={ thr:[0.1,0.2,0.3,0.5,0.7], hk:[true,false], maxPer:[1,2,3], pad:[3,5,10], manual:[15,30,45], agc:[false,true] };
+const AI_CFG_DEF={ thr:0.3, hk:true, maxPer:3, pad:5, manual:30, agc:false };
+function aiCfgLoad(){ let c={}; try{ c=JSON.parse(localStorage.getItem('bs_ai_cfg')||'{}')||{}; }catch(e){}
+  const out={}; for(const k of Object.keys(AI_CFG_DEF)) out[k]=AI_CFG_OPT[k].includes(c[k])?c[k]:AI_CFG_DEF[k]; return out; }
+let AICFG=aiCfgLoad();
+function aiCfgSet(k, v){
+  if(!(k in AI_CFG_DEF)) return;
+  if(typeof AI_CFG_DEF[k]==='boolean') v=(v===true||v==='true'); else v=Number(v);
+  if(!AI_CFG_OPT[k].includes(v)) return;
+  const agcBefore=AICFG.agc;
+  AICFG=Object.assign({}, AICFG, {[k]:v});
+  try{ localStorage.setItem('bs_ai_cfg', JSON.stringify(AICFG)); }catch(e){}
+  // マイクの自動音量調整は、聞いている途中ならマイクを開き直して反映する
+  // 許可待ち・準備中（starting）も対象。止めると古い開始は無効になり（gen）、最新の設定で始め直す
+  if(k==='agc' && agcBefore!==v && (AIL.cap || AIL.starting)){ aiCaptureStop(); aiSync(); }
+  toast('鳴き声AIの設定を変えました', 1500);
+}
+function aiCfgHtml(){
+  const sel=(k, label, opts, fmt, note)=>`<label class="field"><span class="lab">${label}</span>
+    <select onchange="aiCfgSet('${k}', this.value)">${opts.map(v=>`<option value="${v}" ${AICFG[k]===v?'selected':''}>${fmt(v)}</option>`).join('')}</select>
+    ${note?`<span class="tiny muted">${note}</span>`:''}</label>`;
+  return sel('thr','知らせる基準（確からしさ）', AI_CFG_OPT.thr, v=>Math.round(v*100)+'% 以上', '低くすると小さな声・遠い声も拾いやすくなるが、間違いも増える（いちばん効く設定）')
+    + sel('hk','北海道の鳥に絞る', AI_CFG_OPT.hk, v=>v?'オン（北海道鳥類目録の種だけ）':'オフ（世界の約6,500種から）', '')
+    + sel('maxPer','1回（3秒）に知らせる種の数', AI_CFG_OPT.maxPer, v=>v+'種まで', '同時に鳴いている種をいくつまで知らせるか')
+    + sel('pad','自動で残す声の長さ', AI_CFG_OPT.pad, v=>'よく聞こえた3秒の前後 '+v+'秒', '')
+    + sel('manual','「いまの音を残す」の長さ', AI_CFG_OPT.manual, v=>'直前 '+v+'秒', '')
+    + sel('agc','マイクの自動音量調整', AI_CFG_OPT.agc, v=>v?'オン（小さな音を大きくして拾う）':'オフ（そのままの音）', 'オンにすると小さな音を拾いやすくなるが、雑音も大きくなる。AIは音の大きさより声の形で判断するので、効き目は「知らせる基準」より小さい');
+}
 const AI_MAX_PER_WIN=3;                       // 1つの3秒区間で記録する種の上限
 const AI_HUMAN_THR=0.3;                       // 人の声とみなす値
 const AI_PAD_SEC=5;                           // 声の切り出し: いちばんよく聞こえた区間の前後
@@ -8530,7 +8598,7 @@ async function aiCaptureStart(){
   const o={stream:null, ctx:null, node:null};
   const stale=()=>gen!==AIL.gen || !aiCanRun();
   try{
-    o.stream=await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:false } });
+    o.stream=await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:!!AICFG.agc } });
     if(stale()) throw 'stale';   // 許可待ちの間に止めた・調査が変わった → すぐ放す
     o.ctx=new (window.AudioContext||window.webkitAudioContext)({ sampleRate:AI_SR });
     await aiAddWorklet(o.ctx);
@@ -8659,11 +8727,12 @@ function aiHandleWindow(ws, row, seg){
   const P=AI.prep; if(!P) return;
   if(P.humanIdx!==undefined && row[P.humanIdx]>=AI_HUMAN_THR) AIL.humanWins.add(ws);
   const hits=[];
-  for(const i of P.hkIdx){ if(!P.nonBird.has(i) && row[i]>=AI_THR) hits.push({i, s:row[i]}); }
-  hits.sort((a,b)=>b.s-a.s); hits.length=Math.min(hits.length, AI_MAX_PER_WIN);
+  const cand = AICFG.hk ? P.hkIdx : row.keys();   // 北海道に絞らないときは全種から
+  for(const i of cand){ if(!P.nonBird.has(i) && row[i]>=AICFG.thr) hits.push({i, s:row[i]}); }
+  hits.sort((a,b)=>b.s-a.s); hits.length=Math.min(hits.length, AICFG.maxPer);
   const tw=aiTOf(seg,ws);
   for(const h of hits){
-    const ja=P.idxName.get(h.i);
+    const ja=P.idxName.get(h.i) || (P.labels[h.i]&&P.labels[h.i].ja) || '';   // 北海道に絞らないときは BirdNET の和名
     let ev=AIL.events.find(e=>e.ja===ja && !e.closed && e.segId===seg.id && ws-e.endS<=AI_GAP_MERGE*AI_WIN);
     if(!ev){
       if(AI_TOT.det>=AI_CAP_DET){ aiListenStop(`この調査の聞こえた鳥が上限（${AI_CAP_DET}件）に達したため、聞き取りを止めました。一覧を整理すると続けられます`); return; }
@@ -8683,7 +8752,7 @@ function aiHandleWindow(ws, row, seg){
       // いちばんよく聞こえた区間の前後を、その範囲がすべて判別し終わった時点で切り出す（保存前なら差し替える）
       // 声の保存を始めた検出（_clipSaving）は差し替えない（二重に保存して勘定がずれるため。再監査 Major）
       if(!ev.rec.clip && !ev.rec._clipSaving){
-        const a=Math.max(0, ws-AI_PAD_SEC*AI_SR), b=ws+AI_WIN+AI_PAD_SEC*AI_SR;
+        const a=Math.max(0, ws-AICFG.pad*AI_SR), b=ws+AI_WIN+AICFG.pad*AI_SR;
         AIL.pendingClips=AIL.pendingClips.filter(p=>p.ev!==ev);
         AIL.pendingClips.push({ ev, a, b, need:Math.ceil(b/AI_WIN)*AI_WIN, seg, gen:AIL.gen });
       }
@@ -8841,7 +8910,7 @@ function aiPopRender(){
   const sv=AIL.sv||currentSurveyUuid;
   box.innerHTML=`<div class="aipop-hd"><b>新しく聞こえた鳥</b><button type="button" onclick="aiPopToggle(false)">閉じる</button></div>`
     + (!AIL.want?`<div style="padding:2px 0 6px;"><button type="button" class="btn primary" style="min-height:40px;" onclick="aiPopToggle(false); aiListenStart()">🐦 聞き取りを始める</button></div>`
-      :`<div style="padding:2px 0 6px;"><button type="button" class="btn" style="min-height:40px;" ${aiCanSaveNow()?'':'disabled'} onclick="aiSaveNow()">🎙 いまの音を残す（直前30秒）</button>
+      :`<div style="padding:2px 0 6px;"><button type="button" class="btn" style="min-height:40px;" ${aiCanSaveNow()?'':'disabled'} onclick="aiSaveNow()">🎙 いまの音を残す（直前${AICFG.manual}秒）</button>
         ${aiCanSaveNow()?'':'<div class="tiny muted">音が届いているときだけ押せます</div>'}</div>`)
     + (ids.length? ids.map(id=>{ const r=_aiPopRec.get(id);
       const t=new Date(r.t0).toTimeString().slice(0,5);
@@ -8866,7 +8935,7 @@ function aiSaveNow(){
   if(!writeAllowed()) return;
   if(AI_TOT.det>=AI_CAP_DET){ toast(`この調査の聞こえた鳥が上限（${AI_CAP_DET}件）に達しています`, 5000); return; }
   const seg=AIL.seg, sv=AIL.sv, b=AIL.written;
-  const a=Math.max(0, b-AI_MANUAL_SEC*AI_SR, b-AIL.ring.length+1);   // いまの区間だけ（中断の前の音は混ぜない）
+  const a=Math.max(0, b-AICFG.manual*AI_SR, b-AIL.ring.length+1);   // いまの区間だけ（中断の前の音は混ぜない）
   const pcm=aiRingGet(a, b);
   if(!pcm || pcm.length<AI_SR){ toast('残せる音がまだありません（聞き始めて1秒未満）'); return; }
   const sec=pcm.length/AI_SR, bytes=pcm.length*2;
