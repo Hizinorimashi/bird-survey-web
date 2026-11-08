@@ -192,6 +192,7 @@
   .pt-dot{width:10px; height:10px; border-radius:50%; background:#e8b04b; border:2px solid #fff; flex:none;}
   .pt-lab{font-size:11px; font-weight:700; color:#111; background:rgba(255,255,255,.85); border-radius:4px; padding:0 3px;}
   body.tab-obs .pf-pan-row{flex-direction:column; align-items:flex-end;}   /* タブレットでは縦に並べる（v232） */
+  body.tab-obs.tab-phone .pf-pan-row{flex-direction:row; align-items:center;}   /* スマホは右下に横並び（v237） */
   .pf-pan-row > .leaflet-control, .pf-pan-row > button{margin:0 !important; float:none !important;}
   .aipop-ft{display:flex; gap:6px; justify-content:flex-end; padding-top:6px; border-top:1px solid var(--line);}
   /* タブレットの観察入力（地図いっぱい）以外では、見出しの右端に置く（スマホで入力欄にかからないように） */
@@ -267,7 +268,7 @@
     border-radius:22px; border:1px solid var(--line); background:var(--panel); color:var(--fg);
     font-size:15px; font-weight:700; box-shadow:0 2px 8px rgba(0,0,0,.4);}
   body.tab-left:not(.tab-collapsed) #tabBack{display:none;}
-  body.no-back.tab-collapsed #tabBack{display:none;}   /* 観察の編集では、入力を閉じているとき地図の上の戻るを出さない（開いているときは「入力を閉じる」として使える） */
+  body.no-back #tabBack{display:none;}   /* 観察の編集では地図の上の戻るも出さない */
   body.tab-collapsed.tab-left #tabBar{left:auto; right:calc(16px + env(safe-area-inset-right, 0px));}
   body.tab-obs #tabMapLayer .leaflet-top.leaflet-left{top:calc(56px + env(safe-area-inset-top, 0px));}
   body.tab-obs #tabMapLayer .leaflet-top.leaflet-right{top:calc(56px + env(safe-area-inset-top, 0px));}   /* 地図の種類ボタンが「入力を開く」帯に隠れないように（v232） */
@@ -302,7 +303,10 @@
   body.tab-obs.tab-phone:not(.tab-collapsed) #tabMapLayer .leaflet-bottom{margin-bottom:var(--sheet-h, 0px);}
   /* 引き出しを開いている間は「＋／−」を隠す（指2本で拡大縮小できる）。残すと P・L・N・鳥の列が下の「＋」・鳴き声AIに重なる */
   body.tab-obs.tab-phone:not(.tab-collapsed) #tabMapLayer .leaflet-control-zoom{display:none;}
-  body.tab-obs.tab-phone:not(.tab-collapsed) .aifab{bottom:calc(var(--sheet-h, 0px) + var(--kb-h, 0px) + 60px);}
+  /* 入力欄を開いている間は十字の「＋」を隠し（地図を直接押せば置ける）、鳴き声AIのボタンをその位置へ下げる。
+     背の低いスマホで「鳥」のボタンに重なっていた（v237） */
+  body.tab-obs.tab-phone:not(.tab-collapsed) #tabMapLayer .map-cross-drop{display:none;}   /* 十字の「＋」だけ（新しいL・この線で入力は同じ見た目の別ボタン。v237 監査 Major） */
+  body.tab-obs.tab-phone:not(.tab-collapsed) .aifab{bottom:calc(var(--sheet-h, 0px) + var(--kb-h, 0px) + 8px);}
   body.tab-obs.tab-phone:not(.tab-collapsed) #aiPops{top:calc(64px + env(safe-area-inset-top, 0px)); bottom:auto;
     max-height:calc(100% - var(--sheet-h, 0px) - 190px);}
   body.tab-obs.tab-phone #tabBar{font-size:14px; padding:8px 12px;}
@@ -318,7 +322,8 @@
   body.tab-obs.tab-phone .app input, body.tab-obs.tab-phone .app select, body.tab-obs.tab-phone .app textarea{font-size:16px;}   /* 16px 未満は iPhone が入力時に拡大する */
   /* 「保存して次の個体へ」を下端にぴったり。中身の下の余白（90px）と下端の余白の二重取りで浮いていた */
   body.tab-obs.tab-phone .app main{padding-bottom:0;}
-  body.tab-obs.tab-phone .app .savebar{padding-top:6px; padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px));}
+  /* 下端はホームバーに少し掛かってよい（2026-11-08 ユーザー「余白小さくしていい」） */
+  body.tab-obs.tab-phone .app .savebar{padding-top:4px; padding-bottom:max(4px, calc(env(safe-area-inset-bottom, 0px) - 20px));}
   body.tab-obs.tab-phone #tabBack{font-size:14px; padding:8px 12px;}
 
   /* 集計テーブル */
@@ -394,7 +399,7 @@
 <div class="app">
   <header>
     <div class="hbar">
-      <button class="back hidden" id="backBtn" onclick="goBack()">‹ 戻る</button>
+      <button class="back hidden" id="backBtn" onclick="headerBack()">‹ 戻る</button>
       <div class="htitle" id="hTitle">鳥類調査記録</div>
     </div>
     <div class="hsub" id="hSub"></div>
@@ -414,7 +419,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v236（2026-11-08 地図の上の戻るは入力を閉じる／スマホの入力欄の文字・見出しを小さく／保存の帯を下端に）';
+const APP_VERSION = 'v237（2026-11-08 地図の上の戻るは調査の画面・見出しの戻るは入力を閉じる／スマホの移動・描くを右下へ／保存の帯の下の余白を詰める）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -1615,6 +1620,13 @@ function nav(name, arg){
       ? 'このブラウザ／開き方では閲覧のみできます（入力・保存はできません）'
       : '起動時の確認が終わるまでお待ちください（数秒で終わります）', 5000);
     return; } if(!leaveGuardOk()) return; SCREENS._sel=null; STACK.push({name,arg}); render(); }
+// 見出しの「‹ 戻る」。観察の入力が地図の上の小窓・引き出しになっているときは、入力を閉じるだけ（v237・2026-11-08 ユーザー）。
+// それ以外の画面では今までどおり前の画面へ
+function headerBack(){
+  const b=document.body.classList;
+  if(b.contains('tab-obs') && !b.contains('tab-collapsed') && typeof tabletPanel==='function'){ tabletPanel(false); return; }
+  goBack();
+}
 function goBack(){ if(STACK.length>1){ if(!leaveGuardOk()) return; SCREENS._sel=null; STACK.pop(); render(); } }
 function reset(name,arg){ SCREENS._sel=null; STACK=[{name,arg}]; render(); }
 
@@ -4450,14 +4462,28 @@ function layoutSync(force){
   const ph=layoutIsPhone();
   document.body.classList.toggle('tab-phone', ph);
   if(ph) document.body.classList.remove('tab-left');   // スマホの引き出しに左右は無い
+  panRowPlace();
   sheetSync();
 }
 /* スマホの引き出しの高さ（--sheet-h）とキーボードの高さ（--kb-h）を body に持たせる。
    地図の下端のボタン・鳴き声AIのボタンを引き出しの上へ逃がすのに使う */
+/* スマホ: 「✋ 移動」「✏ 描く」を地図の右下（入力欄のすぐ上）へ横並びで移す。右上の縦の列の下端だと、
+   画面の低いスマホでは入力欄に隠れて押せなかった（v237・2026-11-08 実機）。iPad・旧来の配置では右上へ戻す */
+function panRowPlace(){
+  if(typeof mapObj==='undefined' || !mapObj) return;
+  let c; try{ c=mapObj.getContainer(); }catch(e){ return; }
+  const row=c.querySelector('.pf-pan-row'); if(!row) return;
+  const b=document.body.classList, phone=b.contains('tab-obs') && b.contains('tab-phone');
+  const dest=c.querySelector(phone ? '.leaflet-bottom.leaflet-right' : '.leaflet-top.leaflet-right');
+  if(!dest || row.parentNode===dest) return;
+  if(phone){ const attr=dest.querySelector('.leaflet-control-attribution'); dest.insertBefore(row, attr||null); }
+  else dest.appendChild(row);
+}
 function sheetSync(){
   const b=document.body;
   let kb=0;
   try{ const vv=window.visualViewport; if(vv) kb=Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)); }catch(e){}
+  if(kb<80) kb=0;   // キーボードは 80px より高い。ツールバーの出入り等の小さな差で引き出しを浮かせない
   b.style.setProperty('--kb-h', kb+'px');
   let sh=0;
   if(b.classList.contains('tab-obs') && b.classList.contains('tab-phone') && !b.classList.contains('tab-collapsed')){
@@ -4477,11 +4503,9 @@ function tabletAttach(){
   const layer=document.createElement('div'); layer.id='tabMapLayer';
   document.body.appendChild(layer);
   layer.appendChild(el);
-  // 地図の上の「‹ 戻る」: 入力が開いていれば入力を閉じる。閉じていれば調査の画面へ戻る（v236・2026-11-08 ユーザー）。
-  // 入力の見出しの「‹ 戻る」はいつも調査の画面へ戻る
+  // 地図の上の「‹ 戻る」は調査の画面へ戻る。入力の見出しの「‹ 戻る」は入力を閉じる（headerBack。v237・2026-11-08 ユーザー）
   if(!$('#tabBack')){ const bk=document.createElement('button'); bk.id='tabBack'; bk.type='button'; bk.textContent='‹ 戻る';
-    bk.onclick=()=>{ if(document.body.classList.contains('tab-obs') && !document.body.classList.contains('tab-collapsed')) tabletPanel(false); else goBack(); };
-    document.body.appendChild(bk); }
+    bk.onclick=()=>goBack(); document.body.appendChild(bk); }
   let bar=$('#tabBar');
   if(!bar){ bar=document.createElement('button'); bar.id='tabBar'; bar.type='button';
     bar.addEventListener('click', ()=>tabletPanel(document.body.classList.contains('tab-collapsed')));
@@ -4514,6 +4538,7 @@ function tabletRelease(){
   }catch(e){}
   try{ layer.remove(); }catch(e){}
   if(typeof pfNewLineSync==='function') pfNewLineSync();   // オフにしたら「✎ この線で入力」を隠す
+  panRowPlace();   // 移動・描くを右上へ戻す
 }
 function tabletBarSync(){
   const bar=$('#tabBar'); if(!bar) return;
@@ -4806,7 +4831,7 @@ function makeCrossEl(m){
 function addCrosshairControl(m, onDrop, label){
   makeCrossEl(m);
   const C=L.Control.extend({ onAdd:function(){
-    const b=L.DomUtil.create('button','map-drop-btn');
+    const b=L.DomUtil.create('button','map-drop-btn map-cross-drop');
     b.type='button'; b.textContent=label||'◎ 十字の位置に印';
     L.DomEvent.disableClickPropagation(b);
     L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>{
