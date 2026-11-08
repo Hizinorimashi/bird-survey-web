@@ -421,7 +421,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v239（2026-11-08 一覧は編集でだけ／欄へスクロールしない／🧲 マグネット（新しいL・この線で入力を外す）／保存して次の個体へで閉じる／Lでも入力を開く）';
+const APP_VERSION = 'v240（2026-11-08 観察を編集で保存したら入力を閉じて「観察を追加」の地図に戻る）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -5257,6 +5257,25 @@ function birdAfterSave(u2, add, flU, stay){
 // 営巣木・巣の欄は、N モード・巣を置いた・巣の入力がある（開き直した記録を含む）ときだけ出す（2026-11-07 ユーザー要望）。
 // 隠しても欄はフォームの中にあるので、値は今までどおり保存・復元される
 // 観察の画面のタブ。編集中の「＋ 追加」は、いまの編集を保存してから新しい観察の入力へ（保存できなければ留まる）
+/* 直している記録を保存した後（v240）。入力欄を閉じ、調査の画面から「観察を追加」で入ったのと同じ状態に戻る
+   （地図だけ・地図の上の「‹ 戻る」で調査の画面へ・ほかの記録も「✎ 編集」から開ける）。
+   ほかに書きかけの個体があるときは、画面を離れると書きかけが消えるので、保存した個体を一覧から外して
+   書きかけを開く（「保存して次の個体へ」と同じ）。扱ったら true */
+function obsEditDone(sv, obsU, flU){
+  SCREENS._tabOpenUntil=0;   // 入力欄は閉じた状態から
+  if(typeof BIRDS!=='undefined' && BIRDS.length>1 && typeof birdAfterSave==='function')
+    return !!birdAfterSave(obsU||null, true, flU||null, false);
+  // 保存した個体の書きかけの印・退避した入力を片付ける（残っていると、開き直したときに書きかけとして
+  // 戻ってきて編集が終わらない・古い入力が戻る。v240 監査 Major）
+  { const b=(typeof CUR==='function')?CUR():null, nb=newBird();
+    if(b){ b.dirty=false; b.form=null; b.st=nb.st; b.map=nb.map; b.media=nb.media; b.reinitId=null; b.reinitFl=null; } }
+  SCREENS._dirty=false;
+  const n0=STACK.length;
+  goBack();
+  if(STACK.length<n0){ nav('obsEdit', JSON.stringify({sv})); return true; }
+  // 戻れなかったときは、保存した内容を読み直して画面と保存をそろえる（今までの「留まる」動き）
+  return (typeof birdAfterSave==='function') ? !!birdAfterSave(obsU||null, false, flU||null, true) : false;
+}
 function obsTabAdd(u, sv, editing, editView){
   if(!editing && !editView) return;
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;
@@ -8552,10 +8571,11 @@ function saveObs(u, svUuid, editing, cont){
       PF_SEGS=[]; PF_NEWLINE=true;
       toast(flRecs.length ? ('飛翔経路を'+flRecs.length+'本保存しました') : '経路を削除しました');
       // 複数個体: 飛翔だけの保存でも画面に留まる
-      const stayEditF = cont===false && !!SCREENS._obsEditView;   // 直している記録の「保存する」は画面に留まる（v234）
-      if(typeof birdAfterSave==='function' && (cont==='addBird' || (BIRDS.length>1 && cont!==true) || stayEditF)){
-        const flU0=((flRecs[0]&&flRecs[0].uuid) || anchorFlId || null);   // 今回書けた生存の経路を優先
-        if(birdAfterSave(null, cont==='addBird', flU0, stayEditF)) return true;
+      const flU0=((flRecs[0]&&flRecs[0].uuid) || anchorFlId || null);   // 今回書けた生存の経路を優先
+      // 直している記録の「保存する」は編集を終えて「観察を追加」の地図に戻る（v240・2026-11-08 ユーザー。v234 の「留まる」をやめた）
+      if(cont===false && SCREENS._obsEditView){ if(obsEditDone(svUuid, null, flU0)) return true; }
+      if(typeof birdAfterSave==='function' && (cont==='addBird' || (BIRDS.length>1 && cont!==true))){
+        if(birdAfterSave(null, cont==='addBird', flU0, false)) return true;
       }
       if(cont===true){ goBack(); nav('obsEdit', JSON.stringify({sv:svUuid})); } else goBack();
       return true;
@@ -8718,11 +8738,12 @@ function saveObs(u, svUuid, editing, cont){
   SCREENS._dirty=false; SCREENS._ghost=null;   // 保存済みなので離脱ガード対象から外す
   if(reasons.length) toast((rec.needs_review?'保存しました ⚠ 要確認を付けました: ':'保存しました（⚠ ')+reasons.join('・')+(rec.needs_review?'':'）'), 4000);
   else toast('保存しました');
+  // 記録を直している（経路だけの記録を含む）ときの「保存する」は、編集を終えて「観察を追加」の地図に戻る
+  //（v240・2026-11-08 ユーザー:「保存しても編集から抜けられない」。v234 の「留まって編集を続ける」をやめた）
+  if(cont===false && SCREENS._obsEditView){ if(obsEditDone(svUuid, rec.uuid, null)) return; }
   // 複数個体: 保存後は画面に留まり、この個体を「保存済み」として読み直す
-  // 記録を直している（経路だけの記録を含む）ときの「保存する」も画面に留まり、直した記録を読み直す（v234 ユーザー）
-  const stayEdit = cont===false && !!SCREENS._obsEditView;
-  if(typeof birdAfterSave==='function' && (cont==='addBird' || (BIRDS.length>1 && !cont) || stayEdit)){
-    if(birdAfterSave(rec.uuid, cont==='addBird', null, stayEdit)) return;
+  if(typeof birdAfterSave==='function' && (cont==='addBird' || (BIRDS.length>1 && !cont))){
+    if(birdAfterSave(rec.uuid, cont==='addBird', null, false)) return;
   }
   if(cont==='flight'){
     // 同じ鳥の飛翔経路へ。目印を付けておくと、集計で二重に数えられない
