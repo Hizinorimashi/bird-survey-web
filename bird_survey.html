@@ -287,6 +287,8 @@
   .draw-btn{min-height:40px; padding:6px 12px; border-radius:20px; border:1px solid var(--line);
     background:var(--panel); color:var(--fg); font-size:14px; font-weight:700; box-shadow:0 1px 4px rgba(0,0,0,.4);}
   .draw-btn.on{background:#e0a030; color:#111; border-color:#e0a030;}
+  .magnet-btn{min-width:44px; font-size:18px; padding:4px 8px;}
+  .magnet-btn.on{background:#d84a8a; border-color:#d84a8a; color:#fff; box-shadow:0 0 0 3px rgba(216,74,138,.35);}
   .leaflet-container.drawing-on{cursor:crosshair;}
   /* 描いている間は、指のなぞりをページのスクロール・ブラウザの拡大に渡さない。
      渡すとスクロールに指を取られて線が途中で消える（スマホの小さな地図で起きていた。v235） */
@@ -419,7 +421,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v238（2026-11-08 入力画面の経路を滑らかに見せる（保存する線はそのまま））';
+const APP_VERSION = 'v239（2026-11-08 一覧は編集でだけ／欄へスクロールしない／🧲 マグネット（新しいL・この線で入力を外す）／保存して次の個体へで閉じる／Lでも入力を開く）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -4520,7 +4522,6 @@ function tabletAttach(){
   layoutSync(true);
   tabletBarSync();
   mapUndoBtnSync(true, el);   // 「↶ 1つ戻す」を地図の上に出す（地図の下の ↶ は小窓の中にある）
-  if(typeof pfNewLineSync==='function') pfNewLineSync();   // 「✎ この線で入力」の出し入れを合わせる
   try{ mapObj.invalidateSize(); }catch(e){}
   setTimeout(()=>{ try{ mapObj && mapObj.invalidateSize(); }catch(e){} }, 250);
 }
@@ -4537,7 +4538,6 @@ function tabletRelease(){
     if(mark) mark.remove();
   }catch(e){}
   try{ layer.remove(); }catch(e){}
-  if(typeof pfNewLineSync==='function') pfNewLineSync();   // オフにしたら「✎ この線で入力」を隠す
   panRowPlace();   // 移動・描くを右上へ戻す
 }
 function tabletBarSync(){
@@ -4552,6 +4552,9 @@ function tabletKeepOpen(){
 }
 function tabletPanel(open, target, at){
   if(!document.body.classList.contains('tab-obs')) return;
+  // 保存済みの記録の一覧（✎ 編集）は、小窓を開け閉めするとき（P・L・N を置く・畳む）に隠す。
+  // 出すのは「✎ 編集」を押したときだけ（v239・2026-11-08 ユーザー: 新しく置くたびに出てうっとうしい）
+  { const pick=document.getElementById('obsPickBox'); if(pick) pick.style.display='none'; }
   document.body.classList.toggle('tab-collapsed', !open);
   const phone=document.body.classList.contains('tab-phone');
   if(open && at && mapObj && !phone){
@@ -4570,10 +4573,11 @@ function tabletPanel(open, target, at){
       if(p.y > free-40) mapObj.panBy([0, p.y - free/2]);
     }catch(e){} }, 80);
   }
+  // 欄（止まり・巣・線の属性）は開くが、**そこへはスクロールしない**（先に入れたいのは種名。v239・2026-11-08 ユーザー）。
+  // 小窓の位置はそのまま（新しい空の個体は描き直しで一番上から始まる）
   if(open && target){
     const el=$(target);
-    if(el){ if(el.tagName==='DETAILS') el.open=true;
-      setTimeout(()=>{ try{ el.scrollIntoView({block:'start', behavior:'smooth'}); }catch(e){} }, 30); }
+    if(el && el.tagName==='DETAILS') el.open=true;
   }
 }
 window.addEventListener('resize', ()=>{ layoutSync(false); sheetSync(); if(_tab && mapObj){ try{ mapObj.invalidateSize(); }catch(e){} } });
@@ -5199,7 +5203,9 @@ function birdDrop(){
 // この個体を「保存済みの記録の編集」として読み直す（追加なら新しい個体も開く）
 function birdAfterSave(u2, add, flU, stay){
   if(!add && BIRDS.length<=1 && !stay) return false;
-  tabletKeepOpen();
+  // 「保存して次の個体へ」は小窓を畳んで終わる（次は P・L・N を置いたら開く。v239・2026-11-08 ユーザー）。
+  // 「保存する」（編集の保存）は今までどおり開いたまま
+  if(add) SCREENS._tabOpenUntil=0; else tabletKeepOpen();
   if(typeof spiralReset==='function') spiralReset();   // 押している状態を次の個体へ持ち越さない
   PF_PAN=true; PF_PT=false;   // 保存後に読み直す・次の個体も「✋ 移動」から
   const nb=newBird();
@@ -5232,10 +5238,19 @@ function birdAfterSave(u2, add, flU, stay){
     }
     if(segs.length) b.map.segs=segs;
   }catch(e){}
-  if(add){ BIRDS.push(newBird()); BIRD_IDX=BIRDS.length-1; }
+  if(add){
+    // 保存した個体は**個体の一覧から外す**（入力用のデータだけ。保存した記録・添付は消えない。
+    // 地図の保存済みの印・薄描き・「✎ 編集」から開ける）。v239・2026-11-08 ユーザー:
+    // 「保存して次の個体へで（種名未入力）が出るのをやめて」
+    BIRDS.splice(BIRD_IDX, 1);
+    if(!BIRDS.length){ BIRDS.push(newBird()); BIRD_IDX=0; }   // 書きかけが無ければ空の1個体（一覧は出ない）
+    else BIRD_IDX=Math.min(BIRD_IDX, BIRDS.length-1);            // 書きかけが残っていれば次の書きかけを開く
+  }
   SCREENS._birdKeep=true;
   render();
-  SCREENS._dirty=false;
+  // 開いた個体が書きかけなら未保存の印を保つ（離脱確認が効く。v239 計画レビュー Major 1）。空の個体なら立てない
+  SCREENS._dirty = add ? !!(CUR() && CUR().dirty) : false;
+  if(add && !SCREENS._dirty){ const app=document.querySelector('.app'); if(app) app.scrollTop=0; }   // 新しい空の個体は一番上から
   return true;
 }
 /* ---------- ここまで 段A・段B ---------- */
@@ -5298,13 +5313,7 @@ function nestFoldSync(){
 }
 function pfSet(mode){
   if(PF_PT && typeof ptCloseOk==='function'){ if(!ptCloseOk()) return; ptClose(); }
-  // L を押し直したときは「前の L の終点から続ける／離して始める」を切り替える。
-  // 同じ鳥を追っている間は前の終わりから続けたいことがほとんどだが、
-  // 見失って出直したときは離して始めたい（2026-08-13 実機で使っての要望）
-  if(mode==='F'){
-    if(PF_MODE==='F' && PF_NEWLINE && PF_SEL===-1 && contFrom()) PF_CONT=!PF_CONT;
-    else PF_CONT=true;
-  }
+  // L を押し直しても「続ける⇔離す」は切り替えない（v239）。続けるかどうかは「🧲 マグネット」で決める
   if(mode!=='F' && typeof spiralReset==='function') spiralReset();   // 経路以外では使わない
   if(mode!=='F' && typeof drawIsOn==='function' && drawIsOn()) drawSet(false);   // 描くモードも経路だけ
   // P/F/N を押したら必ず「次は新しく始める」。同じボタンをもう一度押したときも同じ
@@ -5338,7 +5347,6 @@ function pfBtnSync(){
   const c=$('#pfPan'); if(c) c.classList.toggle('on', !!PF_PAN);
   const t=$('#pfPt'); if(t) t.classList.toggle('on', !!PF_PT);
   if(typeof spiralInfo==='function') spiralInfo();   // 「くるくる」の出し入れ
-  if(typeof pfNewLineSync==='function') pfNewLineSync();   // 「＋ 新しいL」の出し入れ
 }
 // カーソルのとき、押しても置かない（選んでいるものがあるときは置ける＝動かす・描き足す）
 // 「鳥」（ポイント）のときも、P・L・N の印・線は置かない（地図を押すとポイントの小窓になる）
@@ -5767,14 +5775,30 @@ function isTrueFlag(v){
 }
 // 記録に残っている「引き継いで始めた線か」を読む（古い記録には無いので0）
 function contOf(f){ return (f && isTrueFlag(f.continued_start)) ? 1 : 0; }
+// 🧲 マグネット（v239・2026-11-08 ユーザー）。光っている（オン）とき、新しく始める線の先頭に
+// 「直前の線の終点か P の位置」を足してつなぐ。端末に覚える（既定オン）。個体の切り替え・↶ では変えない
+function magnetOn(){ try{ return localStorage.getItem('bs_magnet')!=='off'; }catch(e){ return true; } }
+function magnetToggle(){
+  try{ localStorage.setItem('bs_magnet', magnetOn()?'off':'on'); }catch(e){}
+  magnetSync(); pfInfo();
+  toast(magnetOn()?'🧲 マグネット: オン（次の線は前の線の終わり・P から始まります）':'🧲 マグネット: オフ（次の線は押した所から始まります）', 3000);
+}
+function magnetSync(){ const b=document.getElementById('pfMagnet'); if(b){ b.classList.toggle('on', magnetOn()); b.setAttribute('aria-pressed', magnetOn()?'true':'false'); } }
+// 新しい線を引き継ぐ点。**いまの個体の中だけ**を後ろから見て、最初の P か線の終点（面は飛ばしてその前を見る）。
+// 描きかけ（1点だけ）の線が最後なら続けない（未完成の線が残ったまま次が始まる）
 function contFrom(){
-  const sg=lastDrawnFl();
-  if(!sg || segShape(sg)===SHAPE_AREA) return null;
-  // 描きかけ（1点だけ）の線からは続けない。続けると未完成の線が残ったまま次が始まる
-  if((sg.pts||[]).filter(validPathPt).length<2) return null;
-  const pts=sg.pts||[];
-  for(let i=pts.length-1;i>=0;i--){
-    if(validPathPt(pts[i])) return { pt:[pts[i][0], pts[i][1]], time:(sg.times||[])[i]||'' };
+  for(let i=PF_SEGS.length-1;i>=0;i--){
+    const sg=PF_SEGS[i];
+    if(!sg) continue;
+    if(sg.t==='P'){ if(sg.pt && validPathPt(sg.pt)) return { pt:[sg.pt[0], sg.pt[1]], time:sg.time||'' }; continue; }
+    if(sg.t!=='F') continue;
+    if(segShape(sg)===SHAPE_AREA) continue;
+    const pts=sg.pts||[];
+    if(pts.filter(validPathPt).length<2) return null;
+    for(let k=pts.length-1;k>=0;k--){
+      if(validPathPt(pts[k])) return { pt:[pts[k][0], pts[k][1]], time:(sg.times||[])[k]||'' };
+    }
+    return null;
   }
   return null;
 }
@@ -6288,13 +6312,12 @@ function pfInfo(){
     parts.push(`タップで旋回の輪（${spiralSize().name}・${spiralSide()===-1?'右回り':'左回り'}・${spiralMoves()?'進む':'その場'}）`);
   // 次の L をどこから始めるか。押し間違いに気づけるよう、待っている間だけ出す
   if(PF_MODE==='F' && PF_NEWLINE && PF_SEL===-1 && contFrom())
-    parts.push(PF_CONT?'次の線は前の終点から（Lをもう一度押すと離して始める）'
-                      :'次の線は離して始める（Lをもう一度押すと前の終点から）');
+    parts.push(magnetOn()?'🧲 次の線は前の線・P から始まります'
+                         :'次の線は押した所から始まります（🧲 を押すとつながります）');
   if(np) parts.push('止まり '+np+'か所');
   if(nf) parts.push('経路 '+nf+'本');
   if(PF_NEST) parts.push('巣あり');
   el.textContent=parts.join(' ・ ');
-  if(typeof pfNewLineSync==='function') pfNewLineSync();
 }
 /* 線を描いている途中で**始点をもう一度タップしたら、閉じて面にする**。
    面にするための専用ボタンは置かない（地図が狭くなり、画面もうるさくなる）。
@@ -6390,7 +6413,7 @@ function pfDrop(lat,lon){
       // 時刻は前の終点のものをそのまま使う（同じ場所・同じ時のことなので）
       // 前の終点そのものをタップしたときは引き継がない。
       // 引き継ぐと同じ点が2つ並んだ「長さ0の線」ができてしまう
-      const c=PF_CONT?contFrom():null;
+      const c=magnetOn()?contFrom():null;   // 🧲 マグネットがオンなら前の線・P につなぐ（v239）
       const from=(c && !(c.pt[0]===lat && c.pt[1]===lon))?c:null;
       const pts=from?[[from.pt[0],from.pt[1]],[lat,lon]]:[[lat,lon]];
       const times=from?[from.time||now, now]:[now];
@@ -6400,11 +6423,15 @@ function pfDrop(lat,lon){
         fl:{height:'',behavior:'',shape:SHAPE_LINE,area_type:''}};
       PF_SEGS.push(sg); PF_NEWLINE=false;
       // 「くるくる」なら、いま置いた点を中心に輪を足す（向きは引き継ぎ点から）
-      if(PF_SPIRAL) segAddSpiral(sg, lat, lon, now, from?from.pt:null); }
+      if(PF_SPIRAL) segAddSpiral(sg, lat, lon, now, from?from.pt:null);
+      // 新しい線を始めたときだけ入力を開く（点を足すたびには開き直さない。欄は開くがスクロールしない。v239）
+      setTimeout(()=>tabletPanel(true, '#flAttrRow', [lat,lon]), 0); }
     else {
       const closed=pfTryClose(last,lat,lon);
       if(closed==='ng') PF_HIST.pop();       // 何も変わっていないので控えも戻す
       else if(!closed) segAddPts(last, lat, lon, now);
+      // 同じ線に点を足したときも保存済みの記録の一覧は隠す（小窓は開き直さない。v239 監査 Minor）
+      { const pick=document.getElementById('obsPickBox'); if(pick) pick.style.display='none'; }
     }
   }
   SCREENS._dirty=true; pfRedraw(); pfInfo(); pfSyncFlightFields(); segChips();
@@ -6420,7 +6447,7 @@ function obsMapUndo(){
   const strokeId=(PF_STROKE_SEG && PF_STROKE_SEG.id!=null) ? PF_STROKE_SEG.id : null;   // なぞった直後の線は、戻したあとも同じ線を指す
   const st=JSON.parse(PF_HIST.pop());
   PF_SEGS=st.segs; PF_NEST=st.nest; PF_NEWLINE=st.newline; PF_SEL=st.sel; PERCH_IDX=st.perch;
-  PF_CONT=(st.cont!==false);   // 「続きから／離して」も戻す（古い控えは既定の「続きから」）
+  // マグネットは端末の設定なので ↶ では戻さない（各線の cont は segs と一緒に戻る。v239）
   PF_SEGS.forEach(sg=>{ const nowSg=cur.get(sg.id); if(!nowSg) return;
     // 止まり情報は値だけでなく「触った」印も一緒に残す。印が落ちると、
     // 画面には編集値が見えるのに保存では元の値へ戻ってしまう
@@ -6460,6 +6487,26 @@ function pfRedraw(){
   try{ if(typeof birdListSync==='function' && BIRDS.length>1) birdListSync(); }catch(e){}   // 一覧の止まり/経路数を追随させる
   if(pfLayer){ try{ mapObj.removeLayer(pfLayer); }catch(e){} }
   pfLayer=L.layerGroup().addTo(mapObj);
+  // 同じ調査の保存済みの飛翔経路を薄く重ねる（v239。「保存して次の個体へ」で個体の一覧から外した記録も見えるように）。
+  // 線は滑らかに、面は元の座標で閉じた輪郭（塗らない。丸めると範囲が変わる）。
+  // **いま入力・編集している記録（どの個体の経路の元の記録も）は除く**（二重に描かない。v239 計画レビュー）
+  try{
+    const svU=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
+    if(svU){
+      const mine=new Set();
+      PF_SEGS.forEach(g=>{ if(g.srcUuid) mine.add(g.srcUuid); });
+      BIRDS.forEach(b=>{ ((b.map&&b.map.segs)||[]).forEach(g=>{ if(g && g.srcUuid) mine.add(g.srcUuid); }); });
+      DB.flightsOf(svU).forEach(of=>{
+        if(!of || mine.has(of.uuid)) return;
+        const pth=(of.path||[]).filter(validPathPt);
+        if(pth.length<2) return;
+        if(of.shape===SHAPE_AREA && pth.length>2)
+          L.polygon(pth,{color:'#9b59b6',weight:2,opacity:.35,fill:false,dashArray:'4,4',interactive:false}).addTo(pfLayer);
+        else
+          L.polyline(smoothPath(pth),{color:'#e0a030',weight:3,opacity:.3,dashArray:'4,4',interactive:false}).addTo(pfLayer);
+      });
+    }
+  }catch(e){}
   // 他の個体の内容は薄く重ねる（位置関係が見えないと、同じ場所を重複して記録してしまう）
   BIRDS.forEach(function(b,bi){
     if(bi===BIRD_IDX || !b.map) return;
@@ -6660,35 +6707,16 @@ function initObsPosMap(){
     onLongPress:(cp)=>pfLongPress(cp)   // 長押しで P・L・巣を選ぶ
   });
   addPanButton();
-  addTabLineControl(mapObj);
   addCrosshairControl(mapObj, (la2,lo2)=>{
     if(PF_PT && PF_SEL===-1){ pfDrop(la2,lo2); return; }   // 「鳥」なら十字の位置でポイントの小窓
     if(pfPanBlocks()){ toast('いまは「✋ 移動」です。置くときは P・L・N を押してください', 4000); return; }
     pfDrop(la2,lo2); }, '＋');
-  // 同じ調査の他の飛翔経路を薄く重ねる
-  const svU=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
-  if(svU){ DB.flightsOf(svU).forEach(of=>{
-    const pth=(of.path||[]).filter(validPathPt);
-    if(pth.length<2) return;
-    L.polyline(smoothPath(pth),{color:'#e0a030',weight:3,opacity:.25,dashArray:'4,4'}).addTo(mapObj);
-  }); }
+  // 同じ調査の保存済みの飛翔経路を薄く重ねるのは pfRedraw（描き直すたびに、いま直している記録を除いて描く。v239）
   pfRedraw(); pfInfo();
   const all=[]; PF_SEGS.forEach(sg=>{ if(sg.t==='P') all.push(sg.pt); else sg.pts.forEach(x=>all.push(x)); });
   if(PF_NEST) all.push(PF_NEST);
   if(tabletOn()) tabletAttach();   // タブレット表示: 地図を画面いっぱいの層へ（入力欄は動かさない）
   if(all.length>1){ try{ mapObj.fitBounds(all,{padding:[40,40], maxZoom:FIT_MAX_ZOOM}); }catch(e){} }
-}
-/* タブレット表示のときだけ出す「✎ この線で入力」。タップで描いた線の属性を入れる小窓を**開くだけ**
-   （保存・新しいL・面への変換はしない。1つの操作に2つの意味を持たせない） */
-function addTabLineControl(m){
-  const C=L.Control.extend({ onAdd:function(){
-    const b=L.DomUtil.create('button','map-drop-btn tab-line-btn');
-    b.type='button'; b.id='tabLineBtn'; b.textContent='✎ この線で入力'; b.style.display='none';
-    L.DomEvent.disableClickPropagation(b);
-    L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>{
-      const sg=lastDrawnFl(); tabletPanel(true, '#flAttrRow', sg&&sg.pts&&sg.pts.length?sg.pts[sg.pts.length-1]:null); });
-    return b; }});
-  new C({position:'bottomright'}).addTo(m);
 }
 /* なぞった線をまとめて L に加える（描くモードの確定）。**履歴は1件だけ**積み、
    pfDrop を点ごとに呼ばない＝始点付近で「面にする」判定（pfTryClose）を通さない（計画レビュー M3）。
@@ -6828,7 +6856,13 @@ function pfAddStroke(ll, tt){
     // **なぞるたびに新しいL、前の線とはつながない**（2026-11-07 実機での決定）。
     // フリーハンドでは、続けたいときは前の終点から描き始めればよく、自動で直線を結ぶと
     // 描いていない経路ができてしまう。続きの1点（cont）も付けない
-    const sg={t:'F', id:pfId(), pts:ll.map(p=>[p[0],p[1]]), times:times.slice(), cont:0,
+    // ただし 🧲 マグネットがオンなら、前の線の終点か P を**先頭に足して**つなぐ（v239・2026-11-08 ユーザー）。
+    // なぞった点は残す（面にするときは足した1点と時刻だけ外す＝segDropCont）。同じ点なら足さない
+    const c=magnetOn()?contFrom():null;
+    const p0=ll[0];
+    const from=(c && !(c.pt[0]===p0[0] && c.pt[1]===p0[1]))?c:null;
+    const sg={t:'F', id:pfId(), pts:(from?[[from.pt[0],from.pt[1]]]:[]).concat(ll.map(p=>[p[0],p[1]])),
+      times:(from?[from.time||times[0]]:[]).concat(times), cont:from?1:0,
       fl:{height:'',behavior:'',shape:SHAPE_LINE,area_type:''}};
     PF_SEGS.push(sg);
     PF_NEWLINE=true;     // 次のタップも新しいLから（なぞった線に勝手に足さない）
@@ -6846,6 +6880,11 @@ function addPanButton(){
   L.DomEvent.disableClickPropagation(row);
   L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>pfPan());
   db.parentNode.insertBefore(row, db); row.appendChild(b); row.appendChild(db);
+  // 🧲 マグネット（v239）。光っているとき、新しい線が前の線の終わり・P につながる
+  const mg=document.createElement('button'); mg.type='button'; mg.id='pfMagnet'; mg.className='draw-btn magnet-btn';
+  mg.textContent='🧲'; mg.title='マグネット: 光っているとき、新しい線を前の線の終わり・P につなげる';
+  L.DomEvent.on(mg,'click',L.DomEvent.stop).on(mg,'click',()=>magnetToggle());
+  row.appendChild(mg); magnetSync();
   pfBtnSync();
 }
 // 地図の上の P / F 切替（アイコンのみ・仕様書）
@@ -6875,44 +6914,9 @@ function addPfControl(m){
     L.DomEvent.on(pt,'click',L.DomEvent.stop).on(pt,'click',()=>ptSet());
     return box; }});
   new C({position:'topleft'}).addTo(m);
-  addNewLineControl(m);
 }
-/* 「＋ 新しいL」。線を1本描いたあと、次の線を始めるためのボタン。
-   左上の L まで手を伸ばすのが面倒、という現場の指摘（2026-08-13）。
-   **描いている線があるときだけ**、親指の届く右下（「大きく」の上）に出す。
-   左下に置くと「＋」を押し上げ、その「＋」が N と重なった（2026-08-13 実測）。
-   前の終点から続けるかどうかは L ボタンの切り替えに従う（ここでは変えない） */
-function addNewLineControl(m){
-  const C=L.Control.extend({ onAdd:function(){
-    const b=L.DomUtil.create('button','map-drop-btn pf-newline');
-    b.type='button'; b.id='pfNewLine'; b.textContent='＋ 新しいL';
-    b.title='次のタップから新しい経路を始める';
-    b.style.display='none';
-    L.DomEvent.disableClickPropagation(b);
-    L.DomEvent.on(b,'click',L.DomEvent.stop).on(b,'click',()=>pfNewLine());
-    return b; }});
-  new C({position:'bottomright'}).addTo(m);
-}
-function pfNewLine(){
-  if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;
-  if(PF_MODE!=='F'){ pfSet('F'); return; }   // 経路モードでなければ、まず切り替えるだけ
-  PF_SEL=-1; PF_NEWLINE=true; PF_STROKE_SEG=null;   // 次のタップから新しい線
-  PF_PAN=false; PF_PT=false; pfBtnSync();   // 「✋ 移動」のまま選んでいた線から押したときも、次のタップで描けるように（v231 監査 Minor）
-  // **必ず前の終点から続ける**。L を押し直して「離す」にしていても、
-  // このボタンは「続ける」意味に固定する（離したいときは L を使う。2026-08-13 指摘）
-  PF_CONT=true;
-  if(typeof segChips==='function') segChips();
-  pfInfo(); pfSyncFlightFields();
-  toast(PF_CONT ? '次のタップから新しいL（前の終点から続けます）'
-                : '次のタップから新しいL（離して始めます）', 3000);
-}
-// 「＋ 新しいL」の出し入れ。**描く相手がいるときだけ**出す
-function pfNewLineSync(){
-  const b=$('#pfNewLine'); if(!b) return;
-  const 描いている = PF_MODE==='F' && !!lastDrawnFl() && !pfPanBlocks();   // 「✋ 移動」のときは出さない（押しても置けないため）
-  b.style.display = 描いている ? '' : 'none';
-  const t=$('#tabLineBtn'); if(t) t.style.display = (描いている && document.body.classList.contains('tab-obs')) ? '' : 'none';
-}
+// 「✎ この線で入力」「＋ 新しいL」は v239 で外した（2026-11-08 ユーザー: 使わない）。
+// 次の線は L を押して始める。前の線・P にくっつけるかは「🧲 マグネット」で決める
 // 観察者位置マーカー（緑丸）の再描画のみ。値は書き換えない（GPS取得時の精度を消さないため分離）
 function obsPosMarkerUpdate(lat,lon){
   const shown=$('#obsPosMap') && $('#obsPosMap').style.display!=='none';
