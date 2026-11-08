@@ -267,7 +267,7 @@
     border-radius:22px; border:1px solid var(--line); background:var(--panel); color:var(--fg);
     font-size:15px; font-weight:700; box-shadow:0 2px 8px rgba(0,0,0,.4);}
   body.tab-left:not(.tab-collapsed) #tabBack{display:none;}
-  body.no-back #tabBack{display:none;}   /* 観察の編集では地図の上の戻るも出さない */
+  body.no-back.tab-collapsed #tabBack{display:none;}   /* 観察の編集では、入力を閉じているとき地図の上の戻るを出さない（開いているときは「入力を閉じる」として使える） */
   body.tab-collapsed.tab-left #tabBar{left:auto; right:calc(16px + env(safe-area-inset-right, 0px));}
   body.tab-obs #tabMapLayer .leaflet-top.leaflet-left{top:calc(56px + env(safe-area-inset-top, 0px));}
   body.tab-obs #tabMapLayer .leaflet-top.leaflet-right{top:calc(56px + env(safe-area-inset-top, 0px));}   /* 地図の種類ボタンが「入力を開く」帯に隠れないように（v232） */
@@ -306,6 +306,19 @@
   body.tab-obs.tab-phone:not(.tab-collapsed) #aiPops{top:calc(64px + env(safe-area-inset-top, 0px)); bottom:auto;
     max-height:calc(100% - var(--sheet-h, 0px) - 190px);}
   body.tab-obs.tab-phone #tabBar{font-size:14px; padding:8px 12px;}
+  /* v236（2026-11-08 実機）: 小窓・引き出しの見出しは画面の上端に無いので、時計の帯の分の余白は要らない
+    （iPhone で見出しの枠が大きすぎた）。スマホは文字も一段小さく */
+  body.tab-obs .app header{padding:6px 10px;}
+  body.tab-obs .app .back{padding:4px 8px;}
+  body.tab-obs.tab-phone .app{font-size:13px; padding-bottom:0;}
+  body.tab-obs.tab-phone .app .htitle{font-size:15px;}
+  body.tab-obs.tab-phone .app .back{font-size:14px;}
+  body.tab-obs.tab-phone .app .hsub{margin-top:2px;}
+  body.tab-obs.tab-phone .app .lab, body.tab-obs.tab-phone .app label{font-size:12px;}
+  body.tab-obs.tab-phone .app input, body.tab-obs.tab-phone .app select, body.tab-obs.tab-phone .app textarea{font-size:16px;}   /* 16px 未満は iPhone が入力時に拡大する */
+  /* 「保存して次の個体へ」を下端にぴったり。中身の下の余白（90px）と下端の余白の二重取りで浮いていた */
+  body.tab-obs.tab-phone .app main{padding-bottom:0;}
+  body.tab-obs.tab-phone .app .savebar{padding-top:6px; padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px));}
   body.tab-obs.tab-phone #tabBack{font-size:14px; padding:8px 12px;}
 
   /* 集計テーブル */
@@ -401,7 +414,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v235（2026-11-08 地図を24段まで拡大／図面・空撮を重ねる／スマホも地図いっぱい＋下から入力欄／戻るを時計の帯に隠さない／書き出しに鳴き声AI・経路・調査CSV・source列）';
+const APP_VERSION = 'v236（2026-11-08 地図の上の戻るは入力を閉じる／スマホの入力欄の文字・見出しを小さく／保存の帯を下端に）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -4464,8 +4477,11 @@ function tabletAttach(){
   const layer=document.createElement('div'); layer.id='tabMapLayer';
   document.body.appendChild(layer);
   layer.appendChild(el);
+  // 地図の上の「‹ 戻る」: 入力が開いていれば入力を閉じる。閉じていれば調査の画面へ戻る（v236・2026-11-08 ユーザー）。
+  // 入力の見出しの「‹ 戻る」はいつも調査の画面へ戻る
   if(!$('#tabBack')){ const bk=document.createElement('button'); bk.id='tabBack'; bk.type='button'; bk.textContent='‹ 戻る';
-    bk.onclick=()=>goBack(); document.body.appendChild(bk); }
+    bk.onclick=()=>{ if(document.body.classList.contains('tab-obs') && !document.body.classList.contains('tab-collapsed')) tabletPanel(false); else goBack(); };
+    document.body.appendChild(bk); }
   let bar=$('#tabBar');
   if(!bar){ bar=document.createElement('button'); bar.id='tabBar'; bar.type='button';
     bar.addEventListener('click', ()=>tabletPanel(document.body.classList.contains('tab-collapsed')));
