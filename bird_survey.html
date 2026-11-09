@@ -424,7 +424,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v243（2026-11-09 声紋を見て選んだ部分を判別する）';
+const APP_VERSION = 'v244（2026-11-09 「鳥」ボタンで範囲を囲む・確認方法の欄）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -5392,8 +5392,14 @@ function ptSet(){
   pfBtnSync();
   pfInfo(); pfSyncFlightFields(); nestFoldSync();
 }
-function ptHasInput(){ const i=document.getElementById('ptSp'), m=document.getElementById('ptMemo');
-  return !!(PT_CUR && ((i && String(i.value||'').trim()) || (m && String(m.value||'').trim()))); }
+function ptHasInput(){ const i=document.getElementById('ptSp'), m=document.getElementById('ptMemo'),
+  c=document.getElementById('ptCnt'), d=document.getElementById('ptMethod');
+  return !!(PT_CUR && ((i && String(i.value||'').trim()) || (m && String(m.value||'').trim())
+    || (c && String(c.value||'').trim()!=='1') || (d && d.value!==ptMethodDefault()))); }
+// 確認方法の既定: 点は「目視」、囲む（範囲）は「鳴き声」（v244）
+function ptMethodDefault(){ return (PT_CUR && PT_CUR.area) ? '鳴き声' : '目視'; }
+// 「鳥」のまま「✏ 描く」がオン＝囲む（v244）
+function ptAreaMode(){ return !!PF_PT && typeof drawIsOn==='function' && drawIsOn(); }
 // 小窓を閉じてよいか（入力が残っていれば確かめる。取り消したら閉じない）
 function ptCloseOk(){ return !ptHasInput() || confirm('ポイントに入力中の鳥があります。捨ててよいですか？'); }
 function ptClose(){
@@ -5402,15 +5408,24 @@ function ptClose(){
   if(ptTmp && mapObj){ try{ mapObj.removeLayer(ptTmp); }catch(e){} } ptTmp=null;
 }
 // 地図を押したとき（指・ペン・十字の「＋」）。pfDrop の先頭から呼ぶ
-function ptOpen(lat, lon){
+// area … 囲んだ範囲の点の並び（[[緯度,経度]…]、閉じる点なし）。点のときは無し（v244）
+function ptOpen(lat, lon, area){
   if(!writeAllowed()) return;
   if(PT_CUR && ptHasInput() && !confirm('入力中の鳥を捨てて、ここに置き直しますか？')) return;
   const sv=(SCREENS._obs&&SCREENS._obs.survey_uuid)||currentSurveyUuid;
   const fx=freshFix();
-  PT_CUR={ lat, lon, time:nowISO(), sv, fix: fx ? { lat:fx.lat, lon:fx.lon, acc:fx.acc } : null };
+  PT_CUR={ lat, lon, time:nowISO(), localTime:localDatetimeValue(), sv, fix: fx ? { lat:fx.lat, lon:fx.lon, acc:fx.acc } : null,
+    area: area ? area.map(p=>[p[0],p[1]]) : null };
   if(ptTmp && mapObj){ try{ mapObj.removeLayer(ptTmp); }catch(e){} }
-  try{ ptTmp=L.marker([lat,lon], { interactive:false, icon:L.divIcon({ className:'', iconSize:[18,18], iconAnchor:[9,9],
-    html:'<div style="width:18px;height:18px;border-radius:50%;background:#e8b04b;border:2px solid #fff;box-shadow:0 0 0 2px #e8b04b88;"></div>' }) }).addTo(mapObj); }catch(e){ ptTmp=null; }
+  try{
+    if(area){
+      ptTmp=L.layerGroup([L.polygon(area, { interactive:false, color:'#e8b04b', weight:2, fillColor:'#e8b04b', fillOpacity:0.18 }),
+        L.circleMarker([lat,lon], { interactive:false, radius:5, color:'#fff', weight:2, fillColor:'#e8b04b', fillOpacity:1 })]).addTo(mapObj);
+    } else {
+      ptTmp=L.marker([lat,lon], { interactive:false, icon:L.divIcon({ className:'', iconSize:[18,18], iconAnchor:[9,9],
+        html:'<div style="width:18px;height:18px;border-radius:50%;background:#e8b04b;border:2px solid #fff;box-shadow:0 0 0 2px #e8b04b88;"></div>' }) }).addTo(mapObj);
+    }
+  }catch(e){ ptTmp=null; }
   let box=document.getElementById('ptBox');
   const keep=box ? { sp:(document.getElementById('ptSp')||{}).value||'', n:(document.getElementById('ptCnt')||{}).value||'1' } : null;
   if(!box){
@@ -5420,6 +5435,8 @@ function ptOpen(lat, lon){
       <datalist id="ptDatalist">${SPECIES.map(sp=>`<option value="${esc(sp.japanese_name)}"></option>`).join('')}</datalist>
       <div class="pt-row"><input id="ptSp" list="ptDatalist" autocomplete="off" placeholder="種名（和名）" enterkeyhint="done">
         <input id="ptCnt" type="number" inputmode="numeric" min="1" step="1" value="1" aria-label="個体数"><span class="small muted">羽</span></div>
+      <div class="pt-row"><span class="small muted">確認方法</span><select id="ptMethod" style="width:auto;">${OPT.detection.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select>
+        <span class="small muted" id="ptKind"></span></div>
       <div class="pt-row"><input id="ptMemo" autocomplete="off" maxlength="500" placeholder="メモ（任意）" enterkeyhint="done"></div>
       <div class="pt-row"><button type="button" class="btn primary" id="ptAdd" onclick="ptSave()">追加</button>
         <button type="button" class="btn ghost" onclick="ptClose()">やめる</button></div>`;
@@ -5429,6 +5446,52 @@ function ptOpen(lat, lon){
   const sp=document.getElementById('ptSp'); if(sp){ sp.value=''; try{ sp.focus(); }catch(e){} }
   const cn=document.getElementById('ptCnt'); if(cn) cn.value='1';
   const mm=document.getElementById('ptMemo'); if(mm) mm.value='';
+  const md=document.getElementById('ptMethod'); if(md) md.value=ptMethodDefault();
+  const kd=document.getElementById('ptKind'); if(kd) kd.textContent=area ? `範囲 約${fmtArea(pathArea(area))}` : '';
+  const hd=box.querySelector('.pt-h'); if(hd) hd.textContent=area ? '🐦 範囲（鳥の記録）' : '🐦 ポイント（鳥の記録）';
+}
+/* ---- 囲む（v244。計画: tasks/todo.md「「鳥」ボタンで範囲を囲む」Q1〜Q6・補足。Codex 計画レビュー済み） ----
+   なぞった線を閉じて範囲にし、小窓を開く。囲めない形（点が少ない・交差・同じ点・面積 10m² 未満）は置かない */
+const PT_AREA_MIN_M2=10;
+let PT_TOGGLE_BACK=false;   // 確認で取り消したときに「描く」を元に戻している最中（確認を繰り返さない）
+function ptRingFromStroke(ll){
+  const out=[];
+  (ll||[]).forEach(p=>{ if(!validPathPt(p)) return; const q=[Number(p[0].toFixed(7)), Number(p[1].toFixed(7))];
+    const last=out[out.length-1]; if(!last || last[0]!==q[0] || last[1]!==q[1]) out.push(q); });
+  if(out.length>1 && out[0][0]===out[out.length-1][0] && out[0][1]===out[out.length-1][1]) out.pop();   // 閉じる点は持たない
+  return out;
+}
+function ptPointInRing(pt, ring){
+  let inside=false; const y=pt[0], x=pt[1];
+  for(let i=0, j=ring.length-1; i<ring.length; j=i++){
+    const yi=ring[i][0], xi=ring[i][1], yj=ring[j][0], xj=ring[j][1];
+    if(((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi)) inside=!inside;
+  }
+  return inside;
+}
+// 観察の位置（範囲の真ん中）: 面積の重心。重心が面の外（くぼんだ形）なら、重心の緯度の横線と面の交わりの最初の区間の中点
+function ptAreaPoint(ring){
+  const c=areaCentroid(ring);
+  if(c && ptPointInRing(c, ring)) return c;
+  const y=c ? c[0] : ring.reduce((a,p)=>a+p[0],0)/ring.length;
+  const xs=[];
+  for(let i=0, j=ring.length-1; i<ring.length; j=i++){
+    const a=ring[j], b=ring[i];
+    if((a[0]>y)!==(b[0]>y)) xs.push(a[1]+(y-a[0])*(b[1]-a[1])/(b[0]-a[0]));
+  }
+  xs.sort((p,q)=>p-q);
+  if(xs.length>=2) return [y, (xs[0]+xs[1])/2];
+  return ring[0];
+}
+function ptOpenArea(ll){
+  if(!writeAllowed()) return;
+  if(!ll || ll.length<2) return;   // 短いなぞり・タップは何もしない
+  const ring=ptRingFromStroke(ll);
+  const pb=areaProblem(ring);
+  if(pb){ toast(`囲めませんでした（${pb}）。もう一度なぞってください`, 4500); return; }
+  if(pathArea(ring)<PT_AREA_MIN_M2){ toast('囲めませんでした（範囲が小さすぎます）。もう一度なぞってください', 4500); return; }
+  const c=ptAreaPoint(ring);
+  ptOpen(c[0], c[1], ring);
 }
 // 1件だけ保存する。いまの観察の状態（SCREENS._dirty など）は変えない
 function ptSave(){
@@ -5441,10 +5504,13 @@ function ptSave(){
   const cnt=cntRaw===''?NaN:Number(cntRaw);
   if(!Number.isInteger(cnt) || cnt<1 || cnt>100000){ toast('個体数は1以上の整数で入れてください'); return; }   // 1.9 を黙って1羽にしない（v232 監査 Major）
   const memo=String((document.getElementById('ptMemo')||{}).value||'').trim().slice(0,500);
+  const method=String((document.getElementById('ptMethod')||{}).value||'');
+  if(!OPT.detection.includes(method)){ toast('確認方法を選んでください'); return; }
   if(!writeAllowed()) return;
   const c=PT_CUR, s=DB.survey(c.sv);
   if(!s || s.deleted_at){ toast('調査が見つからないため保存できませんでした'); return; }
   if(s.status!=='調査中'){ toast('この調査は終了しているため、ポイントは追加できません（調査を再開してください）', 5000); return; }
+  if(c.area){ ptSaveArea(c, name, cnt, memo, method); return; }
   PT_BUSY=true;
   try{
     const arr=DB.loadForWrite(DB.key.ob);
@@ -5452,7 +5518,7 @@ function ptSave(){
     const sp=speciesByName(name);
     const rec={ uuid:uuid(), survey_uuid:c.sv, observed_at:c.time,
       latitude:c.fix?c.fix.lat.toFixed(6):'', longitude:c.fix?c.fix.lon.toFixed(6):'', gps_accuracy:c.fix?Math.round(c.fix.acc):'',
-      species_id:sp?sp.species_id:'', species_name_snapshot:name, count:cnt, detection_method:'目視',
+      species_id:sp?sp.species_id:'', species_name_snapshot:name, count:cnt, detection_method:method,
       behavior:'', habitat:'', age_class:'不明', sex:'不明', distance_band:'', direction:'',
       target_latitude:c.lat.toFixed(6), target_longitude:c.lon.toFixed(6), perch_size:'', perch_class:'',
       nest_tree_species:'', nest_tree_height:'', nest_state:'',
@@ -5470,6 +5536,79 @@ function ptSave(){
 }
 // 同じ調査で保存済みの記録を、種名つきの印で地図に出す（毎回 DB から。v233 で P・巣・経路にも広げた）。
 // 「✋ 移動」のときに印を押すと、確かめてからその記録を開いて直す。P・L・N・鳥を選んでいるときは、印の上でも今までどおり置ける
+/* 範囲の鳥の保存（v244 補足 P-M1・P-M2）。観察1件と面1件（大まかな確認範囲）を同じ individual_key で結ぶ。
+   - 2件とも小窓の入力と囲んだ時点の控え（c）だけから作る（編集中の観察の種・齢・個体名・時刻を参照しない）
+   - 今の観察の保存と同じ控え（bs_save_journal・phase:'writing'）を書いてから、飛翔→観察の順に1件ずつ書く。
+     途中で失敗したら今回書いた2件だけを控えどおり戻す。戻せない・控えを消せないときは saveFatalHalt で止める
+     （途中でアプリが閉じたら、起動時の saveJournalRecover が控えから戻す） */
+function ptSaveArea(c, name, cnt, memo, method){
+  if(PT_BUSY || (typeof SAVE_BUSY!=='undefined' && SAVE_BUSY)) return;
+  if(!loadStrict(DB.key.fl) || !loadStrict(DB.key.ob)){ toast('記録を読めないため保存できませんでした（入力は残しています）', 5000); return; }
+  const sp=speciesByName(name), spId=sp?sp.species_id:'', review=!sp, ik=uuid(), now=nowISO();
+  const fl={ uuid:uuid(), survey_uuid:c.sv, species_id:spId, species_name_snapshot:name,
+    path:c.area.map(p=>[p[0],p[1]]), start_time:c.localTime, end_time:c.localTime,
+    shape:SHAPE_AREA, area_type:'大まかな確認範囲', continued_start:false, height_class:'', age_class:'不明',
+    individual_label:'', behavior:'', count:cnt, memo, needs_review:review, individual_key:ik,
+    soar_spots:[], audio:[], media:[], created_at:now, updated_at:now };
+  const ob={ uuid:uuid(), survey_uuid:c.sv, observed_at:c.time,
+    latitude:c.fix?c.fix.lat.toFixed(6):'', longitude:c.fix?c.fix.lon.toFixed(6):'', gps_accuracy:c.fix?Math.round(c.fix.acc):'',
+    species_id:spId, species_name_snapshot:name, count:cnt, detection_method:method,
+    behavior:'', habitat:'', age_class:'不明', sex:'不明', distance_band:'', direction:'',
+    target_latitude:c.lat.toFixed(6), target_longitude:c.lon.toFixed(6), perch_size:'', perch_class:'',
+    nest_tree_species:'', nest_tree_height:'', nest_state:'',
+    identification_status:'確定', confidence:'中', needs_review:review,
+    note:memo, external_photo_reference:'', audio:[], media:[], env_note:'', nest_note:'', env_media:[], nest_media:[],
+    individual_key:ik, individual_label:'', source:'point', created_at:now, updated_at:now };
+  PT_BUSY=true; SAVE_BUSY=true; if(typeof BACKUP_GEN!=='undefined') BACKUP_GEN++;
+  const plan=[{key:DB.key.fl, rec:fl}, {key:DB.key.ob, rec:ob}];
+  const j={ t:now, tx:uuid(), phase:'writing', undo:plan.map(p=>({ key:p.key, uuid:p.rec.uuid, prev:null, wroteRec:'' })), fl:null, ghost:null };
+  CUR_TX=j.tx;
+  const done=(ok)=>{ SAVE_BUSY=false; PT_BUSY=false; CUR_TX=null; return ok; };
+  if(!saveJournalSet(j)){ done(false); toast('空き容量が足りず、保存を開始できませんでした（入力は残しています）', 6000); return; }
+  const tried=[];   // 書き込みを試みた記録（読み直しで確かめられなくても戻す対象）
+  const writeNew=(p, k)=>{
+    const arr=loadStrict(p.key); if(!arr || arr.some(x=>x&&x.uuid===p.rec.uuid)) return false;
+    j.undo[k].expectedRec=stableJson(p.rec);
+    if(!saveJournalSet(j)) return false;
+    tried.push(j.undo[k]);
+    arr.push(p.rec);
+    if(!DB.save(p.key, arr)) return false;
+    const a1=loadStrict(p.key); const got=a1 && a1.find(x=>x&&x.uuid===p.rec.uuid);
+    if(!got || stableJson(got)!==stableJson(p.rec)) return false;
+    j.undo[k].wroteRec=JSON.stringify(got);
+    return saveJournalSet(j);
+  };
+  // 今回書こうとした記録だけを、こちらが書いた姿（書いた直後の控え、無ければ予定値）のままなら消す。
+  // 読めない・姿が違う・消せない・消えたことを確かめられないなら false（控えを残して止める）
+  const undo=()=>{
+    let ok=true;
+    for(const e of tried.slice().reverse()){
+      const arr=loadStrict(e.key); if(!arr){ ok=false; continue; }
+      const i=arr.findIndex(x=>x&&x.uuid===e.uuid);
+      if(i<0) continue;   // 書けていなかった
+      const mine = e.wroteRec ? JSON.stringify(arr[i])===e.wroteRec : stableJson(arr[i])===e.expectedRec;
+      if(!mine){ ok=false; continue; }
+      arr.splice(i,1);
+      if(!DB.save(e.key, arr)){ ok=false; continue; }
+      const a2=loadStrict(e.key); if(!a2 || a2.some(x=>x&&x.uuid===e.uuid)) ok=false;
+    }
+    return ok;
+  };
+  for(let k=0;k<plan.length;k++){
+    if(!writeNew(plan[k], k)){
+      if(undo() && saveJournalClear(j.tx)){ done(false); toast('保存できませんでした（入力は残しています）。空き容量などを確かめてもう一度押してください', 6000); return; }
+      done(false); saveFatalHalt('範囲の鳥の保存に失敗し、書きかけを取り消せませんでした。'); return;
+    }
+  }
+  if(!saveJournalClear(j.tx)){ done(false); saveFatalHalt('保存の控えを片付けられませんでした。'); return; }
+  done(true);
+  DB.pushRecent(name);
+  if(typeof scheduleFolderFull==='function') scheduleFolderFull();
+  toast(`${name} ${cnt}羽を範囲で記録しました`+(sp?'':'（種名が一覧に無いため要確認を付けました）'), sp?1800:4000);
+  ptClose();
+  ptDrawMarks();
+  if(typeof pfRedraw==='function') pfRedraw();   // 保存済みの面の薄描きに出す
+}
 function ptDrawMarks(){
   if(!mapObj || !document.getElementById('obsPosMap')) return;
   if(ptLayer){ try{ mapObj.removeLayer(ptLayer); }catch(e){} }
@@ -6377,6 +6516,7 @@ function pfTryClose(sg,lat,lon){
 }
 function pfDrop(lat,lon){
   if(typeof SAVE_BUSY!=='undefined' && SAVE_BUSY) return;   // 保存の後処理中は地図も触らせない
+  if(ptAreaMode()) return;   // 「鳥」で囲むの間は、地図を押しても点は置かない（なぞった範囲だけ。v244）
   if(PF_PT && PF_SEL===-1){ ptOpen(lat, lon); return; }   // 「鳥」: ポイントの小窓（いまの観察の地図には何も足さない）
   if(pfPanBlocks()){   // カーソル（✋ 移動）のときは何も置かない
     // 何も起きないと「操作できない」と見える（2026-11-08 ユーザー: スマホで操作できない）。短く知らせる（連打で積まない）
@@ -6715,21 +6855,32 @@ function initObsPosMap(){
   { const si=document.getElementById('spInput'); if(si) si.addEventListener('input', ()=>{ try{ curLabels(); }catch(e){} }); }
   // 描くモード（✏ 描く）: なぞった線を1回の操作としてまとめて L に加える
   drawAttach(mapObj, {
-    onCommit:(ll, tt)=>pfAddStroke(ll, tt),
+    onCommit:(ll, tt)=>{ if(PF_PT){ ptOpenArea(ll); return; } pfAddStroke(ll, tt); },   // 「鳥」のままなら囲む（v244。入力を捨てる確認は ptOpen の1回だけ）
     onTap:(la, lo)=>pfDrop(la, lo),   // ペンのタップ（描くモードがオフのとき）
-    onToggle:(on)=>{ if(on){
-      if(PF_PT){ if(!ptCloseOk()){ setTimeout(()=>drawSet(false), 0); return; } ptClose(); }   // ポイントの入力が残っていれば確かめる
+    onToggle:(on)=>{
+      if(PT_TOGGLE_BACK){ pfBtnSync(); pfInfo(); return; }   // 確認で「やめる」を選んだときの戻し（もう一度確かめない）
+      const back=v=>setTimeout(()=>{ PT_TOGGLE_BACK=true; try{ drawSet(v); } finally{ PT_TOGGLE_BACK=false; } }, 0);
+      if(!on && PF_PT){   // 囲むをやめて点に戻る。範囲の入力が残っていれば確かめる
+        if(PT_CUR && PT_CUR.area){ if(!ptCloseOk()){ back(true); return; } ptClose(); }
+        pfBtnSync(); pfInfo(); return; }
+      if(on && PF_PT){   // 「鳥」のまま描く＝囲む（v244 ユーザー決定）。点の入力が残っていれば確かめる
+        if(PT_CUR){ if(!ptCloseOk()){ back(false); return; } ptClose(); }
+        if(PF_SPIRAL && typeof spiralToggle==='function') spiralToggle();
+        toast('なぞって囲むと、その範囲で鳥を記録します（点で置くときは「✏ 描く」をオフに）', 4000);
+        pfBtnSync(); pfInfo(); return; }
+      if(on){
       PF_PAN=false; PF_PT=false;   // 「✏ 描く」を押したら L で描く（カーソル・鳥は消灯）
       const selL=PF_SEL>=0 && PF_SEGS[PF_SEL] && PF_SEGS[PF_SEL].t==='F';
       if(selL){ if(PF_MODE!=='F') segPick(PF_SEL, true); }   // 選んだ L はそのまま（なぞると引き直し）
       else if(PF_MODE!=='F' || PF_SEL===-2) pfSet('F');
       if(PF_SPIRAL && typeof spiralToggle==='function') spiralToggle();
       pfBtnSync(); pfInfo(); } },
-    onDrawTap:(la, lo)=>pfDrawTap(la, lo),   // 描くモード中の軽いタップ
-    onLongPress:(cp)=>pfLongPress(cp)   // 長押しで P・L・巣を選ぶ
+    onDrawTap:(la, lo)=>{ if(PF_PT) return; pfDrawTap(la, lo); },   // 描くモード中の軽いタップ（囲むでは何もしない）
+    onLongPress:(cp)=>{ if(PF_PT && PT_CUR){ if(!ptCloseOk()) return false; ptClose(); } return pfLongPress(cp); }   // 長押しで P・L・巣を選ぶ
   });
   addPanButton();
   addCrosshairControl(mapObj, (la2,lo2)=>{
+    if(ptAreaMode()){ toast('いまは「囲む」です。点で置くときは「✏ 描く」をオフにしてください', 4000); return; }
     if(PF_PT && PF_SEL===-1){ pfDrop(la2,lo2); return; }   // 「鳥」なら十字の位置でポイントの小窓
     if(pfPanBlocks()){ toast('いまは「✋ 移動」です。置くときは P・L・N を押してください', 4000); return; }
     pfDrop(la2,lo2); }, '＋');
