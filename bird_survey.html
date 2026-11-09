@@ -421,7 +421,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v240（2026-11-08 観察を編集で保存したら入力を閉じて「観察を追加」の地図に戻る）';
+const APP_VERSION = 'v241（2026-11-09 鳴き声AIの起動の待ち時間・聞き方「しっかり」の準備（まだ表示しない））';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -9208,14 +9208,14 @@ const AI_RING_SEC=45;                         // 直近45秒の音を持って�
 const AI_BATCH=4;                             // 一度にAIへ渡す区間の数
 const AI_GAP_MERGE=5;                         // 同じ種をまとめる間隔（区間数＝15秒）
 // 設定（v233）: 調査の画面の「🐦 鳴き声AIの設定」で変えられる。端末に保存し、どの調査でも同じ。決まった選択肢の値だけ受け付ける
-const AI_CFG_OPT={ thr:[0.1,0.2,0.3,0.5,0.7], hk:[true,false], maxPer:[1,2,3], pad:[3,5,10], manual:[15,30,45], agc:[false,true] };
-const AI_CFG_DEF={ thr:0.3, hk:true, maxPer:3, pad:5, manual:30, agc:false };
+const AI_CFG_OPT={ thr:[0.1,0.2,0.3,0.5,0.7], hk:[true,false], maxPer:[1,2,3], pad:[3,5,10], manual:[15,30,45], agc:[false,true], how:['std','head'] };
+const AI_CFG_DEF={ thr:0.3, hk:true, maxPer:3, pad:5, manual:30, agc:false, how:'std' };
 function aiCfgLoad(){ let c={}; try{ c=JSON.parse(localStorage.getItem('bs_ai_cfg')||'{}')||{}; }catch(e){}
   const out={}; for(const k of Object.keys(AI_CFG_DEF)) out[k]=AI_CFG_OPT[k].includes(c[k])?c[k]:AI_CFG_DEF[k]; return out; }
 let AICFG=aiCfgLoad();
 function aiCfgSet(k, v){
   if(!(k in AI_CFG_DEF)) return;
-  if(typeof AI_CFG_DEF[k]==='boolean') v=(v===true||v==='true'); else v=Number(v);
+  if(typeof AI_CFG_DEF[k]==='boolean') v=(v===true||v==='true'); else if(typeof AI_CFG_DEF[k]==='number') v=Number(v); else v=String(v);
   if(!AI_CFG_OPT[k].includes(v)) return;
   const agcBefore=AICFG.agc;
   AICFG=Object.assign({}, AICFG, {[k]:v});
@@ -9223,13 +9223,15 @@ function aiCfgSet(k, v){
   // マイクの自動音量調整は、聞いている途中ならマイクを開き直して反映する
   // 許可待ち・準備中（starting）も対象。止めると古い開始は無効になり（gen）、最新の設定で始め直す
   if(k==='agc' && agcBefore!==v && (AIL.cap || AIL.starting)){ aiCaptureStop(); aiSync(); }
+  if(k==='how'){ aiHowChanged(v); return; }
   toast('鳴き声AIの設定を変えました', 1500);
 }
 function aiCfgHtml(){
   const sel=(k, label, opts, fmt, note)=>`<label class="field"><span class="lab">${label}</span>
     <select onchange="aiCfgSet('${k}', this.value)">${opts.map(v=>`<option value="${v}" ${AICFG[k]===v?'selected':''}>${fmt(v)}</option>`).join('')}</select>
     ${note?`<span class="tiny muted">${note}</span>`:''}</label>`;
-  return sel('thr','知らせる基準（確からしさ）', AI_CFG_OPT.thr, v=>Math.round(v*100)+'% 以上', '低くすると小さな声・遠い声も拾いやすくなるが、間違いも増える（いちばん効く設定）')
+  return (AI_HEAD_ENABLED ? sel('how','聞き方', AI_CFG_OPT.how, v=>v==='head'?'しっかり（北海道で覚えさせた45種を上乗せ）':'標準（BirdNET だけ）', aiHeadNote()) : '')
+    + sel('thr','知らせる基準（確からしさ）', AI_CFG_OPT.thr, v=>Math.round(v*100)+'% 以上', '低くすると小さな声・遠い声も拾いやすくなるが、間違いも増える（いちばん効く設定）')
     + sel('hk','北海道の鳥に絞る', AI_CFG_OPT.hk, v=>v?'オン（北海道鳥類目録の種だけ）':'オフ（世界の約6,500種から）', '')
     + sel('maxPer','1回（3秒）に知らせる種の数', AI_CFG_OPT.maxPer, v=>v+'種まで', '同時に鳴いている種をいくつまで知らせるか')
     + sel('pad','自動で残す声の長さ', AI_CFG_OPT.pad, v=>'よく聞こえた3秒の前後 '+v+'秒', '')
@@ -9278,7 +9280,7 @@ async function aiCheck(){
     for(const u of f.model) if(await cm.match(u)) have++;
     const all=f.app.length+f.model.length;
     if(have===all){
-      try{ AI.prep=await aiPrepare(); AI.state='ready'; AI.err=''; }
+      try{ AI.prep=await aiPrepare(); AI.state='ready'; AI.err=''; await aiHeadCheck(); }
       catch(e){ AI.state='failed'; AI.err=String(e&&e.message||e); }
     } else AI.state = have? 'broken' : 'none';
   }catch(e){ AI.state='failed'; AI.err=String(e&&e.message||e); }
@@ -9292,7 +9294,8 @@ async function aiInstall(){
   try{
     // 古い版の保存分（このアプリの鳴き声AIのものだけ）を片付ける。利用者の記録や試作の保存分には触らない
     for(const k of await caches.keys()){
-      if((k.startsWith('birdnet-ai-app-') && k!==AI_CACHE_APP) || (k.startsWith('birdnet-ai-model-') && k!==AI_CACHE_MODEL)) await caches.delete(k);
+      if((k.startsWith('birdnet-ai-app-') && k!==AI_CACHE_APP) || (k.startsWith('birdnet-ai-model-') && k!==AI_CACHE_MODEL)
+        || (k.startsWith('birdnet-ai-head-') && k!==AI_CACHE_HEAD)) await caches.delete(k);
     }
     const f=aiFiles(); const ca=await caches.open(AI_CACHE_APP), cm=await caches.open(AI_CACHE_MODEL);
     const jobs=f.app.map(u=>[ca,u]).concat(f.model.map(u=>[cm,u]));
@@ -9311,6 +9314,8 @@ async function aiInstall(){
     const st=await aiCheck();   // 全部そろったか・一覧が壊れていないかを確かめてから「使える」にする
     if(st!=='ready') throw new Error(AI.err||'取り込んだ中身を確かめられませんでした');
     toast('鳴き声AIを取り込みました。圏外でも使えます', 4000);
+    // 「しっかり」の部品も一緒に取り込む（失敗しても本体は使える。設定欄に理由が出る）
+    if(AI_HEAD_ENABLED && AIH.state!=='ready') await aiHeadInstall();
   }catch(e){
     AI.state='failed'; AI.err=String(e&&e.message||e);
     toast('鳴き声AIを取り込めませんでした。電波の良い所で「もう一度」を押してください', 6000);
@@ -9323,6 +9328,7 @@ async function aiUninstall(){
   if(AIL.want) aiListenStop('鳴き声AIを消したため、聞き取りを止めました');
   aiWorkerKill();
   try{ await caches.delete(AI_CACHE_APP); await caches.delete(AI_CACHE_MODEL); }catch(e){}
+  await aiHeadRemove();
   AI.prep=null; AI.state='unknown'; await aiCheck();
   toast('鳴き声AIを端末から消しました');
 }
@@ -9368,30 +9374,40 @@ async function aiPrepare(){
       hkIdx.add(i); idxName.set(i, sp.list_ja); idxMaster.set(i, sp.master_ja); }
   }
   const nonBird=new Set(AI_NONBIRD_SCI.filter(s=>sciIndex[s]!==undefined).map(s=>sciIndex[s]));
-  return { labels, hkIdx, idxName, idxMaster, nonBird, humanIdx:sciIndex['Human vocal'], nLabels:labels.length };
+  const hkById=new Map(hk.species.concat(extra).map(sp=>[sp.id, sp.list_ja]));
+  return { labels, hkIdx, idxName, idxMaster, nonBird, humanIdx:sciIndex['Human vocal'], nLabels:labels.length, hkById };
 }
 
 /* ---------- 判別ワーカー ---------- */
 function aiWorkerKill(){
   if(AI.worker){ try{ AI.worker.terminate(); }catch(e){} }
-  AI.worker=null; AI.workerP=null;
+  AI.worker=null; AI.workerP=null; AI.workerExt=false;
   Object.values(AI.pending).forEach(p=>p.rej(new Error('AIを止めました'))); AI.pending={};
 }
-function aiAsk(msg, transfer){
+// ms を付けると、その時間を過ぎても返事が無いとき失敗にする（v241: 「しっかり」の依頼・判定し直し）
+function aiAsk(msg, transfer, ms){
   return new Promise((res,rej)=>{
     if(!AI.worker){ rej(new Error('AIが動いていません')); return; }
-    const id=++AI.reqId; AI.pending[id]={res,rej};
+    const id=++AI.reqId; let tm=null;
+    AI.pending[id]={ res:v=>{ clearTimeout(tm); res(v); }, rej:e=>{ clearTimeout(tm); rej(e); } };
+    if(ms) tm=setTimeout(()=>{ if(AI.pending[id]){ delete AI.pending[id]; rej(new Error('AIの返事がありませんでした')); } }, ms);
     AI.worker.postMessage(Object.assign({}, msg, {id}), transfer||[]);
   });
 }
 // ワーカーを起動して AI を読み込む（1回だけ。失敗したら次に押したときにやり直す）
-function aiWorkerEnsure(){
-  if(AI.workerP) return AI.workerP;
-  AI.workerP=(async()=>{
+// opt.ext … 「しっかり」の追加部品をつなげて起動する。追加なしで起動済みなら作り直す（人が「聞く」を押したときだけ呼ばれる）
+function aiWorkerEnsure(opt){
+  const wantExt=!!(opt && opt.ext);
+  if(AI.workerP && (AI.workerExt || !wantExt)) return AI.workerP;
+  if(AI.workerP) aiWorkerKill();
+  AI.workerExt=wantExt;
+  const p=AI.workerP=(async()=>{
     if(AI.state!=='ready') throw new Error('鳴き声AIがまだ取り込まれていません');
     const f=aiFiles(); const at=n=>f.app.find(u=>u.endsWith('/'+n));
     const [tfT, wT]=await Promise.all([aiCacheText(AI_CACHE_APP, at('tf.min.js')), aiCacheText(AI_CACHE_APP, at('birdnet-worker.js'))]);
-    const url=URL.createObjectURL(new Blob([tfT, '\n;\n', wT], {type:'text/javascript'}));
+    const parts=[tfT, '\n;\n', wT];
+    if(wantExt){ if(!AIH.extText) throw new Error('「しっかり」の部品がありません'); parts.push('\n;\n', AIH.extText); }
+    const url=URL.createObjectURL(new Blob(parts, {type:'text/javascript'}));
     const w=new Worker(url); AI.worker=w;
     setTimeout(()=>URL.revokeObjectURL(url), 60000);
     w.onmessage=({data})=>{
@@ -9402,12 +9418,211 @@ function aiWorkerEnsure(){
       if(data.message==='error') p.rej(new Error(data.text)); else p.res(data);
     };
     w.onerror=e=>{ const err=new Error('AIの処理で問題が起きました'); Object.values(AI.pending).forEach(p=>p.rej(err)); AI.pending={}; };
-    await aiAsk({ message:'init', modelUrl:f.model[0], cacheName:AI_CACHE_MODEL });
+    await aiAsk({ message:'init', modelUrl:f.model[0], cacheName:AI_CACHE_MODEL }, null, AIH.initMs);   // v241: 起動が返事をしないまま待ち続けない
+    if(wantExt){   // 追加部品が使えるか確かめる（返事が無い・失敗 → 呼び出し側が追加なしで作り直す）
+      const r=await aiAsk({ message:'head_ping' }, null, AIH.pingMs);
+      if(!r || r.message!=='head_pong' || r.dim!==AIH.head.D) throw new Error('「しっかり」の部品が使えませんでした');
+    }
     AI.progress='';
   })();
-  AI.workerP.catch(()=>{ aiWorkerKill(); AI.progress=''; aiFabUpdate(); });
-  return AI.workerP;
+  p.catch(()=>{ if(AI.workerP===p){ aiWorkerKill(); AI.progress=''; aiFabUpdate(); } });
+  return p;
 }
+
+/* ---------- 聞き方「しっかり」（v241）: BirdNET＋北海道で覚えさせた種の上乗せ ----------
+   決まり（計画: tasks/todo.md「鳴き声AIの聞き方を工夫する」K5 H1〜H11。Codex 計画レビュー済み）:
+   - 部品（ai/head-ext.js・ai/hk_head.json・ai/hk_head_credits.json）は別の保存領域 AI_CACHE_HEAD に入れる。
+     今の AI の保存分（AI_CACHE_APP）は変えない＝部品が無くても・壊れていても標準の聞き方は今までどおり動く
+   - 学習結果は読み込み時に検査し（BirdNET の版・層・要素数・種・数値・確かめ用の答え）、合わなければ使わせない
+   - 上乗せ: 覚えさせた種は「BirdNET が floor 以上なら (BirdNET＋上乗せ)/2」。それ以外は BirdNET のまま。
+     人の声の判定・まとめ方・声の切り出し・上限は今までどおり
+   - 聞き方は聞き取りの開始時に決めて固定（AIL.how）。途中で部品が応答しなくなったら標準に戻して同じ区間を判定し直す
+   ============================================================ */
+// 利用条件の確認が済むまで公開版では出さない（tasks/todo.md H11。2026-11-09 ユーザー決定「しっかりを隠して公開」）。
+// 学習結果のファイル（ai/hk_head.json 等）も公開サイトには置かない。試験だけ端末の bs_ai_head='on' で有効にする
+const AI_HEAD_ENABLED=(()=>{ try{ return localStorage.getItem('bs_ai_head')==='on'; }catch(e){ return false; } })();
+const AI_CACHE_HEAD='birdnet-ai-head-v1';
+const AI_HEAD_MAX_BYTES=2*1024*1024;
+function aiHeadFiles(){ return ['ai/head-ext.js','ai/hk_head.json','ai/hk_head_credits.json'].map(f=>new URL(f, location.href).href); }
+// 待ち時間（ms）: pingMs … 起動後の「使えるか」の返事 / reqMs … 判定＋指紋の依頼 / retryMs … 標準に戻して判定し直すとき
+// initMs … AI の起動（標準も含む。遅い端末でも読み込める長さ）
+const AIH={ state:'unknown', err:'', runErr:'', head:null, extText:'', gen:0, pingMs:5000, reqMs:20000, retryMs:30000, initMs:120000 };
+// state: unknown / none（無い）/ installing / ready / bad（壊れている）/ failed（取り込み失敗）
+function aiHeadUsable(){ return AI_HEAD_ENABLED && AIH.state==='ready' && !!AIH.head && !!AIH.extText && !AIH.runErr; }
+
+// 半精度（リトルエンディアン）の並び → Float32Array
+function aiF16(bytes){
+  const n=bytes.length>>1, out=new Float32Array(n), dv=new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for(let i=0;i<n;i++){
+    const h=dv.getUint16(i*2, true), sg=(h>>15)?-1:1, e=(h>>10)&31, m=h&1023;
+    out[i]= e===0 ? sg*m*Math.pow(2,-24) : e===31 ? (m?NaN:sg*Infinity) : sg*(1+m/1024)*Math.pow(2,e-15);
+  }
+  return out;
+}
+function aiB64Bytes(b64){
+  if(typeof b64!=='string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) throw new Error('base64 ではありません');
+  const t=atob(b64), u=new Uint8Array(t.length); for(let i=0;i<t.length;i++) u[i]=t.charCodeAt(i); return u;
+}
+// 学習結果を読み、検査する。おかしければ投げる（呼び出し側が「しっかり」を使わせない）
+function aiHeadParse(text, P){
+  const bad=m=>{ throw new Error('「しっかり」の学習結果が使えません: '+m); };
+  if(!P) bad('AIの準備がまだです');
+  if(typeof text!=='string' || text.length>AI_HEAD_MAX_BYTES) bad('大きさ');
+  let h; try{ h=JSON.parse(text); }catch(e){ bad('読み取れません'); }
+  if(!h || h.format!=='bird-head' || h.version!==1) bad('形式');
+  if(typeof h.name!=='string' || !h.name || h.name.length>40) bad('名前');
+  const bn=h.birdnet||{};
+  if(bn.commit!==AI_MODEL_COMMIT) bad('BirdNET の版が違います');
+  if(bn.layer!=='GLOBAL_AVG_POOL' || bn.dim!==1024 || bn.norm!=='l2') bad('声の指紋の定義が違います');
+  const D=1024, cls=h.classes;
+  if(!Array.isArray(cls) || cls.length<2 || cls.length>200) bad('種の数');
+  const K=cls.length;
+  if(h.noise!==K-1 || !cls[K-1] || cls[K-1].id!=='noise') bad('雑音の位置');
+  const seen=new Set(), idx=[];
+  for(let k=0;k<K-1;k++){
+    const c=cls[k];
+    if(!c || typeof c.id!=='string' || typeof c.ja!=='string' || seen.has(c.id) || seen.has('ja:'+c.ja)) bad('種の行 '+k);
+    if(P.hkById.get(c.id)!==c.ja) bad('北海道の一覧に無い種 '+c.ja);
+    const ii=[]; for(const [i,ja] of P.idxName) if(ja===c.ja) ii.push(i);
+    if(!ii.length) bad('BirdNET 側に対応の無い種 '+c.ja);
+    seen.add(c.id); seen.add('ja:'+c.ja); idx.push(ii);
+  }
+  if(!Array.isArray(h.W_shape) || h.W_shape[0]!==K || h.W_shape[1]!==D || h.W_dtype!=='float16-le') bad('重みの形');
+  const wb=aiB64Bytes(h.W); if(wb.length!==K*D*2) bad('重みの要素数');
+  const W=aiF16(wb); for(let i=0;i<W.length;i++) if(!Number.isFinite(W[i])) bad('重みの数値');
+  if(!Array.isArray(h.b) || h.b.length!==K || !h.b.every(Number.isFinite)) bad('偏り');
+  const f=h.fuse||{};
+  if(f.how!=='mean' || !(typeof f.floor==='number' && f.floor>=0 && f.floor<1)) bad('上乗せの決まり');
+  const H={ name:h.name, K, D, W, b:Float64Array.from(h.b), floor:f.floor, idx, classes:cls };
+  // 確かめ用の入力で、PC で計算した答えと一致するか（差 0.001 以内）
+  if(!Array.isArray(h.checks) || h.checks.length<1) bad('確かめ用の答えがありません');
+  for(const c of h.checks){
+    const eb=aiB64Bytes(c && c.e); if(eb.length!==D*2 || !Array.isArray(c.p) || c.p.length!==K) bad('確かめ用の形');
+    const p=aiHeadProbs(aiF16(eb), H);
+    for(let k=0;k<K;k++) if(!(Math.abs(p[k]-c.p[k])<=1e-3)) bad('確かめ用の答えが合いません');
+  }
+  return H;
+}
+// 声の指紋（1024個）→ 覚えさせた種＋雑音の確からしさ（長さを1にそろえ、重み×指紋＋偏り → 最大値を引いてから指数）
+function aiHeadProbs(e, H){
+  H=H||AIH.head; const D=H.D, K=H.K;
+  let n=0; for(let j=0;j<D;j++) n+=e[j]*e[j]; n=Math.sqrt(n)+1e-9;
+  const z=new Float64Array(K); let mx=-Infinity;
+  for(let k=0;k<K;k++){ let s=0; const o=k*D; for(let j=0;j<D;j++) s+=H.W[o+j]*e[j]; z[k]=H.b[k]+s/n; if(z[k]>mx) mx=z[k]; }
+  let sum=0; for(let k=0;k<K;k++){ z[k]=Math.exp(z[k]-mx); sum+=z[k]; }
+  for(let k=0;k<K;k++) z[k]/=sum;
+  return z;
+}
+// 覚えさせた種の上乗せ後の値（BirdNET の番号 → 値）。BirdNET が floor 未満の種は上乗せしない
+function aiHeadAdjust(row, emb){
+  const H=AIH.head, p=aiHeadProbs(emb, H), out=new Map();
+  for(let k=0;k<H.K-1;k++){
+    let bi=-1, bv=-1; for(const i of H.idx[k]) if(row[i]>bv){ bv=row[i]; bi=i; }
+    if(bi>=0 && bv>=Math.fround(H.floor)) out.set(bi, (bv+p[k])/2);   // AI の値は単精度で届くので、境目も単精度で比べる
+  }
+  return out;
+}
+async function aiHeadCheck(){
+  if(AIH.state==='installing') return AIH.state;
+  if(!AI_HEAD_ENABLED || !AI.prep || !('caches' in window)){ AIH.state='none'; AIH.head=null; AIH.extText=''; return AIH.state; }
+  const gen=AIH.gen;   // 確かめている間に消された・取り込み直された → 結果を書き戻さない
+  try{
+    const c=await caches.open(AI_CACHE_HEAD), fs=aiHeadFiles();
+    const rs=await Promise.all(fs.map(u=>c.match(u)));
+    if(gen!==AIH.gen) return AIH.state;
+    if(rs.some(r=>!r)){ AIH.state='none'; AIH.head=null; AIH.extText=''; return AIH.state; }
+    const [ext, headT, credT]=await Promise.all(rs.map(r=>r.text()));
+    const H=aiHeadParse(headT, AI.prep);
+    let cr=null; try{ cr=JSON.parse(credT); }catch(e){}
+    if(!cr || cr.format!=='bird-head-credits' || !Array.isArray(cr.recordings)) throw new Error('出典一覧が読めません');
+    if(!ext || ext.length>200000) throw new Error('部品が読めません');
+    if(gen!==AIH.gen) return AIH.state;
+    AIH.head=H; AIH.extText=ext; AIH.state='ready'; AIH.err='';
+  }catch(e){ if(gen===AIH.gen){ AIH.state='bad'; AIH.err=String(e&&e.message||e); AIH.head=null; AIH.extText=''; } }
+  return AIH.state;
+}
+// 部品を取り込む。世代番号で、途中で消された・やり直された取り込みは保存しない（保存後に世代が変わっていたら消す）
+async function aiHeadInstall(){
+  if(!AI_HEAD_ENABLED || AIH.state==='installing') return false;
+  if(AI.state!=='ready' || !AI.prep){ toast('先に鳴き声AIを取り込んでください'); return false; }
+  const gen=++AIH.gen; AIH.state='installing'; AIH.err=''; aiSettingsRefresh();
+  try{
+    const c=await caches.open(AI_CACHE_HEAD);
+    for(const u of aiHeadFiles()){
+      const res=await fetch(u, { cache:'no-store' });
+      if(!res.ok) throw new Error(`取り込みに失敗しました（${u.split('/').pop()}・${res.status}）`);
+      if((res.headers.get('content-type')||'').includes('text/html')) throw new Error('想定と違う中身でした');
+      const t=await res.clone().text();
+      if(!t.length) throw new Error(`中身が空でした（${u.split('/').pop()}）`);
+      if(u.endsWith('/hk_head.json')) aiHeadParse(t, AI.prep);   // 中身を確かめてから保存する
+      if(gen!==AIH.gen) return false;
+      await c.put(u, res);
+      if(gen!==AIH.gen){ try{ await caches.delete(AI_CACHE_HEAD); }catch(e){} return false; }
+    }
+    AIH.state='unknown';
+    await aiHeadCheck();
+    if(gen!==AIH.gen) return false;
+    if(AIH.state!=='ready') throw new Error(AIH.err||'取り込んだ中身を確かめられませんでした');
+    AIH.runErr='';
+    return true;
+  }catch(e){
+    if(gen===AIH.gen){ AIH.state='failed'; AIH.err=String(e&&e.message||e); }
+    return false;
+  }finally{ aiSettingsRefresh(); }
+}
+async function aiHeadRemove(){
+  AIH.gen++; AIH.head=null; AIH.extText=''; AIH.state='none'; AIH.err='';
+  try{ await caches.delete(AI_CACHE_HEAD); }catch(e){}
+}
+// 判定の途中で「しっかり」の部品が応答しない・失敗した → この回は標準に戻し、同じ区間を判定し直す
+async function aiHeadFallback(pcm, gen){
+  AIL.how='std';
+  AIH.runErr='判定の途中で「しっかり」の部品が応答しなくなりました（標準の聞き方に戻しました）';
+  toast('「しっかり」で聞けなくなったため、標準の聞き方で続けます', 5000);
+  aiWorkerKill();
+  await aiWorkerEnsure();
+  if(gen!==AIL.gen) throw new Error('止めました');
+  try{ return await aiAsk({ message:'scores', pcm }, [pcm.buffer], AIH.retryMs); }
+  finally{ setTimeout(aiSync, 0); }   // 作り直しの間に止まったマイクを戻す
+}
+function aiHowChanged(v){
+  if(AIL.want) toast('聞き方は、次に「聞く」を始めたときから変わります', 4000);
+  else toast('鳴き声AIの設定を変えました', 1500);
+  if(v==='head' && AI.state==='ready' && AIH.state!=='ready' && AIH.state!=='installing'){
+    if(confirm('「しっかり」には追加の部品（約0.4MB）が要ります。いま取り込みますか？（電波が必要です）'))
+      aiHeadInstall().then(ok=>toast(ok?'「しっかり」の部品を取り込みました':'取り込めませんでした。電波の良い所で、鳴き声AIの画面の「取り込む」を押してください', 6000));
+  }
+}
+function aiHeadNote(){
+  if(AIH.runErr) return '今は標準で聞きます: '+esc(AIH.runErr)+'（アプリを開き直すと、もう一度試します）';
+  if(AIH.state==='ready') return '北海道で録られた声で覚えさせた45種（イカル・ムクドリ・エゾフクロウなど）で、拾える声が増えます。覚えさせていない種を取り違えることが少し増えます'
+    + (AIL.want ? '。今回の聞き取り: '+(AIL.how==='head'?'しっかり':'標準') : '');
+  if(AIH.state==='installing') return '「しっかり」の部品を取り込み中…';
+  return '「しっかり」は追加の部品を取り込むと使えます（選ぶと取り込みます）'+(AIH.err?'。前回: '+esc(AIH.err):'');
+}
+function aiHeadSettingsHtml(){
+  const st={ ready:'✓ 使えます', installing:'取り込み中…', none:'まだ取り込まれていません', bad:'使えません: '+esc(AIH.err), failed:'取り込めませんでした: '+esc(AIH.err), unknown:'確認中…' }[AIH.state]||AIH.state;
+  return `<div class="divider"></div>
+    <div class="card"><div style="font-weight:700;">聞き方「しっかり」の部品</div>
+      <div class="small" style="margin-top:4px;">${st}${AIH.runErr?'<br>'+esc(AIH.runErr):''}</div>
+      <div class="tiny muted" style="margin-top:4px;">聞き方は調査の画面の「🐦 鳴き声AIの設定」で選べます。</div></div>
+    ${AIH.state!=='ready'?`<button class="btn" ${AIH.state==='installing'?'disabled':''} onclick="aiHeadInstall()">「しっかり」の部品を取り込む（約0.4MB）</button><div class="sp"></div>`
+      :`<button class="btn ghost" onclick="nav('aiCredits', null)">「しっかり」の学習に使った録音の一覧（出典）</button><div class="sp"></div>`}`;
+}
+SCREENS.aiCredits=()=>({ title:'学習に使った録音', html:`<div id="aiCrBox" class="small">読み込み中…</div>`, onMount:async()=>{
+  const box=document.getElementById('aiCrBox');
+  try{
+    const c=await caches.open(AI_CACHE_HEAD), r=await c.match(aiHeadFiles()[2]);
+    if(!r) throw new Error('出典一覧が端末にありません');
+    const cr=JSON.parse(await r.text()), list=Array.isArray(cr.recordings)?cr.recordings:[];
+    const safeUrl=u=>/^https:\/\/www\.inaturalist\.org\/observations\/\d+$/.test(String(u||''))?String(u):'';
+    if(!document.getElementById('aiCrBox')) return;
+    box.innerHTML=`<div class="note">${esc(cr.note||'')}（${list.length}本）</div>`
+      + list.map(x=>`<div style="padding:4px 0;border-bottom:1px solid #eee;">${esc(x.ja)} — ${esc(x.recordist)}（${esc(x.license)}・${esc(x.observed_on)}）
+        ${safeUrl(x.url)?`<a href="${esc(safeUrl(x.url))}" target="_blank" rel="noopener">観察 ${esc(x.observation)}</a>`:''}</div>`).join('');
+  }catch(e){ if(document.getElementById('aiCrBox')) box.textContent='読めませんでした: '+String(e&&e.message||e); }
+} });
+
 
 /* ---------- 保存（端末内だけ。同期・自動保存には含めない） ----------
    v235 から持ち出せる: 検出CSV・録音ZIP（声のWAV）・手動の全部のバックアップ（検出＋声）・DBへ送る（検出の一覧）。
@@ -9717,7 +9932,8 @@ async function exportAiCSV(surveys, base){
 const AIL={ want:false, sv:null, reasons:new Set(), cap:false, starting:false, gen:0, needResume:false,
   ctx:null, stream:null, node:null, wake:null, geoId:null, pos:null, lastPcm:0, t0:0,
   ring:new Float32Array(AI_SR*AI_RING_SEC), written:0, next:0, judged:0, busy:null, seg:null, segId:0,
-  events:[], pendingClips:[], humanWins:new Set(), lost:[], gap:null, pops:[], popOpen:false, lagSec:0, tick:null };
+  events:[], pendingClips:[], humanWins:new Set(), lost:[], gap:null, pops:[], popOpen:false, lagSec:0, tick:null,
+  how:'std' };   // how … 今回の聞き取りで実際に使う聞き方（開始時に決めて固定。途中で標準に戻ることはある）
 const AI_REASON={ hidden:'画面が消えた・別アプリ', rec:'録音メモ・すぐ録音', cam:'写真・動画の撮影', play:'声の再生', fail:'マイクを使えなかった' };
 function aiSvOk(sv){ const s=sv && DB.survey(sv); return !!(s && !s.deleted_at && s.status==='調査中'); }
 function aiCanRun(){
@@ -9743,9 +9959,21 @@ async function aiListenStart(){
   if(AI_TOT.det>=AI_CAP_DET){ toast(`この調査の聞こえた鳥が上限（${AI_CAP_DET}件）に達しています。一覧を整理すると続けられます`, 6000); return; }
   AIL.want=true; AIL.sv=sv; AIL.t0=Date.now(); AIL.events=[]; AIL.needResume=false; AIL.reasons.delete('fail');
   aiFabUpdate();
-  try{ await aiWorkerEnsure(); }
+  let how='std';
+  try{
+    if(AICFG.how==='head' && aiHeadUsable()){
+      try{ await aiWorkerEnsure({ ext:true }); how='head'; }
+      catch(e){
+        console.warn(e);
+        AIH.runErr='「しっかり」の部品を起動できませんでした（'+(e&&e.message||e)+'）';
+        aiWorkerKill(); await aiWorkerEnsure();
+        toast('「しっかり」を起動できなかったため、標準の聞き方で聞きます', 5000);
+      }
+    } else await aiWorkerEnsure();
+  }
   catch(e){ if(AIL.want && AIL.sv===sv){ AIL.want=false; AIL.sv=null; } toast('鳴き声AIを起動できませんでした: '+(e&&e.message||e), 6000); aiFabUpdate(); return; }
   if(!AIL.want || AIL.sv!==sv) return;   // 準備中に止めた・調査が変わった
+  AIL.how=how;
   clearInterval(AIL.tick); AIL.tick=setInterval(aiTick, 1000);
   aiSync();
 }
@@ -9912,31 +10140,57 @@ async function aiPump(){
   const n=Math.min(AI_BATCH, avail), start=AIL.next, end=start+n*AI_WIN;
   const pcm=aiRingGet(start,end); if(!pcm) return;
   AIL.next=end; AIL.busy=gen;
+  let fellBack=false;
   try{
-    const r=await aiAsk({ message:'scores', pcm }, [pcm.buffer]);
+    let r, used=AIL.how;
+    if(used==='head'){
+      const keep=pcm.slice();   // 判定し直しに使う写し（依頼で音を手放すため）
+      try{
+        r=await aiAsk({ message:'scores_emb', pcm }, [pcm.buffer], AIH.reqMs);
+        if(!r.emb || r.D!==AIH.head.D || r.emb.length!==r.n*r.D) throw new Error('声の指紋が返りませんでした');
+      }catch(err){
+        if(gen!==AIL.gen) return;
+        console.warn(err);
+        used='std'; fellBack=true;
+        r=await aiHeadFallback(keep, gen);   // 標準に切り替えて同じ区間を判定し直す（失敗したら欠測）
+      }
+    } else r=await aiAsk({ message:'scores', pcm }, [pcm.buffer]);
     if(gen!==AIL.gen) return;   // 途中で止めた・再開した → 古い結果は捨てる
-    for(let f=0; f<r.n; f++) aiHandleWindow(start+f*AI_WIN, r.scores.subarray(f*r.C,(f+1)*r.C), seg);
+    for(let f=0; f<r.n; f++) aiHandleWindow(start+f*AI_WIN, r.scores.subarray(f*r.C,(f+1)*r.C), seg,
+      used, used==='head' ? r.emb.subarray(f*r.D,(f+1)*r.D) : null);
     AIL.judged=end; AIL.lagSec=(AIL.written-AIL.next)/AI_SR;
     aiQueueFlush();
   }catch(err){
     console.warn(err);
-    if(gen===AIL.gen){ AIL.lost.push([start,end]); AIL.judged=end; }
+    if(gen===AIL.gen){
+      AIL.lost.push([start,end]); AIL.judged=end;
+      if(fellBack){   // 「しっかり」から標準に戻しても判定できなかった → 一覧に残し、聞き取りを止める（「聞く」でやり直せる）
+        aiPutDet({ id:uuid(), kind:'gap', sv:AIL.sv, t0:aiTOf(seg,start), t1:aiTOf(seg,end),
+          reason:'鳴き声AIが応答せず判定できなかった', created_at:nowISO() });
+        setTimeout(()=>aiListenStop('鳴き声AIが応答しなくなったため、聞き取りを止めました。もう一度「聞く」を押してください'), 0);
+      }
+    }
   }finally{
     if(AIL.busy===gen) AIL.busy=null;
   }
   if(AIL.cap && gen===AIL.gen) setTimeout(aiPump, 0);
 }
-function aiHandleWindow(ws, row, seg){
+// how … この区間を判定した方法（'std' | 'head'）。emb … 'head' のときの声の指紋
+function aiHandleWindow(ws, row, seg, how='std', emb=null){
   const P=AI.prep; if(!P) return;
-  if(P.humanIdx!==undefined && row[P.humanIdx]>=AI_HUMAN_THR) AIL.humanWins.add(ws);
+  if(P.humanIdx!==undefined && row[P.humanIdx]>=AI_HUMAN_THR) AIL.humanWins.add(ws);   // 人の声は BirdNET の値のまま
+  if(how==='head' && !(emb && AIH.head)) how='std';
+  const adj = how==='head' ? aiHeadAdjust(row, emb) : null;   // 覚えさせた種だけ上乗せした値
   const hits=[];
   const cand = AICFG.hk ? P.hkIdx : row.keys();   // 北海道に絞らないときは全種から
-  for(const i of cand){ if(!P.nonBird.has(i) && row[i]>=AICFG.thr) hits.push({i, s:row[i]}); }
+  for(const i of cand){ const s=(adj && adj.has(i)) ? adj.get(i) : row[i];
+    if(!P.nonBird.has(i) && s>=AICFG.thr) hits.push({i, s}); }
   hits.sort((a,b)=>b.s-a.s); hits.length=Math.min(hits.length, AICFG.maxPer);
   const tw=aiTOf(seg,ws);
   for(const h of hits){
     const ja=P.idxName.get(h.i) || (P.labels[h.i]&&P.labels[h.i].ja) || '';   // 北海道に絞らないときは BirdNET の和名
-    let ev=AIL.events.find(e=>e.ja===ja && !e.closed && e.segId===seg.id && ws-e.endS<=AI_GAP_MERGE*AI_WIN);
+    // 違う方法で判定した検出は同じ記録にまとめない（記録の model と実際の判定をそろえる）
+    let ev=AIL.events.find(e=>e.ja===ja && e.how===how && !e.closed && e.segId===seg.id && ws-e.endS<=AI_GAP_MERGE*AI_WIN);
     if(!ev){
       if(AI_TOT.det>=AI_CAP_DET){ aiListenStop(`この調査の聞こえた鳥が上限（${AI_CAP_DET}件）に達したため、聞き取りを止めました。一覧を整理すると続けられます`); return; }
       const pos=aiPosNow(), posOk=pos && Math.abs(pos.t-tw)<=AI_POS_MAX_AGE;
@@ -9944,8 +10198,8 @@ function aiHandleWindow(ws, row, seg){
       const rec={ id:uuid(), kind:'det', sv:AIL.sv, ja, sci:P.labels[h.i].sci, species_id:sp?sp.species_id:'',
         max:0, count:0, t0:tw, t1:aiTOf(seg,ws+AI_WIN),
         lat:posOk?pos.lat:null, lng:posOk?pos.lng:null, acc:posOk?pos.acc:null, pos_t:posOk?pos.t:null,
-        model:AI_MODEL_VER, clip:null, clip_sec:0, clip_bytes:0, clip_note:'', marked:false, obs_uuid:null, created_at:nowISO() };
-      ev={ rec, ja, segId:seg.id, startS:ws, endS:ws+AI_WIN, closed:false };
+        model:how==='head' ? AI_MODEL_VER+'＋'+AIH.head.name : AI_MODEL_VER, clip:null, clip_sec:0, clip_bytes:0, clip_note:'', marked:false, obs_uuid:null, created_at:nowISO() };
+      ev={ rec, ja, how, segId:seg.id, startS:ws, endS:ws+AI_WIN, closed:false };
       AIL.events.push(ev); AI_TOT.det++;
       aiPopAdd(rec);
     }
@@ -10256,10 +10510,12 @@ function aiSettingsRefresh(){
     ${AI.state!=='ready' && AI.state!=='nosupport'?`<button class="btn primary" ${AI.state==='installing'?'disabled':''} onclick="aiInstall()">🐦 AIを取り込む（約64MB）</button><div class="sp"></div>`:''}
     ${AI.state==='ready'||AI.state==='broken'||AI.state==='failed'?`<button class="btn ghost" onclick="aiUninstall()">AIを端末から消す</button><div class="sp"></div>`:''}
     <button class="btn ghost" onclick="aiOrphanClear()">調査が無いのに残っている「聞こえた鳥」の記録を消す</button>
+    ${AI_HEAD_ENABLED && AI.state==='ready' ? aiHeadSettingsHtml() : ''}
     <div class="divider"></div>
     <div class="tiny muted">判別AI: BirdNET（Cornell Lab of Ornithology / Chemnitz University of Technology）, CC BY-SA 4.0。
       ${esc(AI_MODEL_VER)}。判別部品は BirdNET Live（MIT License, Copyright (c) 2025 BirdNET-Team）を元にしています。
-      北海道の種の一覧: 北海道鳥類目録（505種）＋追加1種。</div>`;
+      北海道の種の一覧: 北海道鳥類目録（505種）＋追加1種。
+      ${AI_HEAD_ENABLED ? '<br>聞き方「しっかり」の上乗せ: iNaturalist に投稿された日本の録音（研究用グレード）で学習。録音ごとの利用条件と録音者は「学習に使った録音の一覧」に載せています。雑音はプログラムで作った音だけを使いました。録音そのものはアプリに入っていません。' : ''}</div>`;
 }
 async function aiOrphanClear(){
   if(!writeAllowed()) return;
