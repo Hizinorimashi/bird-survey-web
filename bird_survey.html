@@ -421,7 +421,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v241（2026-11-09 鳴き声AIの起動の待ち時間・聞き方「しっかり」の準備（まだ表示しない））';
+const APP_VERSION = 'v242（2026-11-09 聞こえた鳥に名前を付けて学習用に集める）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -9658,7 +9658,8 @@ function aiQ(sv, fn, tok){
   _aiQ=p.catch(err=>{ console.warn('鳴き声AIの保存に失敗', err); });
   return p;
 }
-const AI_CLIP_KEYS=['clip','clip_sec','clip_bytes','clip_note'];
+const AI_CLIP_KEYS=['clip','clip_sec','clip_bytes','clip_note','clip_off0','clip_off1'];
+const AI_LABEL_KEYS=['label_kind','label_ja','labeled_at'];
 function aiPutDet(rec){
   // 作られた時点の「消した回数」（このページの中だけで使う。記録には保存しない＝開き直すと数え直しになるため。監査 Major）
   if(rec._dg===undefined) rec._dg=AI_DGEN[rec.sv]||0;
@@ -9670,6 +9671,8 @@ function aiPutDet(rec){
     const cur=await aiReq(st.get(snap.id));
     // 声の保存が先に済んでいれば、その結び付きは古い複製で消さない（監査 Major）
     if(cur && cur.clip && !snap.clip) AI_CLIP_KEYS.forEach(k=>{ snap[k]=cur[k]; });
+    // 一覧で付けた名前は、聞き取り中の古い複製で消さない（v242 計画 補足 M2）
+    if(cur && cur.labeled_at && !(snap.labeled_at && snap.labeled_at>=cur.labeled_at)) AI_LABEL_KEYS.forEach(k=>{ snap[k]=cur[k]; });
     st.put(snap); return aiTxDone(tx); }, rec._dg);
 }
 // その調査の聞こえた鳥（検出と声）を消す。聞いていれば止め、処理待ちの保存を無効にし、列が空くのを待ってから消す。
@@ -9721,7 +9724,9 @@ async function aiTotalsReload(sv){
      同じ取引の中で gone と det を確かめてから書く（削除と重なっても消したものは戻らない）
    - 上限（1調査500件・声は1種10件〈自分で残した音は対象外〉・1調査30分・端末200MB）を超える分は入れない */
 const AI_DET_KEYS=['id','kind','manual','sv','ja','sci','species_id','max','count','t0','t1','lat','lng','acc','pos_t',
-  'model','clip','clip_sec','clip_bytes','clip_note','marked','reason','created_at','updated_at'];
+  'model','clip','clip_sec','clip_bytes','clip_note','marked','reason','created_at','updated_at',
+  // v242 学習用: 人が付けた名前（label_kind: ok/other/nonbird/unknown/空＝取り消し・未）と、聞き取り区間の出どころ
+  'label_kind','label_ja','labeled_at','seg_id','seg_t0','clip_off0','clip_off1'];
 function aiDetPlain(d){ const o={}; AI_DET_KEYS.forEach(k=>{ if(d && d[k]!==undefined) o[k]=d[k]; }); return o; }
 // svs: 調査の uuid の並び（null なら全部）。withClips: 声の中身も読む
 async function aiSnapshot(svs, withClips){
@@ -9906,7 +9911,10 @@ async function aiRestore(part){
 // 鳴き声AIの検出CSV
 const AI_CSV_COLS=['survey_id','survey_name','survey_date','detection_id','species_name','scientific_name','species_id',
   'max_confidence','count','start_time','end_time','latitude','longitude','gps_accuracy_m','manual','marked',
-  'clip_file','clip_sec','clip_note','model','created_at','updated_at'];
+  'clip_file','clip_sec','clip_note','model','created_at','updated_at',
+  // v242: 名前と聞き取り区間の出どころ。**必ず末尾に足す**
+  'label_kind','label_name','labeled_at','segment_id','segment_start','clip_offset_start','clip_offset_end'];
+function aiSec3(x){ return (typeof x==='number' && isFinite(x)) ? Math.round(x*1000)/1000 : ''; }
 function aiTimeIso(ms){ return (typeof ms==='number' && isFinite(ms)) ? isoLocal(new Date(ms).toISOString()) : ''; }
 async function exportAiCSV(surveys, base){
   let snap;
@@ -9922,7 +9930,9 @@ async function exportAiCSV(surveys, base){
       max_confidence:d.manual?'':(typeof d.max==='number'?Math.round(d.max*1000)/1000:''), count:d.manual?'':(d.count||0),
       start_time:aiTimeIso(d.t0), end_time:aiTimeIso(d.t1), latitude:ll[0], longitude:ll[1], gps_accuracy_m:accuracyM(d.acc),
       manual:d.manual?1:0, marked:d.marked?1:0, clip_file:d.clip?'ai/'+aiWavName(d):'', clip_sec:d.clip?Math.round((d.clip_sec||0)*10)/10:'',
-      clip_note:d.clip_note||'', model:d.model||'', created_at:isoLocal(d.created_at), updated_at:isoLocal(d.updated_at||d.created_at) }; });
+      clip_note:d.clip_note||'', model:d.model||'', created_at:isoLocal(d.created_at), updated_at:isoLocal(d.updated_at||d.created_at),
+      label_kind:d.label_kind||'', label_name:d.label_ja||'', labeled_at:isoLocal(d.labeled_at||''), segment_id:d.seg_id||'',
+      segment_start:aiTimeIso(d.seg_t0), clip_offset_start:aiSec3(d.clip_off0), clip_offset_end:aiSec3(d.clip_off1) }; });
   const body=[AI_CSV_COLS.join(',')].concat(rows.map(r=>AI_CSV_COLS.map(c=>csvCell(r[c])).join(','))).join('\r\n');
   download(`${base}_ai_detections.csv`, '﻿'+body, 'text/csv;charset=utf-8');
   toast('鳴き声AIの検出CSVを書き出しました');
@@ -10041,7 +10051,7 @@ async function aiCaptureStart(){
     AIL.ring.fill(0); AIL.written=0; AIL.next=0; AIL.judged=0; AIL.busy=null;
     AIL.humanWins.clear(); AIL.lost=[]; AIL.pendingClips=[];
     for(const e of AIL.events) e.closed=true;
-    AIL.seg={ t0:Date.now(), id:++AIL.segId };
+    AIL.seg={ t0:Date.now(), id:++AIL.segId, uid:uuid() };   // uid: 開き直しても変わらない区間の ID（v242 学習用の出どころ）
     o.node.port.onmessage=e=>{ if(gen===AIL.gen) aiOnPcm(e.data); };
     src.connect(o.node);
     AIL.stream=o.stream; AIL.ctx=o.ctx; AIL.node=o.node; AIL.cap=true; AIL.lastPcm=Date.now();
@@ -10198,6 +10208,7 @@ function aiHandleWindow(ws, row, seg, how='std', emb=null){
       const rec={ id:uuid(), kind:'det', sv:AIL.sv, ja, sci:P.labels[h.i].sci, species_id:sp?sp.species_id:'',
         max:0, count:0, t0:tw, t1:aiTOf(seg,ws+AI_WIN),
         lat:posOk?pos.lat:null, lng:posOk?pos.lng:null, acc:posOk?pos.acc:null, pos_t:posOk?pos.t:null,
+        seg_id:seg.uid||'', seg_t0:seg.t0,
         model:how==='head' ? AI_MODEL_VER+'＋'+AIH.head.name : AI_MODEL_VER, clip:null, clip_sec:0, clip_bytes:0, clip_note:'', marked:false, obs_uuid:null, created_at:nowISO() };
       ev={ rec, ja, how, segId:seg.id, startS:ws, endS:ws+AI_WIN, closed:false };
       AIL.events.push(ev); AI_TOT.det++;
@@ -10256,10 +10267,11 @@ function aiQueueFlush(){
       const tx=db.transaction(['det','clip'],'readwrite');
       const cur=await aiReq(tx.objectStore('det').get(rec.id));
       if(cur && cur.clip) return false;   // 保存済みの声があれば足さない（予約した勘定は呼び出し側で戻す）
-      const next=Object.assign({}, cur||rec, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', updated_at:nowISO() }); delete next._dg; delete next._clipSaving;
+      const off={ clip_off0:p.a/AI_SR, clip_off1:p.b/AI_SR };   // 聞き取り区間の中での声の位置（秒）
+      const next=Object.assign({}, cur||rec, off, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', updated_at:nowISO() }); delete next._dg; delete next._clipSaving;
       tx.objectStore('clip').put(clip); tx.objectStore('det').put(next);   // 声と検出は同じ処理で一緒に確定する
       await aiTxDone(tx);
-      Object.assign(rec, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', updated_at:next.updated_at });
+      Object.assign(rec, off, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', updated_at:next.updated_at });
       return true;
     }, rec._dg).then(ok=>{
       if(ok) return;
@@ -10404,7 +10416,8 @@ function aiSaveNow(){
   const clip={ id:uuid(), sv, det:null, pcm:i16, sr:AI_SR, t0 };
   const rec={ id:uuid(), kind:'det', manual:true, sv, ja:'（録音のみ）', sci:'', species_id:'', max:0, count:0, t0, t1,
     lat:posOk?pos.lat:null, lng:posOk?pos.lng:null, acc:posOk?pos.acc:null, pos_t:posOk?pos.t:null,
-    model:'', clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', marked:true, obs_uuid:null, created_at:nowISO() };
+    model:'', clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', marked:true, obs_uuid:null, created_at:nowISO(),
+    seg_id:seg.uid||'', seg_t0:seg.t0, clip_off0:a/AI_SR, clip_off1:b/AI_SR };
   rec.updated_at=rec.created_at;
   clip.det=rec.id;
   const dg=AI_DGEN[sv]||0;
@@ -10435,6 +10448,42 @@ function aiMark(rec, on){
     cur.marked=!!on; cur.updated_at=nowISO(); rec.updated_at=cur.updated_at; st.put(cur); return aiTxDone(tx); }, rec._dg).then(()=>aiListLive());
 }
 
+/* ---------- 名前を付ける（v242 学習用に集める。計画: tasks/todo.md「自前の声を学習用に集める仕組み」） ----------
+   kind: ok（AI の名前で合っている）／other（別の種。ja に種名）／nonbird（鳥ではない）／unknown（分からない）／''（取り消し）
+   保存済みの最新の行を読んで名前の欄だけ直す。聞き取り中の検出（AIL.events）にも同じ値を入れる（後の自動保存で消さない） */
+const AI_LABEL_TEXT={ ok:'✓ 合ってる', other:'別の種', nonbird:'鳥ではない', unknown:'? 分からない' };
+function aiLabelValid(rec, kind, ja){
+  if(!['ok','other','nonbird','unknown',''].includes(kind)) return false;
+  if(kind==='ok' && (rec.manual || !rec.ja || rec.ja==='（録音のみ）')) return false;   // 自分で残した音は AI の名前が無い
+  if(kind==='other' && !(typeof ja==='string' && ja && speciesByName(ja))) return false;
+  return true;
+}
+function aiLabelSet(id, kind, ja){
+  if(!writeAllowed()) return Promise.resolve(false);
+  return (async()=>{
+    let cur=null; try{ const db=await aiDb(); cur=await aiReq(db.transaction('det').objectStore('det').get(id)); }catch(e){}
+    if(!cur || cur.kind!=='det') return false;
+    ja=kind==='other' ? String(ja||'').trim() : '';
+    if(!aiLabelValid(cur, kind, ja)){ toast(kind==='other'?'その名前の種が見つかりません（種の一覧の名前で入れてください）':'この声には付けられません'); return false; }
+    const at=nowISO(), val={ label_kind:kind, label_ja:ja, labeled_at:at };
+    const live=AIL.events.find(e=>e.rec.id===id); if(live) Object.assign(live.rec, val);
+    const ok=await aiQ(cur.sv, async()=>{ const db=await aiDb(); const tx=db.transaction('det','readwrite'); const st=tx.objectStore('det');
+      const c=await aiReq(st.get(id)); if(!c) return false;   // 消した後なら何もしない（復活させない）
+      Object.assign(c, val); c.updated_at=at; st.put(c); return aiTxDone(tx); }, live?live.rec._dg:undefined);
+    aiListLive();
+    return !!ok;
+  })();
+}
+function aiLabelPress(id, kind, now){
+  if(kind===now) return aiLabelSet(id, '', '');   // 同じボタンをもう一度押すと取り消し
+  if(kind==='other'){
+    const ja=prompt('本当は何の鳥でしたか？（種名）');
+    if(ja==null) return;
+    return aiLabelSet(id, 'other', ja);
+  }
+  return aiLabelSet(id, kind, '');
+}
+
 /* ---------- 聞こえた鳥の一覧 ---------- */
 let _aiListGen=0;
 function aiListLive(){
@@ -10448,7 +10497,9 @@ SCREENS.aiList=(sv)=>{
     html:`
       <div class="note small">鳴き声AIが聞き取った<b>候補</b>です。観察の記録にはなっていません（★は印を付けるだけ）。
         AIが人の声と判定した区間を含む声は保存しません（AIが聞き逃すことはあります。「🎙 いまの音を残す」で自分で残した音は除く）。<br>
-        この一覧と声は<b>この端末の中だけ</b>に保存されます（エクスポート・クラウド保存・同期には含まれません）。</div>
+        この一覧と声は<b>この端末の中だけ</b>に保存されます（同期・自動保存には含まれません。録音ZIP・手動の全部のバックアップには入ります）。<br>
+        「本当は」で名前を付けると、録音ZIPの学習用の一覧（training_labels.csv）に入り、鳥類データベースで学習用の声として集められます。
+        もう一度押すと取り消せます。手動の全部のバックアップの読み込みでは名前は変わりません（名前を渡すには録音ZIPか「DBへ送る」を使ってください）。</div>
       <div id="aiListBox"><div class="empty">読み込み中…</div></div>
       <div class="divider"></div>
       ${roBtn(`<button class="btn danger" onclick="aiListClear('${esc(sv)}')">この調査の聞こえた鳥を消す</button>`)}`,
@@ -10470,7 +10521,13 @@ async function aiListLoad(sv){
           ${d.clip_note?`<div class="tiny muted">${esc(d.clip_note)}</div>`:''}</div>
         ${d.clip?`<button type="button" class="btn" style="width:auto; padding:8px 12px;" onclick="aiPlay('${esc(d.clip)}')">▶</button>`:''}
         ${roBtn(`<button type="button" class="btn${d.marked?' primary':''}" style="width:auto; padding:8px 12px;" data-id="${esc(d.id)}" onclick="aiListMark(this.dataset.id, ${d.marked?'false':'true'})">${d.marked?'★':'☆'}</button>`)}
-      </div></div>`;
+      </div>
+      ${roBtn(`<div class="row ailabel" style="gap:4px; margin-top:6px; flex-wrap:wrap;">
+        <span class="tiny muted">本当は:</span>
+        ${['ok','other','nonbird','unknown'].filter(k=>!(k==='ok' && d.manual)).map(k=>`<button type="button" class="btn${d.label_kind===k?' primary':''}" style="width:auto; padding:4px 8px; min-height:32px; font-size:13px;"
+          data-id="${esc(d.id)}" data-k="${k}" data-now="${esc(d.label_kind||'')}" onclick="aiLabelPress(this.dataset.id, this.dataset.k, this.dataset.now)">${k==='other'&&d.label_kind==='other'?'別の種: '+esc(d.label_ja):AI_LABEL_TEXT[k]}</button>`).join('')}
+      </div>`)}
+      ${d.label_kind && !d.clip?`<div class="tiny muted">声が無いので、学習には使えません</div>`:''}</div>`;
   const gapRow=g=>`<div class="tiny muted" style="padding:4px 2px;">⏸ ${hms(g.t0)}〜${g.t1?hms(g.t1):''} 聞き取りが止まっていました（${esc(g.reason||'')}）</div>`;
   box.innerHTML=`<div class="small muted" style="margin-bottom:6px;">検出 ${dets.length}件（印あり ${marked.length}件）</div>`
     + (marked.length?`<h3 class="muted small">★ 印あり</h3>${marked.map(row).join('')}`:'')
@@ -14084,8 +14141,50 @@ async function exportMediaZip(surveys, base){
   if(!files.length){ toast('データが見つかりません'); return; }
   const idx=['file,type,survey_name,observed_at,species_name,latitude,longitude'].concat(idxRows).join('\r\n');
   files.push({ name:'index.csv', u8:new TextEncoder().encode('﻿'+idx) });
+  const tl=trainingLabelRows(surveys, audioItems, flAudioItems, aiItems, aiClipById, files);
+  if(tl.length) files.push({ name:'training_labels.csv', u8:new TextEncoder().encode('﻿# training-labels v1\r\n'
+    +[TRAIN_COLS.join(',')].concat(tl.map(r=>TRAIN_COLS.map(c=>csvCell(r[c])).join(','))).join('\r\n')) });
   downloadBlob(`${base}_media.zip`, buildZip(files));
   toast('録音・写真・動画ZIPを書き出しました');
+}
+// 学習用の名前の一覧（v242。計画: tasks/todo.md「自前の声を学習用に集める仕組み」補足・補足2。鳥類DB の「学習用の声」で取り込む）
+// 入れるもの: 名前を一度でも付けた（取り消しを含む）鳴き声AIの声・観察と飛翔の録音メモ。学習に使うかは DB で決める
+// source: ai／ai_manual／memo／memo_flight。source_id: 検出 id／録音 id（AudioDB の id。ZIP の中の名前とは別）
+const TRAIN_COLS=['file','source','source_id','label_kind','label_ja','label_species_id','labeled_at','labeled_by','label_source',
+  'candidate_ja','ai_ja','ai_max','model','survey_uuid','survey_name','site_name','visit_id','recorded_at','duration_sec',
+  'latitude','longitude','recordist','origin_id','origin_offset_start','origin_offset_end','individual_key','app_version'];
+function trainingLabelRows(surveys, audioItems, flAudioItems, aiItems, aiClipById, files){
+  const inZip=new Set(files.map(f=>f.name)), svOf=new Map(surveys.map(s=>[s.uuid, s])), ver=APP_VERSION.split('（')[0];
+  const base=s=>({ survey_uuid:s.uuid, survey_name:s.name||'', site_name:s.location_name||s.name||'', visit_id:s.uuid,
+    recordist:s.investigator_name||'', app_version:ver });
+  const rows=[];
+  for(const d of aiItems){
+    if(!d.labeled_at) continue;   // 名前を一度も付けていない声は入れない（取り消しは labeled_at があるので入る）
+    const name='ai/'+aiWavName(d); if(!inZip.has(name)) continue;
+    const s=svOf.get(d.sv)||{uuid:d.sv}, c=aiClipById.get(d.clip)||{};
+    const ll=(d.lat!=null && d.lng!=null && validPathPt([d.lat,d.lng])) ? [d.lat,d.lng] : ['',''];
+    const sp=d.label_kind==='other' ? speciesByName(d.label_ja) : (d.label_kind==='ok' ? speciesByName(d.ja) : null);
+    rows.push(Object.assign(base(s), { file:name, source:d.manual?'ai_manual':'ai', source_id:d.id,
+      label_kind:d.label_kind||'', label_ja:d.label_kind==='other'?(d.label_ja||''):(d.label_kind==='ok'?d.ja:''),
+      label_species_id:sp?sp.species_id:'', labeled_at:isoLocal(d.labeled_at), labeled_by:s.investigator_name||'', label_source:'app',
+      candidate_ja:d.manual?'':(d.ja||''), ai_ja:d.manual?'':(d.ja||''), ai_max:d.manual?'':(typeof d.max==='number'?Math.round(d.max*1000)/1000:''),
+      model:d.model||'', recorded_at:aiTimeIso(typeof c.t0==='number'?c.t0:d.t0), duration_sec:aiSec3(d.clip_sec),
+      latitude:ll[0], longitude:ll[1], origin_id:d.seg_id?'aiseg:'+d.seg_id:'',
+      origin_offset_start:d.seg_id?aiSec3(d.clip_off0):'', origin_offset_end:d.seg_id?aiSec3(d.clip_off1):'', individual_key:'' }));
+  }
+  const memo=(it, isFl)=>{
+    const name=isFl ? flightAudioFilename(it.f,it.i,it.a) : audioFilename(it.o,it.i,it.a); if(!inZip.has(name)) return;
+    const rec=isFl ? it.f : it.o, s=it.s, dur=Number(it.a.dur)||0;
+    const end=Date.parse(it.a.created_at||''), start=isFinite(end) ? end-dur*1000 : NaN;
+    const ll=isFl ? ['',''] : coordPair(rec.latitude, rec.longitude);
+    rows.push(Object.assign(base(s), { file:name, source:isFl?'memo_flight':'memo', source_id:it.a.id||'',
+      label_kind:'', label_ja:'', label_species_id:'', labeled_at:'', labeled_by:'', label_source:'',
+      candidate_ja:rec.species_name_snapshot||'', ai_ja:'', ai_max:'', model:'', recorded_at:isFinite(start)?aiTimeIso(start):'',
+      duration_sec:dur?Math.round(dur*1000)/1000:'', latitude:ll[0], longitude:ll[1], origin_id:it.a.id?'memo:'+it.a.id:'',
+      origin_offset_start:0, origin_offset_end:dur?Math.round(dur*1000)/1000:'', individual_key:rec.individual_key||'' }));
+  };
+  audioItems.forEach(it=>memo(it, false)); flAudioItems.forEach(it=>memo(it, true));
+  return rows;
 }
 const CSV_COLS=['survey_id','survey_name','survey_date','survey_method','survey_season','survey_round','observation_id','observed_at',
   'latitude','longitude','species_name','count','detection_method','distance_band','direction','behavior','habitat','age_class','sex',
