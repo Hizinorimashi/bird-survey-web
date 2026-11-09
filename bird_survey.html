@@ -424,7 +424,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v244（2026-11-09 「鳥」ボタンで範囲を囲む・確認方法の欄）';
+const APP_VERSION = 'v245（2026-11-09 声紋を見やすく・選んだ高さだけ鳴らす）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -10491,8 +10491,22 @@ async function aiPlay(clipId){
    - 鳴き声AIの声に名前を付けるときは、選んだ区間も一緒に保存する（aiLabelSet の region） */
 const SPEC_MAX_BYTES=20*1024*1024, SPEC_MAX_SEC=300, SPEC_MAX_CH=2, SPEC_MAX_EXPAND=120*1024*1024, SPEC_MAX_COLS=6000;
 const SPEC_H=256, SPEC_N=1024;
+// 見やすさ（v245）: 高さは4段階。低い範囲ほど窓を長くして細かく描く。濃淡は色を付ける強さの幅（dB）
+const SPEC_FMAXES=[3000, 6000, 12000, 24000];
+const SPEC_NFOR={ 3000:4096, 6000:2048, 12000:SPEC_N, 24000:SPEC_N };
+const SPEC_RANGES=[{ db:25, ja:'くっきり' }, { db:45, ja:'ふつう' }, { db:70, ja:'かすかな音も' }];
+const SPEC_BAND_MIN_HZ=150;   // 囲んだ高さの幅がこれ未満なら、高さでは絞らず時間だけで鳴らす（横になぞっただけのとき）
 const SPEC={ gen:0, job:0, pcm:null, sr:AI_SR, hop:256, cols:0, fmax:12000, sel:null, src:null, det:null, res:null, resSel:null, band:false,
+  db:null, floor:null, clean:true, range:1, mono:false, drawId:0,
   inflight:false, reqId:0, reqMs:30000 };
+  // db: 描いた強さ（段×列、dB）。floor: 段ごとの「いつも鳴っている音」の大きさ（中央値）。clean: それを差し引いて声を浮かせる
+function specViewLoad(){
+  const d={ fmax:12000, clean:true, range:1, mono:false };
+  try{ const v=JSON.parse(localStorage.getItem('bs_spec_view')||'null'); if(!v || typeof v!=='object') return d;
+    return { fmax:SPEC_FMAXES.includes(v.fmax)?v.fmax:d.fmax, clean:v.clean!==false, range:[0,1,2].includes(v.range)?v.range:d.range, mono:v.mono===true };
+  }catch(e){ return d; }
+}
+function specViewSave(){ try{ localStorage.setItem('bs_spec_view', JSON.stringify({ fmax:SPEC.fmax, clean:SPEC.clean, range:SPEC.range, mono:SPEC.mono })); }catch(e){} }
   // inflight: 声紋の判別の依頼が処理役に出ている（同時に1件だけ）。reqId: その依頼の番号。
   // 待ち時間（reqMs）が切れても処理役はまだ計算中のことがあるので、返事が届くか処理役が止まるまで inflight は下ろさない
 
@@ -10596,7 +10610,7 @@ async function specDecode(u8){
 // ---- 重ね画面 ----
 function specClose(){
   SPEC.gen++; SPEC.job++; aiPlayStop();
-  SPEC.pcm=null; SPEC.res=null; SPEC.resSel=null; SPEC.sel=null; SPEC.src=null; SPEC.det=null;
+  SPEC.pcm=null; SPEC.res=null; SPEC.resSel=null; SPEC.sel=null; SPEC.src=null; SPEC.det=null; SPEC.db=null; SPEC.floor=null;
   const ov=document.getElementById('specOv'); if(ov) ov.remove();
 }
 function specOverlayHtml(title){
@@ -10607,18 +10621,24 @@ function specOverlayHtml(title){
     <div id="specAx" class="tiny muted"></div>
     <div class="row" style="gap:6px; flex-wrap:wrap; margin-top:6px;">
       <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specFmax()">高さ: <span id="specFm">0〜12kHz</span></button>
+      <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specView('clean')">雑音: <span id="specCl">沈める</span></button>
+      <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specView('range')">濃淡: <span id="specRg">ふつう</span></button>
+      <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specView('mono')"><span id="specMo">白黒にする</span></button>
+    </div>
+    <div class="row" style="gap:6px; flex-wrap:wrap; margin-top:6px;">
       <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specPlay()">▶ 選んだ部分</button>
       <button type="button" class="btn primary" style="width:auto;padding:6px 10px;" onclick="specJudge()">この部分を判別</button>
       <label class="small" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="specBand" style="width:auto;" onchange="SPEC.band=this.checked"> 高さの範囲も使う</label>
       <button type="button" class="btn ghost" style="width:auto;padding:6px 10px;" onclick="specSelClear()">選び直す</button>
     </div>
-    <div class="tiny muted">図の上をなぞると、時間と高さの範囲を選べます（選ばなければ全体）。</div>
+    <div class="tiny muted">図の上をなぞると、時間と高さの範囲を選べます（選ばなければ全体）。▶ は囲んだ高さの音だけを鳴らします。</div>
     <div id="specRes"></div>`;
 }
 async function specOpen(src){
   specClose();
   const gen=++SPEC.gen;
-  SPEC.src=src; SPEC.fmax=12000; SPEC.band=false;
+  const v=specViewLoad();
+  SPEC.src=src; SPEC.fmax=v.fmax; SPEC.clean=v.clean; SPEC.range=v.range; SPEC.mono=v.mono; SPEC.band=false; SPEC.db=null; SPEC.floor=null;
   const ov=document.createElement('div'); ov.id='specOv'; ov.className='spec-ov';
   const title=src.kind==='clip' ? '声紋（聞こえた鳥の声）' : src.kind==='audio' ? '声紋（録音メモ）' : '声紋（端末の音声ファイル）';
   ov.innerHTML=specOverlayHtml(title); document.body.appendChild(ov);
@@ -10648,33 +10668,89 @@ async function specOpen(src){
     await specDraw(gen);
   }catch(e){ msg('この音は開けませんでした: '+(e&&e.message||e)); }
 }
+// 強さを計算して描く（v245: 列は時刻 c*hop を中心にした窓。各段は受け持つ周波数の最大。段ごとの中央値も求めておく）
 async function specDraw(gen){
   const pcm=SPEC.pcm; if(!pcm) return;
-  const n=pcm.length, hop=Math.max(256, Math.ceil(n/SPEC_MAX_COLS)), cols=Math.max(1, Math.floor(Math.max(0, n-SPEC_N)/hop)+1);
-  SPEC.hop=hop; SPEC.cols=cols;
+  const id=++SPEC.drawId, fmax=SPEC.fmax;   // 描き始めの高さで描き切る。後から始めた描画があれば、こちらは途中でやめる（監査 Major）
+  const live=()=>gen===SPEC.gen && id===SPEC.drawId && SPEC.pcm===pcm && SPEC.fmax===fmax;
+  const N=SPEC_NFOR[fmax]||SPEC_N, df=AI_SR/N, H=SPEC_H, half=N>>1;
+  const n=pcm.length, hop=Math.max(256, Math.ceil(n/SPEC_MAX_COLS)), cols=Math.max(1, Math.ceil(n/hop));
+  SPEC.hop=hop; SPEC.cols=cols; SPEC.db=null; SPEC.floor=null;
   const cv=document.getElementById('specCv'), sc=document.getElementById('specSel'); if(!cv) return;
   cv.width=cols; sc.width=cols;
-  const ctx=cv.getContext('2d'), bins=Math.floor(SPEC.fmax/(AI_SR/SPEC_N));
-  const win=new Float32Array(SPEC_N); for(let i=0;i<SPEC_N;i++) win[i]=0.5-0.5*Math.cos(2*Math.PI*i/SPEC_N);
-  const db=new Float32Array(cols*bins); let mx=-1e9;
+  const m0=document.getElementById('specMsg'); if(m0) m0.textContent='描いています…';
+  const win=new Float32Array(N); for(let i=0;i<N;i++) win[i]=0.5-0.5*Math.cos(2*Math.PI*i/N);
+  const kLo=new Int32Array(H), kHi=new Int32Array(H);   // 各段（上が高い）が受け持つ周波数の番号
+  for(let y=0;y<H;y++){ const r=H-1-y, a=Math.floor(r/H*fmax/df), b=Math.max(a, Math.ceil((r+1)/H*fmax/df)-1);
+    kLo[y]=Math.min(half-1, a); kHi[y]=Math.min(half-1, b); }
+  const db=new Float32Array(cols*H), re=new Float64Array(N), im=new Float64Array(N);
   for(let c=0;c<cols;c++){
-    if(c%300===0){ await new Promise(r=>setTimeout(r,0)); if(gen!==SPEC.gen) return; }   // 画面を固めない
-    const re=new Float64Array(SPEC_N), im=new Float64Array(SPEC_N), o=c*hop;
-    for(let i=0;i<SPEC_N;i++) re[i]=(pcm[o+i]||0)*win[i];
+    if(c%150===0){ await new Promise(r=>setTimeout(r,0)); if(!live()) return; }   // 画面を固めない
+    const o=c*hop-half;
+    for(let i=0;i<N;i++){ const j=o+i; re[i]=(j>=0 && j<n ? pcm[j] : 0)*win[i]; im[i]=0; }
     specFft(re, im);
-    for(let k=0;k<bins;k++){ const v=10*Math.log10(re[k]*re[k]+im[k]*im[k]+1e-12); db[c*bins+k]=v; if(v>mx) mx=v; }
+    for(let y=0;y<H;y++){ let m=0; for(let k=kLo[y];k<=kHi[y];k++){ const q=re[k]*re[k]+im[k]*im[k]; if(q>m) m=q; } db[y*cols+c]=10*Math.log10(m+1e-12); }
   }
-  const img=ctx.createImageData(cols, SPEC_H), lo=mx-80;
-  for(let c=0;c<cols;c++) for(let y=0;y<SPEC_H;y++){
-    const k=Math.min(bins-1, Math.floor((SPEC_H-1-y)/SPEC_H*bins)), v=Math.max(0, Math.min(1, (db[c*bins+k]-lo)/80)), p=(y*cols+c)*4;
-    img.data[p]=Math.min(255, 510*v)|0; img.data[p+1]=Math.max(0, Math.min(255, 460*(v-0.4)))|0; img.data[p+2]=Math.max(0, Math.min(255, 255*(0.6-Math.abs(v-0.3))))|0; img.data[p+3]=255;
-  }
-  ctx.putImageData(img, 0, 0);
-  const sec=n/AI_SR;
+  if(!live()) return;
+  const floor=new Float32Array(H), tmp=new Float32Array(cols);
+  for(let y=0;y<H;y++){ tmp.set(db.subarray(y*cols, (y+1)*cols)); tmp.sort(); floor[y]=tmp[cols>>1]; }
+  SPEC.db=db; SPEC.floor=floor;
   const m=document.getElementById('specMsg'); if(m) m.textContent='';
-  const ax=document.getElementById('specAx'); if(ax) ax.textContent=`横: 0〜${sec.toFixed(2)}秒 ／ 縦: 0〜${SPEC.fmax/1000}kHz`;
-  const fm=document.getElementById('specFm'); if(fm) fm.textContent=`0〜${SPEC.fmax/1000}kHz`;
-  specSelBind(); specSelDraw();
+  specPaint(); specSelBind(); specSelDraw();
+}
+// 色を塗るだけ（計算し直さない）。上端は強さの上位0.3%あたり（一番強い1点に引きずられない）、下端は上端から濃淡の幅だけ下
+function specPaint(){
+  const db=SPEC.db, fl=SPEC.floor, cv=document.getElementById('specCv'); if(!db || !fl || !cv) return;
+  const cols=SPEC.cols, H=SPEC_H, clean=SPEC.clean;
+  const step=Math.max(1, Math.floor(cols*H/60000)), smp=[];
+  for(let i=0;i<cols*H;i+=step){ const y=Math.floor(i/cols); smp.push(clean ? db[i]-fl[y] : db[i]); }
+  smp.sort((x,y)=>x-y);
+  let top=smp[Math.min(smp.length-1, Math.floor(smp.length*0.999))], bot=top-SPEC_RANGES[SPEC.range].db;
+  if(clean) bot=Math.max(bot, 3);   // いつも鳴っている音（中央値）より 3dB 以上強いところだけ明るくする
+  else bot=Math.max(bot, -100);    // 無音（-120dB）は背景の色にする（監査 Minor）
+  const span=clean ? 20 : 10;   // 声が短くて上端が雑音のゆらぎ程度しかないときに、ざらつきを明るく出さない
+  if(top<bot+span) top=bot+span;
+  const lut=specLut(SPEC.mono), ctx=cv.getContext('2d'), img=ctx.createImageData(cols, H), sp=1/(top-bot);
+  for(let y=0;y<H;y++){ const off=clean ? fl[y] : 0;
+    for(let c=0;c<cols;c++){ const v=Math.max(0, Math.min(1, (db[y*cols+c]-off-bot)*sp)), k=(v*255|0)*3, p=(y*cols+c)*4;
+      img.data[p]=lut[k]; img.data[p+1]=lut[k+1]; img.data[p+2]=lut[k+2]; img.data[p+3]=255; } }
+  ctx.putImageData(img, 0, 0);
+  specViewLabels();
+}
+// 色の対応表: カラーは黒→紫→橙→淡黄（強いほど明るい）、白黒は白地に黒（強いほど黒い。図鑑の声紋と同じ見え方）
+const _specLuts={};
+function specLut(mono){
+  const key=mono?'m':'c'; if(_specLuts[key]) return _specLuts[key];
+  const t=new Uint8Array(256*3);
+  const stops=[[0,[0,0,4]],[0.25,[59,15,112]],[0.5,[140,41,129]],[0.75,[254,159,109]],[1,[252,253,191]]];
+  for(let i=0;i<256;i++){ const v=i/255;
+    if(mono){ const g=Math.round(255*(1-Math.pow(v, 0.8))); t[i*3]=t[i*3+1]=t[i*3+2]=g; continue; }
+    let j=0; while(j<stops.length-2 && v>stops[j+1][0]) j++;
+    const [a0,c0]=stops[j], [a1,c1]=stops[j+1], u=(v-a0)/(a1-a0);
+    for(let q=0;q<3;q++) t[i*3+q]=Math.round(c0[q]+(c1[q]-c0[q])*u); }
+  return (_specLuts[key]=t);
+}
+function specViewLabels(){
+  const set=(id, t)=>{ const e=document.getElementById(id); if(e) e.textContent=t; };
+  const sec=SPEC.pcm ? SPEC.pcm.length/AI_SR : 0;
+  set('specAx', `横: 0〜${sec.toFixed(2)}秒 ／ 縦: 0〜${SPEC.fmax/1000}kHz`);
+  set('specFm', `0〜${SPEC.fmax/1000}kHz`);
+  set('specCl', SPEC.clean?'沈める':'そのまま');
+  set('specRg', SPEC_RANGES[SPEC.range].ja);
+  set('specMo', SPEC.mono?'カラーにする':'白黒にする');
+  const w=document.getElementById('specWrap'); if(w) w.style.background=SPEC.mono?'#fff':'#111';
+}
+function specFmax(){ if(!SPEC.pcm) return; const i=SPEC_FMAXES.indexOf(SPEC.fmax); SPEC.fmax=SPEC_FMAXES[(i+1)%SPEC_FMAXES.length];
+  SPEC.sel=null; specResClear(); specViewSave(); specViewLabels(); specDraw(SPEC.gen); }
+// 雑音・濃淡・白黒の切り替え（塗り直すだけ。選んだ範囲や結果はそのまま）
+function specView(what){
+  if(what==='clean') SPEC.clean=!SPEC.clean;
+  else if(what==='range') SPEC.range=(SPEC.range+1)%SPEC_RANGES.length;
+  else if(what==='mono') SPEC.mono=!SPEC.mono;
+  else return;
+  specViewSave();
+  if(SPEC.db) specPaint(); else specViewLabels();
+  specSelDraw();
 }
 function specFft(re, im){
   const n=re.length;
@@ -10685,7 +10761,6 @@ function specFft(re, im){
         const vr=xr*cr-xi*ci, vi=xr*ci+xi*cr; re[i+j]=ur+vr; im[i+j]=ui+vi; re[i+j+len/2]=ur-vr; im[i+j+len/2]=ui-vi;
         const t=cr*wr-ci*wi; ci=cr*wi+ci*wr; cr=t; } } }
 }
-function specFmax(){ if(!SPEC.pcm) return; SPEC.fmax=SPEC.fmax===12000?24000:12000; SPEC.sel=null; specResClear(); specDraw(SPEC.gen); }
 function specResClear(){ SPEC.job++; SPEC.res=null; SPEC.resSel=null; const b=document.getElementById('specRes'); if(b) b.innerHTML=''; }
 function specSelClear(){ SPEC.sel=null; specResClear(); specSelDraw(); }
 function specSelBind(){
@@ -10707,18 +10782,35 @@ function specSelDraw(){
   const c=sc.getContext('2d'); c.clearRect(0,0,sc.width,sc.height);
   const s=SPEC.sel; if(!s) return;
   const x0=s.t0*AI_SR/SPEC.hop, x1=s.t1*AI_SR/SPEC.hop, y0=SPEC_H-s.f1/SPEC.fmax*SPEC_H, y1=SPEC_H-s.f0/SPEC.fmax*SPEC_H;
-  c.strokeStyle='#0f0'; c.lineWidth=2; c.strokeRect(x0, y0, Math.max(2,x1-x0), Math.max(2,y1-y0));
+  c.strokeStyle=SPEC.mono?'#e11d48':'#0f0'; c.lineWidth=2; c.strokeRect(x0, y0, Math.max(2,x1-x0), Math.max(2,y1-y0));
 }
 function specSelPcm(){
   const p=SPEC.pcm, s=SPEC.sel; if(!p) return null;
   if(!s) return p;
   return p.subarray(Math.floor(s.t0*AI_SR), Math.max(Math.floor(s.t0*AI_SR)+1, Math.ceil(s.t1*AI_SR)));
 }
-function specPlay(){
+// 選んだ部分を鳴らす（v245: 囲んだ高さだけを残す。小さい音は聞こえる大きさまで持ち上げる＝最大30倍）
+function specPlayBand(s){
+  if(!s) return null;
+  const full=s.f0<=SPEC.fmax*0.01 && s.f1>=SPEC.fmax*0.99;
+  if(full || s.f1-s.f0<SPEC_BAND_MIN_HZ) return null;
+  return { f0:s.f0, f1:s.f1 };
+}
+async function specPlay(){
   if(REC){ toast('録音中は再生できません（再生した音が録音に入るため）'); return; }
   const p=specSelPcm(); if(!p || !p.length) return;
   aiPlayStop();
-  const i16=new Int16Array(p.length); for(let i=0;i<p.length;i++) i16[i]=Math.max(-32768, Math.min(32767, Math.round(p[i]*32767)));
+  const g=_aiPlayGen, s=SPEC.sel, bd=specPlayBand(s);
+  let out=p;
+  if(bd){
+    try{ out=await specBand(p, bd.f0, bd.f1); }catch(e){ out=p; toast('高さで絞れなかったので、そのまま鳴らします', 2500); }
+    if(g!==_aiPlayGen || !SPEC.pcm) return;   // 絞っている間に別の再生・停止・閉じるが押された
+    if(REC){ toast('録音中は再生できません（再生した音が録音に入るため）'); return; }
+    if(out!==p) toast(`${Math.round(bd.f0)}〜${Math.round(bd.f1)}Hz だけを鳴らします`, 2000);
+  } else if(s && !(s.f0<=SPEC.fmax*0.01 && s.f1>=SPEC.fmax*0.99)) toast('高さの幅が狭いので、時間だけで鳴らします', 2500);
+  let pk=0; for(let i=0;i<out.length;i++){ const a=Math.abs(out[i]); if(a>pk) pk=a; }
+  const gain=pk>0 ? Math.max(1, Math.min(30, 0.9/pk)) : 1;
+  const i16=new Int16Array(out.length); for(let i=0;i<out.length;i++) i16[i]=Math.max(-32768, Math.min(32767, Math.round(out[i]*gain*32767)));
   aiPause('play');
   const a=new Audio(URL.createObjectURL(aiWav(i16, AI_SR))); _aiPlayer=a;
   const end=()=>{ if(_aiPlayer===a) aiPlayStop(); };
