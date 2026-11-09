@@ -395,6 +395,9 @@
   .leaflet-control-layers-toggle{background-image:none !important; width:36px !important; height:36px !important; position:relative;}
   .leaflet-control-layers-toggle::after{content:'🗺'; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:20px;}
   .leaflet-retina .leaflet-control-layers-toggle{background-image:none !important;}
+.spec-ov{position:fixed; inset:0; z-index:3000; background:#fff; overflow:auto; padding:10px; padding-top:max(10px, env(safe-area-inset-top));}
+.spec-ov .spec-head{display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;}
+.spec-ov #specCv, .spec-ov #specSel{display:block; height:256px;}
 </style>
 </head>
 <body>
@@ -421,7 +424,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v242（2026-11-09 聞こえた鳥に名前を付けて学習用に集める）';
+const APP_VERSION = 'v243（2026-11-09 声紋を見て選んだ部分を判別する）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -9072,6 +9075,7 @@ function renderRecPanel(){
     ${list.length?`<div class="reclist">${list.map((a,i)=>`
       <div class="recitem" data-id="${a.id}">
         <div class="row"><span class="small muted grow">録音${i+1} ・ ${fmtDur(a.dur)} ・ ${Math.max(1,Math.round(a.size/1024))}KB</span>
+          <button type="button" class="btn" style="width:auto; padding:6px 10px;" data-a="${esc(a.id)}" onclick="specOpen({kind:'audio', id:this.dataset.a})">〰 声紋</button>
           <button type="button" class="btn danger" style="width:auto; padding:6px 12px;" onclick="delAudio('${a.id}')">削除</button></div>
         <audio controls preload="none" class="recaudio"></audio>
       </div>`).join('')}</div>`:''}`;
@@ -9236,6 +9240,8 @@ function aiCfgHtml(){
     + sel('maxPer','1回（3秒）に知らせる種の数', AI_CFG_OPT.maxPer, v=>v+'種まで', '同時に鳴いている種をいくつまで知らせるか')
     + sel('pad','自動で残す声の長さ', AI_CFG_OPT.pad, v=>'よく聞こえた3秒の前後 '+v+'秒', '')
     + sel('manual','「いまの音を残す」の長さ', AI_CFG_OPT.manual, v=>'直前 '+v+'秒', '')
+    + `<div class="sp"></div><button type="button" class="btn" onclick="specOpen({kind:'file'})">〰 端末の音声ファイルを声紋で見る</button>
+       <div class="tiny muted">5分・20MB まで。ファイルは端末の中で読むだけで、保存も送信もしません。</div>`
     + sel('agc','マイクの自動音量調整', AI_CFG_OPT.agc, v=>v?'オン（小さな音を大きくして拾う）':'オフ（そのままの音）', 'オンにすると小さな音を拾いやすくなるが、雑音も大きくなる。AIは音の大きさより声の形で判断するので、効き目は「知らせる基準」より小さい');
 }
 const AI_MAX_PER_WIN=3;                       // 1つの3秒区間で記録する種の上限
@@ -9382,6 +9388,7 @@ async function aiPrepare(){
 function aiWorkerKill(){
   if(AI.worker){ try{ AI.worker.terminate(); }catch(e){} }
   AI.worker=null; AI.workerP=null; AI.workerExt=false;
+  if(typeof SPEC!=='undefined') SPEC.inflight=false;   // 処理役が止まれば、出ていた声紋の依頼も終わり
   Object.values(AI.pending).forEach(p=>p.rej(new Error('AIを止めました'))); AI.pending={};
 }
 // ms を付けると、その時間を過ぎても返事が無いとき失敗にする（v241: 「しっかり」の依頼・判定し直し）
@@ -9413,7 +9420,7 @@ function aiWorkerEnsure(opt){
     w.onmessage=({data})=>{
       const p=data && AI.pending[data.id];
       if(data.message==='progress'){ AI.progress='AIを準備中 '+data.progress+'%'; aiFabUpdate(); return; }
-      if(!p) return;
+      if(!p){ if(typeof SPEC!=='undefined' && SPEC.inflight && data.id===SPEC.reqId) SPEC.inflight=false; return; }
       delete AI.pending[data.id];
       if(data.message==='error') p.rej(new Error(data.text)); else p.res(data);
     };
@@ -9659,7 +9666,7 @@ function aiQ(sv, fn, tok){
   return p;
 }
 const AI_CLIP_KEYS=['clip','clip_sec','clip_bytes','clip_note','clip_off0','clip_off1'];
-const AI_LABEL_KEYS=['label_kind','label_ja','labeled_at'];
+const AI_LABEL_KEYS=['label_kind','label_ja','labeled_at','label_t0','label_t1','label_f0','label_f1'];
 function aiPutDet(rec){
   // 作られた時点の「消した回数」（このページの中だけで使う。記録には保存しない＝開き直すと数え直しになるため。監査 Major）
   if(rec._dg===undefined) rec._dg=AI_DGEN[rec.sv]||0;
@@ -9726,7 +9733,9 @@ async function aiTotalsReload(sv){
 const AI_DET_KEYS=['id','kind','manual','sv','ja','sci','species_id','max','count','t0','t1','lat','lng','acc','pos_t',
   'model','clip','clip_sec','clip_bytes','clip_note','marked','reason','created_at','updated_at',
   // v242 学習用: 人が付けた名前（label_kind: ok/other/nonbird/unknown/空＝取り消し・未）と、聞き取り区間の出どころ
-  'label_kind','label_ja','labeled_at','seg_id','seg_t0','clip_off0','clip_off1'];
+  'label_kind','label_ja','labeled_at','seg_id','seg_t0','clip_off0','clip_off1',
+  // v243 声紋で選んだ区間（名前と一組。声の中の秒・高さ Hz。null は区間なし＝声全体）
+  'label_t0','label_t1','label_f0','label_f1'];
 function aiDetPlain(d){ const o={}; AI_DET_KEYS.forEach(k=>{ if(d && d[k]!==undefined) o[k]=d[k]; }); return o; }
 // svs: 調査の uuid の並び（null なら全部）。withClips: 声の中身も読む
 async function aiSnapshot(svs, withClips){
@@ -9913,7 +9922,9 @@ const AI_CSV_COLS=['survey_id','survey_name','survey_date','detection_id','speci
   'max_confidence','count','start_time','end_time','latitude','longitude','gps_accuracy_m','manual','marked',
   'clip_file','clip_sec','clip_note','model','created_at','updated_at',
   // v242: 名前と聞き取り区間の出どころ。**必ず末尾に足す**
-  'label_kind','label_name','labeled_at','segment_id','segment_start','clip_offset_start','clip_offset_end'];
+  'label_kind','label_name','labeled_at','segment_id','segment_start','clip_offset_start','clip_offset_end',
+  // v243: 名前と一組の区間（声の中の秒・高さ Hz）。**必ず末尾に足す**
+  'label_t0','label_t1','label_f0','label_f1'];
 function aiSec3(x){ return (typeof x==='number' && isFinite(x)) ? Math.round(x*1000)/1000 : ''; }
 function aiTimeIso(ms){ return (typeof ms==='number' && isFinite(ms)) ? isoLocal(new Date(ms).toISOString()) : ''; }
 async function exportAiCSV(surveys, base){
@@ -9932,7 +9943,8 @@ async function exportAiCSV(surveys, base){
       manual:d.manual?1:0, marked:d.marked?1:0, clip_file:d.clip?'ai/'+aiWavName(d):'', clip_sec:d.clip?Math.round((d.clip_sec||0)*10)/10:'',
       clip_note:d.clip_note||'', model:d.model||'', created_at:isoLocal(d.created_at), updated_at:isoLocal(d.updated_at||d.created_at),
       label_kind:d.label_kind||'', label_name:d.label_ja||'', labeled_at:isoLocal(d.labeled_at||''), segment_id:d.seg_id||'',
-      segment_start:aiTimeIso(d.seg_t0), clip_offset_start:aiSec3(d.clip_off0), clip_offset_end:aiSec3(d.clip_off1) }; });
+      segment_start:aiTimeIso(d.seg_t0), clip_offset_start:aiSec3(d.clip_off0), clip_offset_end:aiSec3(d.clip_off1),
+      label_t0:aiSec3(d.label_t0), label_t1:aiSec3(d.label_t1), label_f0:d.label_f0!=null?Math.round(d.label_f0):'', label_f1:d.label_f1!=null?Math.round(d.label_f1):'' }; });
   const body=[AI_CSV_COLS.join(',')].concat(rows.map(r=>AI_CSV_COLS.map(c=>csvCell(r[c])).join(','))).join('\r\n');
   download(`${base}_ai_detections.csv`, '﻿'+body, 'text/csv;charset=utf-8');
   toast('鳴き声AIの検出CSVを書き出しました');
@@ -10318,6 +10330,340 @@ async function aiPlay(clipId){
   a.play().catch(end);
 }
 
+
+/* ---------- 声紋（スペクトログラム）を見て、選んだ部分を判別する（v243） ----------
+   計画: tasks/todo.md「声紋（スペクトログラム）を見て、選んだ部分を判別する」P1〜P7・補足・補足2・補足3（Codex 計画レビュー済み）
+   - 今の画面の上に重ねて開く（画面を離れない＝書きかけの観察・聞き取りはそのまま）。閉じても共有の処理役は止めない
+   - 展開する前に見出しで長さ・チャンネル数を確かめる（20MB・5分・2チャンネル・見込み120MB まで。分からない形式は断る）
+   - 判別は聞き取りを優先し、1件ずつ3秒単位で聞き取りの合間に依頼する。閉じる・切り替える・選び直すで世代を進め、遅れた結果は捨てる
+   - 録音メモの録音中は再生しない（録音に入るため）。再生中は聞き取りを止める（今の ▶ と同じ）
+   - 鳴き声AIの声に名前を付けるときは、選んだ区間も一緒に保存する（aiLabelSet の region） */
+const SPEC_MAX_BYTES=20*1024*1024, SPEC_MAX_SEC=300, SPEC_MAX_CH=2, SPEC_MAX_EXPAND=120*1024*1024, SPEC_MAX_COLS=6000;
+const SPEC_H=256, SPEC_N=1024;
+const SPEC={ gen:0, job:0, pcm:null, sr:AI_SR, hop:256, cols:0, fmax:12000, sel:null, src:null, det:null, res:null, resSel:null, band:false,
+  inflight:false, reqId:0, reqMs:30000 };
+  // inflight: 声紋の判別の依頼が処理役に出ている（同時に1件だけ）。reqId: その依頼の番号。
+  // 待ち時間（reqMs）が切れても処理役はまだ計算中のことがあるので、返事が届くか処理役が止まるまで inflight は下ろさない
+
+// ---- 見出しから長さとチャンネル数を読む（展開しない。DB の training_clips.audio_probe と同じ考え方） ----
+function specVint(u8, pos, keep){
+  if(pos>=u8.length) return null;
+  const b=u8[pos]; let n=1, mask=0x80;
+  while(n<=8 && !(b&mask)){ n++; mask>>=1; }
+  if(n>8 || pos+n>u8.length) return null;
+  let v=keep ? b : (b&(mask-1));
+  for(let k=1;k<n;k++) v=v*256+u8[pos+k];
+  return { v, n, unknown: !keep && v===Math.pow(2, 7*n)-1 };
+}
+function audioProbe(u8){
+  const dv=new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const tag=(o,l=4)=>String.fromCharCode(...u8.subarray(o,o+l));
+  try{
+    if(u8.length>=12 && tag(0)==='RIFF' && tag(8)==='WAVE'){
+      let o=12, ch=0, sr=0, bits=0, bytes=0;
+      while(o+8<=u8.length){ const id=tag(o), len=dv.getUint32(o+4,true), body=o+8;
+        if(id==='fmt ' && len>=16){ ch=dv.getUint16(body+2,true); sr=dv.getUint32(body+4,true); bits=dv.getUint16(body+14,true); }
+        else if(id==='data'){ if(body+len>u8.length) return { err:'WAV が途中で切れています' }; bytes=len; }
+        o=body+len+(len&1); }
+      if(!ch || !sr || !bits || !bytes) return { err:'WAV の作りが読めません' };
+      return { fmt:'wav', sec:bytes/(sr*ch*(bits/8)), ch };
+    }
+    if(u8.length>=12 && tag(4)==='ftyp'){
+      const C=new Set(['moov','trak','mdia','minf','stbl','moof','traf','mvex','edts']);
+      let mvhd=0, ts=0, dur=0, ch=0;
+      const walk=(s,e)=>{ let p=s; while(p+8<=e){ let size=dv.getUint32(p), hdr=8; const t=tag(p+4);
+          if(size===1){ size=Number(dv.getBigUint64(p+8)); hdr=16; } else if(size===0) size=e-p;
+          if(size<hdr || p+size>e) throw new Error('box');
+          const b=p+hdr;
+          if(t==='mvhd'){ const v=u8[b]; const t2=v===1?dv.getUint32(b+20):dv.getUint32(b+12), d2=v===1?Number(dv.getBigUint64(b+24)):dv.getUint32(b+16); mvhd=t2?d2/t2:0; }
+          else if(t==='mdhd'){ ts=dv.getUint32(b+(u8[b]===1?20:12)); }
+          else if(t==='stsd' && !ch){ ch=dv.getUint16(b+8+24); }
+          else if(t==='trun'){ const fl=(u8[b+1]<<16)|(u8[b+2]<<8)|u8[b+3], cnt=dv.getUint32(b+4);
+            if(fl&0x100){ let q=b+8+((fl&1)?4:0)+((fl&4)?4:0); const per=[0x100,0x200,0x400,0x800].filter(f=>fl&f).length*4;
+              if(q+per*cnt>p+size) throw new Error('trun');
+              for(let k=0;k<cnt;k++){ dur+=dv.getUint32(q); q+=per; } } }
+          if(C.has(t)) walk(b, p+size);
+          p+=size; } };
+      walk(0, u8.length);
+      const sec=mvhd || (ts?dur/ts:0);
+      if(!sec || !ch) return { err:'M4A の長さかチャンネル数が分かりません' };
+      return { fmt:'m4a', sec, ch };
+    }
+    if(u8[0]===0x1a && u8[1]===0x45 && u8[2]===0xdf && u8[3]===0xa3){
+      const M=new Set([0x18538067,0x1F43B675,0xA0,0x1654AE6B,0xAE,0xE1]);
+      let p=0, scale=1e6, ctc=0, last=0, ch=0, audio=false;
+      while(p<u8.length){ const id=specVint(u8,p,true); if(!id) return { err:'WebM の作りが読めません' };
+        const sz=specVint(u8,p+id.n,false); if(!sz) return { err:'WebM の作りが読めません' };
+        const b=p+id.n+sz.n;
+        if(M.has(id.v)){ if(id.v===0xE1){ audio=true; ch=ch||1; } p=b; continue; }
+        if(sz.unknown || b+sz.v>u8.length) return { err:'WebM が途中で切れています' };
+        const uint=()=>{ let v=0; for(let k=0;k<sz.v;k++) v=v*256+u8[b+k]; return v; };
+        if(id.v===0x2AD7B1) scale=uint()||scale; else if(id.v===0xE7) ctc=uint();
+        else if(id.v===0x9F && audio) ch=uint();
+        else if(id.v===0xA3 || id.v===0xA1){ const tn=specVint(u8,b,false); if(tn){ const rel=dv.getInt16(b+tn.n); last=Math.max(last, ctc+rel); } }
+        p=b+sz.v; }
+      const sec=last*scale/1e9;
+      if(!sec || !ch) return { err:'WebM の長さかチャンネル数が分かりません' };
+      return { fmt:'webm', sec, ch };
+    }
+    if(tag(0)==='OggS'){
+      let p=0, gran=0, ch=0, rate=0;
+      const oh=(function(){ for(let i=0;i<Math.min(u8.length-8,512);i++) if(tag(i,8)==='OpusHead') return i; return -1; })();
+      if(oh>=0){ ch=u8[oh+9]; rate=48000; }
+      else { for(let i=0;i<Math.min(u8.length-16,512);i++) if(u8[i]===1 && tag(i+1,6)==='vorbis'){ ch=u8[i+11]; rate=dv.getUint32(i+12,true); break; } }
+      while(p<u8.length){ if(tag(p)!=='OggS' || p+27>u8.length) return { err:'Ogg が途中で切れています' };
+        const ns=u8[p+26]; let body=0; for(let k=0;k<ns;k++) body+=u8[p+27+k];
+        const g=Number(dv.getBigInt64(p+6,true)); if(g>0) gran=g;
+        p+=27+ns+body; if(p>u8.length) return { err:'Ogg が途中で切れています' }; }
+      if(!rate || !ch || !gran) return { err:'Ogg の長さかチャンネル数が分かりません' };
+      return { fmt:'ogg', sec:gran/rate, ch };
+    }
+  }catch(e){ return { err:'音声の作りが読めません' }; }
+  return { err:'この形式の音声は開けません（WAV・M4A・WebM・Ogg のみ）' };
+}
+function specLimitProblem(sec, ch, bytes){
+  if(bytes>SPEC_MAX_BYTES) return 'ファイルが 20MB を超えています';
+  if(!(sec>0)) return '長さが分かりません';
+  if(sec>SPEC_MAX_SEC) return `長さが5分を超えています（${Math.round(sec)}秒）。長い録音は長時間録音の道具で開いてください`;
+  if(!(ch>=1)) return 'チャンネル数が分かりません';
+  if(ch>SPEC_MAX_CH) return `チャンネルが ${ch} あります（2 まで）`;
+  if(sec*AI_SR*4*ch>SPEC_MAX_EXPAND) return '展開すると大きくなりすぎます';
+  return '';
+}
+async function specDecode(u8){
+  const pr=audioProbe(u8);
+  if(pr.err) throw new Error(pr.err);
+  const bad=specLimitProblem(pr.sec, pr.ch, u8.length); if(bad) throw new Error(bad);
+  const ac=new (window.AudioContext||window.webkitAudioContext)({ sampleRate:AI_SR });
+  let buf; try{ buf=await ac.decodeAudioData(u8.buffer.slice(u8.byteOffset, u8.byteOffset+u8.byteLength)); } finally{ try{ ac.close(); }catch(e){} }
+  const bad2=specLimitProblem(buf.duration, buf.numberOfChannels, 0); if(bad2) throw new Error(bad2);   // 展開した後にも確かめ直す
+  const n=buf.length, out=new Float32Array(n);
+  for(let c=0;c<buf.numberOfChannels;c++){ const d=buf.getChannelData(c); for(let i=0;i<n;i++) out[i]+=d[i]/buf.numberOfChannels; }
+  return out;
+}
+
+// ---- 重ね画面 ----
+function specClose(){
+  SPEC.gen++; SPEC.job++; aiPlayStop();
+  SPEC.pcm=null; SPEC.res=null; SPEC.resSel=null; SPEC.sel=null; SPEC.src=null; SPEC.det=null;
+  const ov=document.getElementById('specOv'); if(ov) ov.remove();
+}
+function specOverlayHtml(title){
+  return `<div class="spec-head"><b>${esc(title)}</b><button type="button" class="btn" style="width:auto;padding:6px 12px;" onclick="specClose()">✕ 閉じる</button></div>
+    <div id="specMsg" class="small muted">読み込み中…</div>
+    <div id="specWrap" style="overflow-x:auto; position:relative; background:#111; border:1px solid #ccc;">
+      <div style="position:relative; display:inline-block;"><canvas id="specCv" height="${SPEC_H}"></canvas><canvas id="specSel" height="${SPEC_H}" style="position:absolute;left:0;top:0;touch-action:none;"></canvas></div></div>
+    <div id="specAx" class="tiny muted"></div>
+    <div class="row" style="gap:6px; flex-wrap:wrap; margin-top:6px;">
+      <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specFmax()">高さ: <span id="specFm">0〜12kHz</span></button>
+      <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specPlay()">▶ 選んだ部分</button>
+      <button type="button" class="btn primary" style="width:auto;padding:6px 10px;" onclick="specJudge()">この部分を判別</button>
+      <label class="small" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="specBand" style="width:auto;" onchange="SPEC.band=this.checked"> 高さの範囲も使う</label>
+      <button type="button" class="btn ghost" style="width:auto;padding:6px 10px;" onclick="specSelClear()">選び直す</button>
+    </div>
+    <div class="tiny muted">図の上をなぞると、時間と高さの範囲を選べます（選ばなければ全体）。</div>
+    <div id="specRes"></div>`;
+}
+async function specOpen(src){
+  specClose();
+  const gen=++SPEC.gen;
+  SPEC.src=src; SPEC.fmax=12000; SPEC.band=false;
+  const ov=document.createElement('div'); ov.id='specOv'; ov.className='spec-ov';
+  const title=src.kind==='clip' ? '声紋（聞こえた鳥の声）' : src.kind==='audio' ? '声紋（録音メモ）' : '声紋（端末の音声ファイル）';
+  ov.innerHTML=specOverlayHtml(title); document.body.appendChild(ov);
+  const msg=t=>{ const m=document.getElementById('specMsg'); if(m && gen===SPEC.gen) m.textContent=t; };
+  try{
+    let pcm=null, det=null;
+    if(src.kind==='clip'){
+      const c=await aiClipGet(src.clip); if(!c || !c.pcm) throw new Error('声が見つかりませんでした');
+      if((c.sr||AI_SR)!==AI_SR) throw new Error('この声は開けません（標本化周波数が違います）');
+      pcm=new Float32Array(c.pcm.length); for(let i=0;i<pcm.length;i++) pcm[i]=c.pcm[i]/32768;
+      if(src.det){ try{ det=await aiReq((await aiDb()).transaction('det').objectStore('det').get(src.det)); }catch(e){} }
+    } else if(src.kind==='audio'){
+      const r=await AudioDB.get(src.id); if(!r || !r.blob) throw new Error('録音が見つかりませんでした');
+      if(r.blob.size>SPEC_MAX_BYTES) throw new Error('ファイルが 20MB を超えています');
+      if(Number(r.dur)>SPEC_MAX_SEC) throw new Error('長さが5分を超えています');
+      pcm=await specDecode(new Uint8Array(await r.blob.arrayBuffer()));
+    } else {
+      const f=await new Promise(res=>{ const inp=document.createElement('input'); inp.type='file'; inp.accept='audio/*';
+        inp.onchange=()=>res(inp.files&&inp.files[0]||null); inp.addEventListener('cancel', ()=>res(null)); inp.click(); });
+      if(gen!==SPEC.gen) return;
+      if(!f){ specClose(); return; }
+      if(f.size>SPEC_MAX_BYTES) throw new Error('ファイルが 20MB を超えています');
+      pcm=await specDecode(new Uint8Array(await f.arrayBuffer()));
+    }
+    if(gen!==SPEC.gen) return;   // 読み込みの間に閉じた・別の声を開いた → 何も反映しない（名前の保存先を取り違えない）
+    SPEC.pcm=pcm; SPEC.det=det;
+    await specDraw(gen);
+  }catch(e){ msg('この音は開けませんでした: '+(e&&e.message||e)); }
+}
+async function specDraw(gen){
+  const pcm=SPEC.pcm; if(!pcm) return;
+  const n=pcm.length, hop=Math.max(256, Math.ceil(n/SPEC_MAX_COLS)), cols=Math.max(1, Math.floor(Math.max(0, n-SPEC_N)/hop)+1);
+  SPEC.hop=hop; SPEC.cols=cols;
+  const cv=document.getElementById('specCv'), sc=document.getElementById('specSel'); if(!cv) return;
+  cv.width=cols; sc.width=cols;
+  const ctx=cv.getContext('2d'), bins=Math.floor(SPEC.fmax/(AI_SR/SPEC_N));
+  const win=new Float32Array(SPEC_N); for(let i=0;i<SPEC_N;i++) win[i]=0.5-0.5*Math.cos(2*Math.PI*i/SPEC_N);
+  const db=new Float32Array(cols*bins); let mx=-1e9;
+  for(let c=0;c<cols;c++){
+    if(c%300===0){ await new Promise(r=>setTimeout(r,0)); if(gen!==SPEC.gen) return; }   // 画面を固めない
+    const re=new Float64Array(SPEC_N), im=new Float64Array(SPEC_N), o=c*hop;
+    for(let i=0;i<SPEC_N;i++) re[i]=(pcm[o+i]||0)*win[i];
+    specFft(re, im);
+    for(let k=0;k<bins;k++){ const v=10*Math.log10(re[k]*re[k]+im[k]*im[k]+1e-12); db[c*bins+k]=v; if(v>mx) mx=v; }
+  }
+  const img=ctx.createImageData(cols, SPEC_H), lo=mx-80;
+  for(let c=0;c<cols;c++) for(let y=0;y<SPEC_H;y++){
+    const k=Math.min(bins-1, Math.floor((SPEC_H-1-y)/SPEC_H*bins)), v=Math.max(0, Math.min(1, (db[c*bins+k]-lo)/80)), p=(y*cols+c)*4;
+    img.data[p]=Math.min(255, 510*v)|0; img.data[p+1]=Math.max(0, Math.min(255, 460*(v-0.4)))|0; img.data[p+2]=Math.max(0, Math.min(255, 255*(0.6-Math.abs(v-0.3))))|0; img.data[p+3]=255;
+  }
+  ctx.putImageData(img, 0, 0);
+  const sec=n/AI_SR;
+  const m=document.getElementById('specMsg'); if(m) m.textContent='';
+  const ax=document.getElementById('specAx'); if(ax) ax.textContent=`横: 0〜${sec.toFixed(2)}秒 ／ 縦: 0〜${SPEC.fmax/1000}kHz`;
+  const fm=document.getElementById('specFm'); if(fm) fm.textContent=`0〜${SPEC.fmax/1000}kHz`;
+  specSelBind(); specSelDraw();
+}
+function specFft(re, im){
+  const n=re.length;
+  for(let i=1,j=0;i<n;i++){ let b=n>>1; for(;j&b;b>>=1) j^=b; j^=b; if(i<j){ let t=re[i]; re[i]=re[j]; re[j]=t; t=im[i]; im[i]=im[j]; im[j]=t; } }
+  for(let len=2;len<=n;len<<=1){ const a=-2*Math.PI/len, wr=Math.cos(a), wi=Math.sin(a);
+    for(let i=0;i<n;i+=len){ let cr=1, ci=0;
+      for(let j=0;j<len/2;j++){ const ur=re[i+j], ui=im[i+j], xr=re[i+j+len/2], xi=im[i+j+len/2];
+        const vr=xr*cr-xi*ci, vi=xr*ci+xi*cr; re[i+j]=ur+vr; im[i+j]=ui+vi; re[i+j+len/2]=ur-vr; im[i+j+len/2]=ui-vi;
+        const t=cr*wr-ci*wi; ci=cr*wi+ci*wr; cr=t; } } }
+}
+function specFmax(){ if(!SPEC.pcm) return; SPEC.fmax=SPEC.fmax===12000?24000:12000; SPEC.sel=null; specResClear(); specDraw(SPEC.gen); }
+function specResClear(){ SPEC.job++; SPEC.res=null; SPEC.resSel=null; const b=document.getElementById('specRes'); if(b) b.innerHTML=''; }
+function specSelClear(){ SPEC.sel=null; specResClear(); specSelDraw(); }
+function specSelBind(){
+  const sc=document.getElementById('specSel'); if(!sc || sc._bound) return; sc._bound=true;
+  let start=null;
+  const pt=e=>{ const r=sc.getBoundingClientRect(); return { x:Math.max(0, Math.min(sc.width, (e.clientX-r.left)*sc.width/r.width)), y:Math.max(0, Math.min(SPEC_H, (e.clientY-r.top)*SPEC_H/r.height)) }; };
+  sc.addEventListener('pointerdown', e=>{ start=pt(e); sc.setPointerCapture(e.pointerId); e.preventDefault(); });
+  sc.addEventListener('pointermove', e=>{ if(!start) return; specSetSel(start, pt(e)); });
+  sc.addEventListener('pointerup', e=>{ if(!start) return; const p=pt(e); if(Math.abs(p.x-start.x)>2) specSetSel(start, p); start=null; });
+}
+function specSetSel(a, b){
+  const sec=SPEC.pcm.length/AI_SR, toT=x=>Math.min(sec, x*SPEC.hop/AI_SR), toF=y=>Math.max(0, Math.min(SPEC.fmax, (SPEC_H-y)/SPEC_H*SPEC.fmax));
+  const t0=toT(Math.min(a.x,b.x)), t1=toT(Math.max(a.x,b.x)), f0=toF(Math.max(a.y,b.y)), f1=toF(Math.min(a.y,b.y));
+  SPEC.sel={ t0, t1, f0, f1 };
+  specResClear(); specSelDraw();
+}
+function specSelDraw(){
+  const sc=document.getElementById('specSel'); if(!sc) return;
+  const c=sc.getContext('2d'); c.clearRect(0,0,sc.width,sc.height);
+  const s=SPEC.sel; if(!s) return;
+  const x0=s.t0*AI_SR/SPEC.hop, x1=s.t1*AI_SR/SPEC.hop, y0=SPEC_H-s.f1/SPEC.fmax*SPEC_H, y1=SPEC_H-s.f0/SPEC.fmax*SPEC_H;
+  c.strokeStyle='#0f0'; c.lineWidth=2; c.strokeRect(x0, y0, Math.max(2,x1-x0), Math.max(2,y1-y0));
+}
+function specSelPcm(){
+  const p=SPEC.pcm, s=SPEC.sel; if(!p) return null;
+  if(!s) return p;
+  return p.subarray(Math.floor(s.t0*AI_SR), Math.max(Math.floor(s.t0*AI_SR)+1, Math.ceil(s.t1*AI_SR)));
+}
+function specPlay(){
+  if(REC){ toast('録音中は再生できません（再生した音が録音に入るため）'); return; }
+  const p=specSelPcm(); if(!p || !p.length) return;
+  aiPlayStop();
+  const i16=new Int16Array(p.length); for(let i=0;i<p.length;i++) i16[i]=Math.max(-32768, Math.min(32767, Math.round(p[i]*32767)));
+  aiPause('play');
+  const a=new Audio(URL.createObjectURL(aiWav(i16, AI_SR))); _aiPlayer=a;
+  const end=()=>{ if(_aiPlayer===a) aiPlayStop(); };
+  a.onended=end; a.onpause=end; a.onerror=end; a.play().catch(end);
+}
+// 選んだ部分の3秒区間の作り方: 3秒未満は前後を無音で足して3秒、それ以上は1.5秒ずつずらし、最後の余りは終わりから3秒
+function specWindows(p){
+  const W=AI_WIN, out=[];
+  if(p.length<W){ const w=new Float32Array(W); w.set(p, Math.floor((W-p.length)/2)); return { wins:[w], padded:true }; }
+  const step=W/2; let s=0;
+  for(; s+W<=p.length; s+=step) out.push(p.slice(s, s+W));
+  if(s-step+W<p.length) out.push(p.slice(p.length-W));
+  return { wins:out, padded:false };
+}
+async function specBand(p, f0, f1){
+  const ctx=new OfflineAudioContext(1, p.length, AI_SR), b=ctx.createBuffer(1, p.length, AI_SR); b.copyToChannel(p, 0);
+  const src=ctx.createBufferSource(); src.buffer=b; let node=src;
+  for(const [type, f] of [['highpass', Math.max(20, f0)], ['highpass', Math.max(20, f0)], ['lowpass', Math.min(AI_SR/2-100, f1)], ['lowpass', Math.min(AI_SR/2-100, f1)]]){
+    const q=ctx.createBiquadFilter(); q.type=type; q.frequency.value=f; q.Q.value=0.707; node.connect(q); node=q; }
+  node.connect(ctx.destination); src.start();
+  return (await ctx.startRendering()).getChannelData(0).slice();
+}
+async function specAskWin(w, job){
+  // 聞き取りを優先し、声紋の判別は同時に1件だけ: 聞き取りの判定・前の声紋の依頼が処理中なら終わるまで待つ
+  while(AIL.busy!==null || SPEC.inflight){ await new Promise(r=>setTimeout(r, 50)); if(job!==SPEC.job) return null; }
+  if(job!==SPEC.job) return null;   // 送る直前にも確かめる（中止・押し直し・閉じた後は送らない）
+  SPEC.inflight=true;
+  const pr=aiAsk({ message:'scores', pcm:w }, [w.buffer], SPEC.reqMs);
+  SPEC.reqId=AI.reqId;   // aiAsk はその場で番号を付けて送る
+  try{ const r=await pr; SPEC.inflight=false; return job===SPEC.job ? r : null; }
+  catch(e){
+    // 返事が無いまま待ち時間が切れた: 処理役がまだ計算中かもしれないので印は残す（遅れて届いた返事か、処理役の停止で下ろす）
+    if(!/返事がありません/.test(String(e&&e.message))) SPEC.inflight=false;
+    throw e;
+  }
+}
+async function specJudge(){
+  if(!SPEC.pcm) return;
+  if(AI.state!=='ready'){ toast(AI.state==='nosupport'?'この端末では鳴き声AIを使えません':'先に鳴き声AIを取り込んでください（調査の画面の「🐦 鳴き声AIの設定」から）', 5000); return; }
+  const job=++SPEC.job, sel=SPEC.sel?Object.assign({}, SPEC.sel):null, band=!!(SPEC.band && sel);
+  const box=document.getElementById('specRes');
+  const show=h=>{ if(job===SPEC.job && box && box.isConnected) box.innerHTML=h; };
+  show(`<div class="small muted">判別しています…（聞き取り中は、その合間に進めます） <button type="button" class="btn ghost" style="width:auto;padding:4px 8px;" onclick="specResClear()">中止</button></div>`);
+  try{
+    await aiWorkerEnsure();
+    if(job!==SPEC.job) return;
+    const raw=specSelPcm(); const used=band ? await specBand(raw, sel.f0, sel.f1) : raw;
+    if(job!==SPEC.job) return;
+    const P=AI.prep, best=new Map(); let human=0;
+    const run=async(p, onRow)=>{ const { wins, padded }=specWindows(p);
+      for(const w of wins){ const r=await specAskWin(w, job); if(!r) return null; onRow(r.scores.subarray(0, r.C)); }
+      return padded; };
+    const padded=await run(used, row=>{
+      const cand = AICFG.hk ? P.hkIdx : row.keys();
+      for(const i of cand){ if(P.nonBird.has(i)) continue; const name=P.idxName.get(i) || (P.labels[i]&&P.labels[i].ja) || '';
+        if(name && row[i]>(best.get(name)||0)) best.set(name, row[i]); }
+      if(!band && P.humanIdx!==undefined) human=Math.max(human, row[P.humanIdx]); });
+    if(padded===null) return;
+    if(band && P.humanIdx!==undefined){   // 人の声の疑いは帯を削る前の音で見る
+      const ok=await run(raw, row=>{ human=Math.max(human, row[P.humanIdx]); }); if(ok===null) return; }
+    const top=[...best.entries()].filter(([,v])=>v>=0.01).sort((a,b)=>b[1]-a[1]).slice(0,5);   // 1% 未満は候補に出さない
+    SPEC.res=top; SPEC.resSel=sel;
+    const canLabel=SPEC.src && SPEC.src.kind==='clip' && SPEC.det && SPEC.det.kind==='det' && window.WRITE_OK;
+    const notes=[]; if(padded) notes.push('3秒に満たないので、前後を無音で足して判別しました'); if(band) notes.push(`${Math.round(sel.f0)}〜${Math.round(sel.f1)}Hz だけを残して判別しました`);
+    show(`<div class="card"><div class="small"><b>判別の結果</b>（${sel?`${sel.t0.toFixed(2)}〜${sel.t1.toFixed(2)}秒`:'全体'}）</div>
+      ${top.length?top.map(([n,v],k)=>`<div class="row" style="gap:6px;align-items:center;padding:3px 0;"><span class="grow">${k+1}. ${esc(n)} <span class="small muted">${Math.round(v*100)}%</span></span>
+        ${canLabel?`<button type="button" class="btn" style="width:auto;padding:4px 8px;" data-n="${esc(n)}" onclick="specLabel('name', this.dataset.n)">これにする</button>`:''}</div>`).join(''):'<div class="small muted">候補はありませんでした</div>'}
+      ${human>=AI_HUMAN_THR?'<div class="tiny" style="color:#b45309;">人の声が入っている疑いがあります</div>':''}
+      ${notes.map(t=>`<div class="tiny muted">${esc(t)}</div>`).join('')}
+      <div class="tiny muted">確からしさは、選んだ範囲の3秒区間ごとの判定の最大値です（正解の確率ではありません）。</div>
+      ${canLabel?`<div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap;"><span class="tiny muted">この区間を「本当は」:</span>
+        <button type="button" class="btn" style="width:auto;padding:4px 8px;" onclick="specLabel('other')">別の種…</button>
+        <button type="button" class="btn" style="width:auto;padding:4px 8px;" onclick="specLabel('nonbird')">鳥ではない</button>
+        <button type="button" class="btn" style="width:auto;padding:4px 8px;" onclick="specLabel('unknown')">? 分からない</button></div>`:''}</div>`);
+  }catch(e){ show(`<div class="small" style="color:#b91c1c;">判別できませんでした: ${esc(e&&e.message||e)}</div>`); }
+}
+// 名前を付ける: いま表示している結果の区間（resSel）にだけ効く。高さが表示の全体なら高さは付けない
+async function specLabel(what, name){
+  const det=SPEC.det, gen=SPEC.gen, res=SPEC.res; if(!det || !res) return;
+  const s=SPEC.resSel, sec=SPEC.pcm.length/AI_SR;
+  const r3=x=>Math.round(x*1000)/1000;
+  let region=null;
+  if(s){ const fullF=s.f0<=SPEC.fmax*0.01 && s.f1>=SPEC.fmax*0.99;
+    region={ t0:r3(s.t0), t1:r3(Math.min(s.t1, sec)), f0:fullF?null:Math.round(s.f0), f1:fullF?null:Math.round(s.f1) }; }
+  let kind, ja='';
+  if(what==='name'){ ja=name; kind = (det.ja===name && !det.manual) ? 'ok' : 'other'; }
+  else if(what==='other'){ const v=prompt('本当は何の鳥でしたか？（種名）'); if(v==null) return; kind='other'; ja=v; }
+  else kind=what;
+  // 聞いている間に閉じた・別の声を開いた・結果が変わった → 付けない
+  if(gen!==SPEC.gen || SPEC.det!==det || SPEC.res!==res) return;
+  const ok=await aiLabelSet(det.id, kind, kind==='other'?ja:'', region);
+  if(ok){ toast('この区間に名前を付けました', 2500);
+    let fresh=null; try{ fresh=await aiReq((await aiDb()).transaction('det').objectStore('det').get(det.id)); }catch(e){}
+    if(fresh && gen===SPEC.gen && SPEC.det && SPEC.det.id===det.id) SPEC.det=fresh; }
+}
+
 /* ---------- 浮きボタン・ポップアップ（#main の外。画面の組み直しとは無関係に動く） ---------- */
 // 知らせ方（v230・2026-11-08 ユーザー決定「左下のボタンにまとめる」）:
 // 聞こえた鳥は画面に積まない。左下のボタンが「🐦 ウグイス ほか2」と変わるだけで、押すと新しく聞こえた鳥の小さな一覧が開く
@@ -10458,14 +10804,31 @@ function aiLabelValid(rec, kind, ja){
   if(kind==='other' && !(typeof ja==='string' && ja && speciesByName(ja))) return false;
   return true;
 }
-function aiLabelSet(id, kind, ja){
+// 区間の決まり（DB の training_clips.region_problem と同じ）: 時間は両方 null か 0 ≤ 始め < 終わり ≤ 声の長さ（＋0.05秒）、
+// 高さは両方 null か 0 ≤ 下 < 上 ≤ 24000
+function aiRegionProblem(r, sec){
+  if(!r) return '';
+  const fin=v=>v==null || (typeof v==='number' && isFinite(v));
+  if(![r.t0,r.t1,r.f0,r.f1].every(fin)) return '区間の値が数ではありません';
+  if((r.t0==null)!==(r.t1==null)) return '区間の時間は始めと終わりの両方が要ります';
+  if(r.t0!=null && !(r.t0>=0 && r.t0<r.t1 && (sec==null || r.t1<=sec+0.05))) return '区間の時間が正しくありません';
+  if((r.f0==null)!==(r.f1==null)) return '区間の高さは下と上の両方が要ります';
+  if(r.f0!=null && !(r.f0>=0 && r.f0<r.f1 && r.f1<=24000)) return '区間の高さが正しくありません';
+  return '';
+}
+// region … 声紋で選んだ区間（名前と一組）。無ければ区間なし（付け直し・取り消しで前の区間は残さない）
+function aiLabelSet(id, kind, ja, region){
   if(!writeAllowed()) return Promise.resolve(false);
   return (async()=>{
     let cur=null; try{ const db=await aiDb(); cur=await aiReq(db.transaction('det').objectStore('det').get(id)); }catch(e){}
     if(!cur || cur.kind!=='det') return false;
     ja=kind==='other' ? String(ja||'').trim() : '';
     if(!aiLabelValid(cur, kind, ja)){ toast(kind==='other'?'その名前の種が見つかりません（種の一覧の名前で入れてください）':'この声には付けられません'); return false; }
-    const at=nowISO(), val={ label_kind:kind, label_ja:ja, labeled_at:at };
+    const reg=region||null, bad=aiRegionProblem(reg, cur.clip_sec||null);
+    if(bad){ toast(bad); return false; }
+    const at=nowISO(), val={ label_kind:kind, label_ja:ja, labeled_at:at,
+      label_t0:reg&&reg.t0!=null?reg.t0:null, label_t1:reg&&reg.t1!=null?reg.t1:null,
+      label_f0:reg&&reg.f0!=null?reg.f0:null, label_f1:reg&&reg.f1!=null?reg.f1:null };
     const live=AIL.events.find(e=>e.rec.id===id); if(live) Object.assign(live.rec, val);
     const ok=await aiQ(cur.sv, async()=>{ const db=await aiDb(); const tx=db.transaction('det','readwrite'); const st=tx.objectStore('det');
       const c=await aiReq(st.get(id)); if(!c) return false;   // 消した後なら何もしない（復活させない）
@@ -10520,6 +10883,7 @@ async function aiListLoad(sv){
         <div class="grow"><b>${esc(d.ja)}</b> <span class="small muted">${d.manual?'自分で残した音':`${Math.round(d.max*100)}% ・ ${d.count}回`} ・ ${hms(d.t0)}〜${hms(d.t1)}</span>
           ${d.clip_note?`<div class="tiny muted">${esc(d.clip_note)}</div>`:''}</div>
         ${d.clip?`<button type="button" class="btn" style="width:auto; padding:8px 12px;" onclick="aiPlay('${esc(d.clip)}')">▶</button>`:''}
+        ${d.clip?`<button type="button" class="btn" style="width:auto; padding:8px 10px;" title="声紋" data-c="${esc(d.clip)}" data-d="${esc(d.id)}" onclick="specOpen({kind:'clip', clip:this.dataset.c, det:this.dataset.d})">〰</button>`:''}
         ${roBtn(`<button type="button" class="btn${d.marked?' primary':''}" style="width:auto; padding:8px 12px;" data-id="${esc(d.id)}" onclick="aiListMark(this.dataset.id, ${d.marked?'false':'true'})">${d.marked?'★':'☆'}</button>`)}
       </div>
       ${roBtn(`<div class="row ailabel" style="gap:4px; margin-top:6px; flex-wrap:wrap;">
@@ -14152,7 +14516,9 @@ async function exportMediaZip(surveys, base){
 // source: ai／ai_manual／memo／memo_flight。source_id: 検出 id／録音 id（AudioDB の id。ZIP の中の名前とは別）
 const TRAIN_COLS=['file','source','source_id','label_kind','label_ja','label_species_id','labeled_at','labeled_by','label_source',
   'candidate_ja','ai_ja','ai_max','model','survey_uuid','survey_name','site_name','visit_id','recorded_at','duration_sec',
-  'latitude','longitude','recordist','origin_id','origin_offset_start','origin_offset_end','individual_key','app_version'];
+  'latitude','longitude','recordist','origin_id','origin_offset_start','origin_offset_end','individual_key','app_version',
+  // v243: 名前と一組の区間（列があれば DB は新しい形として扱う。空は区間なし）
+  'label_t0','label_t1','label_f0','label_f1'];
 function trainingLabelRows(surveys, audioItems, flAudioItems, aiItems, aiClipById, files){
   const inZip=new Set(files.map(f=>f.name)), svOf=new Map(surveys.map(s=>[s.uuid, s])), ver=APP_VERSION.split('（')[0];
   const base=s=>({ survey_uuid:s.uuid, survey_name:s.name||'', site_name:s.location_name||s.name||'', visit_id:s.uuid,
@@ -14170,7 +14536,8 @@ function trainingLabelRows(surveys, audioItems, flAudioItems, aiItems, aiClipByI
       candidate_ja:d.manual?'':(d.ja||''), ai_ja:d.manual?'':(d.ja||''), ai_max:d.manual?'':(typeof d.max==='number'?Math.round(d.max*1000)/1000:''),
       model:d.model||'', recorded_at:aiTimeIso(typeof c.t0==='number'?c.t0:d.t0), duration_sec:aiSec3(d.clip_sec),
       latitude:ll[0], longitude:ll[1], origin_id:d.seg_id?'aiseg:'+d.seg_id:'',
-      origin_offset_start:d.seg_id?aiSec3(d.clip_off0):'', origin_offset_end:d.seg_id?aiSec3(d.clip_off1):'', individual_key:'' }));
+      origin_offset_start:d.seg_id?aiSec3(d.clip_off0):'', origin_offset_end:d.seg_id?aiSec3(d.clip_off1):'', individual_key:'',
+      label_t0:aiSec3(d.label_t0), label_t1:aiSec3(d.label_t1), label_f0:d.label_f0!=null?Math.round(d.label_f0):'', label_f1:d.label_f1!=null?Math.round(d.label_f1):'' }));
   }
   const memo=(it, isFl)=>{
     const name=isFl ? flightAudioFilename(it.f,it.i,it.a) : audioFilename(it.o,it.i,it.a); if(!inZip.has(name)) return;
@@ -14181,7 +14548,8 @@ function trainingLabelRows(surveys, audioItems, flAudioItems, aiItems, aiClipByI
       label_kind:'', label_ja:'', label_species_id:'', labeled_at:'', labeled_by:'', label_source:'',
       candidate_ja:rec.species_name_snapshot||'', ai_ja:'', ai_max:'', model:'', recorded_at:isFinite(start)?aiTimeIso(start):'',
       duration_sec:dur?Math.round(dur*1000)/1000:'', latitude:ll[0], longitude:ll[1], origin_id:it.a.id?'memo:'+it.a.id:'',
-      origin_offset_start:0, origin_offset_end:dur?Math.round(dur*1000)/1000:'', individual_key:rec.individual_key||'' }));
+      origin_offset_start:0, origin_offset_end:dur?Math.round(dur*1000)/1000:'', individual_key:rec.individual_key||'',
+      label_t0:'', label_t1:'', label_f0:'', label_f1:'' }));
   };
   audioItems.forEach(it=>memo(it, false)); flAudioItems.forEach(it=>memo(it, true));
   return rows;
