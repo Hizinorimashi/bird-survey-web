@@ -424,7 +424,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v245（2026-11-09 声紋を見やすく・選んだ高さだけ鳴らす）';
+const APP_VERSION = 'v246（2026-11-11 声紋は全体を画面に収める・人の声が入った声も残す）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -9355,7 +9355,7 @@ function renderMediaPanel(field){
    - 「人が聞きたい（AIL.want）」と「一時停止の理由（AIL.reasons）」を分ける。
      マイクを使うのは、理由が空で・人が聞きたくて・同じ調査が有効で・画面が見えていて・保存できるときだけ（aiCanRun）
    - 保存済みの声を自動で消したり入れ替えたりしない。消すのは人が押したときだけ
-   - AIが人の声と判定した区間を含む声は保存しない（AIが聞き逃すことはある）
+   - AIが人の声と判定した区間を含む声も保存し、clip_note に「人の声を含む」と印を付ける（v246 ユーザー決定。以前は保存しなかった）
    - 画面の組み直し（render）は呼ばない（入力中の値・離脱確認を壊さない）
    ============================================================ */
 const AI_SR=48000, AI_WIN=144000;            // 3秒区間（重ねずに順に判別）
@@ -9397,6 +9397,7 @@ function aiCfgHtml(){
 }
 const AI_MAX_PER_WIN=3;                       // 1つの3秒区間で記録する種の上限
 const AI_HUMAN_THR=0.3;                       // 人の声とみなす値
+const AI_HUMAN_NOTE='人の声を含む（AIの判定。声は保存）';   // v246: 保存した声に付ける印
 const AI_PAD_SEC=5;                           // 声の切り出し: いちばんよく聞こえた区間の前後
 const AI_POS_MAX_AGE=60000;                   // 位置を付けてよい時間差（ms）
 const AI_CAP_DET=500;                         // 1調査あたりの検出の上限
@@ -10022,7 +10023,7 @@ async function aiRestore(part){
           const cid=uuid();
           tx.objectStore('clip').put({ id:cid, sv:cur.sv, det:cur.id, pcm:wav.pcm, sr:wav.sr, t0:(typeof cin.t0==='number'?cin.t0:cur.t0) });
           if(cur.clip) tx.objectStore('clip').delete(cur.clip);   // 読めなかった古い声の片付け（同じ取引）
-          const next=Object.assign({}, cur, { clip:cid, clip_sec:sec, clip_bytes:bytes, clip_note:'' });
+          const next=Object.assign({}, cur, { clip:cid, clip_sec:sec, clip_bytes:bytes, clip_note:raw.clip_note||'' });   // 声に付いた印（人の声を含む 等）も戻す（v246 監査 Major）
           // DB へ送る項目（声の有無・秒数・声のメモ）が変わるなら、内容と更新日時を一緒に書く（差分監査 Major 1）。
           // 実体を直しただけで送る項目が同じなら、元の日時のまま
           if(!cur.clip !== !next.clip || (cur.clip_sec||0)!==next.clip_sec || (cur.clip_note||'')!==next.clip_note) next.updated_at=nowISO();
@@ -10404,11 +10405,11 @@ function aiQueueFlush(){
     let human=false;
     for(let s=Math.floor(p.a/AI_WIN)*AI_WIN; s<p.b; s+=AI_WIN) if(AIL.humanWins.has(s)){ human=true; break; }
     const lost=AIL.lost.some(([x,y])=>p.a<y && x<p.b);
-    const pcm=(!human && !lost)? aiRingGet(p.a,p.b) : null;
+    const pcm=!lost ? aiRingGet(p.a,p.b) : null;
     const sec=(p.b-p.a)/AI_SR, bytes=(p.b-p.a)*2;
+    const keepNote=human ? AI_HUMAN_NOTE : '';   // 人の声が入っていても残す（印を付ける。v246）
     let note='';
-    if(human) note='AIが人の声と判定した区間を含むため声の保存なし';
-    else if(lost) note='判別できなかった区間を含むため声の保存なし';
+    if(lost) note='判別できなかった区間を含むため声の保存なし';
     else if(!pcm) note='処理が遅れ音が残っていないため声の保存なし';
     else if((AI_TOT.clipSp[rec.ja]||0)>=AI_CAP_CLIP_SP) note=`この種の声は${AI_CAP_CLIP_SP}件まで保存済み（上限のため声なし）`;
     else if(AI_TOT.clipSec+sec>AI_CAP_CLIP_SEC) note='この調査の声が上限（合計30分）のため声なし';
@@ -10431,10 +10432,10 @@ function aiQueueFlush(){
       const cur=await aiReq(tx.objectStore('det').get(rec.id));
       if(cur && cur.clip) return false;   // 保存済みの声があれば足さない（予約した勘定は呼び出し側で戻す）
       const off={ clip_off0:p.a/AI_SR, clip_off1:p.b/AI_SR };   // 聞き取り区間の中での声の位置（秒）
-      const next=Object.assign({}, cur||rec, off, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', updated_at:nowISO() }); delete next._dg; delete next._clipSaving;
+      const next=Object.assign({}, cur||rec, off, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:keepNote, updated_at:nowISO() }); delete next._dg; delete next._clipSaving;
       tx.objectStore('clip').put(clip); tx.objectStore('det').put(next);   // 声と検出は同じ処理で一緒に確定する
       await aiTxDone(tx);
-      Object.assign(rec, off, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:'', updated_at:next.updated_at });
+      Object.assign(rec, off, { clip:clip.id, clip_sec:sec, clip_bytes:bytes, clip_note:keepNote, updated_at:next.updated_at });
       return true;
     }, rec._dg).then(ok=>{
       if(ok) return;
@@ -10497,16 +10498,27 @@ const SPEC_NFOR={ 3000:4096, 6000:2048, 12000:SPEC_N, 24000:SPEC_N };
 const SPEC_RANGES=[{ db:25, ja:'くっきり' }, { db:45, ja:'ふつう' }, { db:70, ja:'かすかな音も' }];
 const SPEC_BAND_MIN_HZ=150;   // 囲んだ高さの幅がこれ未満なら、高さでは絞らず時間だけで鳴らす（横になぞっただけのとき）
 const SPEC={ gen:0, job:0, pcm:null, sr:AI_SR, hop:256, cols:0, fmax:12000, sel:null, src:null, det:null, res:null, resSel:null, band:false,
-  db:null, floor:null, clean:true, range:1, mono:false, drawId:0,
+  db:null, floor:null, clean:true, range:1, mono:false, zoom:false, drawId:0,
   inflight:false, reqId:0, reqMs:30000 };
   // db: 描いた強さ（段×列、dB）。floor: 段ごとの「いつも鳴っている音」の大きさ（中央値）。clean: それを差し引いて声を浮かせる
 function specViewLoad(){
-  const d={ fmax:12000, clean:true, range:1, mono:false };
+  const d={ fmax:12000, clean:true, range:1, mono:false, zoom:false };
   try{ const v=JSON.parse(localStorage.getItem('bs_spec_view')||'null'); if(!v || typeof v!=='object') return d;
-    return { fmax:SPEC_FMAXES.includes(v.fmax)?v.fmax:d.fmax, clean:v.clean!==false, range:[0,1,2].includes(v.range)?v.range:d.range, mono:v.mono===true };
+    return { fmax:SPEC_FMAXES.includes(v.fmax)?v.fmax:d.fmax, clean:v.clean!==false, range:[0,1,2].includes(v.range)?v.range:d.range, mono:v.mono===true, zoom:v.zoom===true };
   }catch(e){ return d; }
 }
-function specViewSave(){ try{ localStorage.setItem('bs_spec_view', JSON.stringify({ fmax:SPEC.fmax, clean:SPEC.clean, range:SPEC.range, mono:SPEC.mono })); }catch(e){} }
+function specViewSave(){ try{ localStorage.setItem('bs_spec_view', JSON.stringify({ fmax:SPEC.fmax, clean:SPEC.clean, range:SPEC.range, mono:SPEC.mono, zoom:SPEC.zoom })); }catch(e){} }
+// 横の見え方（v246）: 既定は全体を画面の幅に収める。拡大は 1点＝1列（横のつまみで動かす。図の上をなぞると範囲を選ぶため）
+function specFit(){
+  const cv=document.getElementById('specCv'), sc=document.getElementById('specSel'), box=document.getElementById('specBox'); if(!cv || !sc) return;
+  for(const c of [cv, sc]){ c.style.width=SPEC.zoom ? '' : '100%'; c.style.height=SPEC_H+'px'; }
+  if(box){ box.style.display=SPEC.zoom ? 'inline-block' : 'block'; box.style.width=SPEC.zoom ? '' : '100%'; }
+  // 拡大のときだけ、横に動かすつまみを出す（スマホではスクロールバーを指でつかみにくく、図の上は範囲選びになるため）
+  const pan=document.getElementById('specPan'), wrap=document.getElementById('specWrap');
+  if(pan){ pan.style.display=SPEC.zoom ? 'block' : 'none'; pan.value='0'; }
+  if(wrap){ wrap.scrollLeft=0; if(!wrap._panBound){ wrap._panBound=true; wrap.addEventListener('scroll', ()=>{ const p=document.getElementById('specPan'), m=wrap.scrollWidth-wrap.clientWidth; if(p && m>0) p.value=String(Math.round(wrap.scrollLeft/m*1000)); }); } }
+}
+function specPanTo(v){ const w=document.getElementById('specWrap'); if(!w) return; const m=w.scrollWidth-w.clientWidth; w.scrollLeft=m>0 ? Math.round(Number(v)/1000*m) : 0; }
   // inflight: 声紋の判別の依頼が処理役に出ている（同時に1件だけ）。reqId: その依頼の番号。
   // 待ち時間（reqMs）が切れても処理役はまだ計算中のことがあるので、返事が届くか処理役が止まるまで inflight は下ろさない
 
@@ -10617,13 +10629,15 @@ function specOverlayHtml(title){
   return `<div class="spec-head"><b>${esc(title)}</b><button type="button" class="btn" style="width:auto;padding:6px 12px;" onclick="specClose()">✕ 閉じる</button></div>
     <div id="specMsg" class="small muted">読み込み中…</div>
     <div id="specWrap" style="overflow-x:auto; position:relative; background:#111; border:1px solid #ccc;">
-      <div style="position:relative; display:inline-block;"><canvas id="specCv" height="${SPEC_H}"></canvas><canvas id="specSel" height="${SPEC_H}" style="position:absolute;left:0;top:0;touch-action:none;"></canvas></div></div>
+      <div id="specBox" style="position:relative; display:block; width:100%;"><canvas id="specCv" height="${SPEC_H}" style="display:block;"></canvas><canvas id="specSel" height="${SPEC_H}" style="position:absolute;left:0;top:0;touch-action:none;"></canvas></div></div>
+    <input type="range" id="specPan" min="0" max="1000" value="0" style="display:none; width:100%; margin:4px 0;" aria-label="横に動かす" oninput="specPanTo(this.value)">
     <div id="specAx" class="tiny muted"></div>
     <div class="row" style="gap:6px; flex-wrap:wrap; margin-top:6px;">
       <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specFmax()">高さ: <span id="specFm">0〜12kHz</span></button>
       <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specView('clean')">雑音: <span id="specCl">沈める</span></button>
       <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specView('range')">濃淡: <span id="specRg">ふつう</span></button>
       <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specView('mono')"><span id="specMo">白黒にする</span></button>
+      <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specView('zoom')">横: <span id="specZm">全体</span></button>
     </div>
     <div class="row" style="gap:6px; flex-wrap:wrap; margin-top:6px;">
       <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specPlay()">▶ 選んだ部分</button>
@@ -10631,14 +10645,14 @@ function specOverlayHtml(title){
       <label class="small" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="specBand" style="width:auto;" onchange="SPEC.band=this.checked"> 高さの範囲も使う</label>
       <button type="button" class="btn ghost" style="width:auto;padding:6px 10px;" onclick="specSelClear()">選び直す</button>
     </div>
-    <div class="tiny muted">図の上をなぞると、時間と高さの範囲を選べます（選ばなければ全体）。▶ は囲んだ高さの音だけを鳴らします。</div>
+    <div class="tiny muted">図の上をなぞると、時間と高さの範囲を選べます（選ばなければ全体）。▶ は囲んだ高さの音だけを鳴らします。「横: 拡大」では、図の下のつまみで横に動かせます。</div>
     <div id="specRes"></div>`;
 }
 async function specOpen(src){
   specClose();
   const gen=++SPEC.gen;
   const v=specViewLoad();
-  SPEC.src=src; SPEC.fmax=v.fmax; SPEC.clean=v.clean; SPEC.range=v.range; SPEC.mono=v.mono; SPEC.band=false; SPEC.db=null; SPEC.floor=null;
+  SPEC.src=src; SPEC.fmax=v.fmax; SPEC.clean=v.clean; SPEC.range=v.range; SPEC.mono=v.mono; SPEC.zoom=v.zoom; SPEC.band=false; SPEC.db=null; SPEC.floor=null;
   const ov=document.createElement('div'); ov.id='specOv'; ov.className='spec-ov';
   const title=src.kind==='clip' ? '声紋（聞こえた鳥の声）' : src.kind==='audio' ? '声紋（録音メモ）' : '声紋（端末の音声ファイル）';
   ov.innerHTML=specOverlayHtml(title); document.body.appendChild(ov);
@@ -10677,7 +10691,7 @@ async function specDraw(gen){
   const n=pcm.length, hop=Math.max(256, Math.ceil(n/SPEC_MAX_COLS)), cols=Math.max(1, Math.ceil(n/hop));
   SPEC.hop=hop; SPEC.cols=cols; SPEC.db=null; SPEC.floor=null;
   const cv=document.getElementById('specCv'), sc=document.getElementById('specSel'); if(!cv) return;
-  cv.width=cols; sc.width=cols;
+  cv.width=cols; sc.width=cols; specFit();
   const m0=document.getElementById('specMsg'); if(m0) m0.textContent='描いています…';
   const win=new Float32Array(N); for(let i=0;i<N;i++) win[i]=0.5-0.5*Math.cos(2*Math.PI*i/N);
   const kLo=new Int32Array(H), kHi=new Int32Array(H);   // 各段（上が高い）が受け持つ周波数の番号
@@ -10738,6 +10752,7 @@ function specViewLabels(){
   set('specCl', SPEC.clean?'沈める':'そのまま');
   set('specRg', SPEC_RANGES[SPEC.range].ja);
   set('specMo', SPEC.mono?'カラーにする':'白黒にする');
+  set('specZm', SPEC.zoom?'拡大':'全体');
   const w=document.getElementById('specWrap'); if(w) w.style.background=SPEC.mono?'#fff':'#111';
 }
 function specFmax(){ if(!SPEC.pcm) return; const i=SPEC_FMAXES.indexOf(SPEC.fmax); SPEC.fmax=SPEC_FMAXES[(i+1)%SPEC_FMAXES.length];
@@ -10747,6 +10762,7 @@ function specView(what){
   if(what==='clean') SPEC.clean=!SPEC.clean;
   else if(what==='range') SPEC.range=(SPEC.range+1)%SPEC_RANGES.length;
   else if(what==='mono') SPEC.mono=!SPEC.mono;
+  else if(what==='zoom'){ SPEC.zoom=!SPEC.zoom; specFit(); }
   else return;
   specViewSave();
   if(SPEC.db) specPaint(); else specViewLabels();
@@ -11102,7 +11118,7 @@ SCREENS.aiList=(sv)=>{
   return { title:'聞こえた鳥', sub:[`<span class="pill">${esc(s.name||'調査')}</span>`],
     html:`
       <div class="note small">鳴き声AIが聞き取った<b>候補</b>です。観察の記録にはなっていません（★は印を付けるだけ）。
-        AIが人の声と判定した区間を含む声は保存しません（AIが聞き逃すことはあります。「🎙 いまの音を残す」で自分で残した音は除く）。<br>
+        AIが人の声と判定した区間を含む声も保存し、「人の声を含む」と書き添えます（AIが聞き逃すこともあります）。<br>
         この一覧と声は<b>この端末の中だけ</b>に保存されます（同期・自動保存には含まれません。録音ZIP・手動の全部のバックアップには入ります）。<br>
         「本当は」で名前を付けると、録音ZIPの学習用の一覧（training_labels.csv）に入り、鳥類データベースで学習用の声として集められます。
         もう一度押すと取り消せます。手動の全部のバックアップの読み込みでは名前は変わりません（名前を渡すには録音ZIPか「DBへ送る」を使ってください）。</div>
