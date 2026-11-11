@@ -338,7 +338,7 @@
   /* トースト */
   #toast{position:fixed; left:50%; bottom:26px; transform:translateX(-50%);
     background:#000; color:#fff; padding:11px 18px; border-radius:24px; font-size:14px;
-    opacity:0; transition:opacity .25s; pointer-events:none; z-index:2000; max-width:90%;}
+    opacity:0; transition:opacity .25s; pointer-events:none; z-index:3500; max-width:90%;}   /* 声紋の画面（3000）より前（v247） */
   #toast.show{opacity:.94;}
 
   /* 録音 */
@@ -424,7 +424,7 @@
    ============================================================ */
 
 /* ---------- バージョン（更新されたか目視で確認するための表示） ---------- */
-const APP_VERSION = 'v246（2026-11-11 声紋は全体を画面に収める・人の声が入った声も残す）';
+const APP_VERSION = 'v247（2026-11-11 声紋の拡大縮小・押しても反応しないボタンの直し）';
 
 /* ---------- ユーティリティ ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -10498,27 +10498,46 @@ const SPEC_NFOR={ 3000:4096, 6000:2048, 12000:SPEC_N, 24000:SPEC_N };
 const SPEC_RANGES=[{ db:25, ja:'くっきり' }, { db:45, ja:'ふつう' }, { db:70, ja:'かすかな音も' }];
 const SPEC_BAND_MIN_HZ=150;   // 囲んだ高さの幅がこれ未満なら、高さでは絞らず時間だけで鳴らす（横になぞっただけのとき）
 const SPEC={ gen:0, job:0, pcm:null, sr:AI_SR, hop:256, cols:0, fmax:12000, sel:null, src:null, det:null, res:null, resSel:null, band:false,
-  db:null, floor:null, clean:true, range:1, mono:false, zoom:false, drawId:0,
+  db:null, floor:null, clean:true, range:1, mono:false, zoom:1, drawId:0,
   inflight:false, reqId:0, reqMs:30000 };
   // db: 描いた強さ（段×列、dB）。floor: 段ごとの「いつも鳴っている音」の大きさ（中央値）。clean: それを差し引いて声を浮かせる
 function specViewLoad(){
-  const d={ fmax:12000, clean:true, range:1, mono:false, zoom:false };
+  const d={ fmax:12000, clean:true, range:1, mono:false };
   try{ const v=JSON.parse(localStorage.getItem('bs_spec_view')||'null'); if(!v || typeof v!=='object') return d;
-    return { fmax:SPEC_FMAXES.includes(v.fmax)?v.fmax:d.fmax, clean:v.clean!==false, range:[0,1,2].includes(v.range)?v.range:d.range, mono:v.mono===true, zoom:v.zoom===true };
+    return { fmax:SPEC_FMAXES.includes(v.fmax)?v.fmax:d.fmax, clean:v.clean!==false, range:[0,1,2].includes(v.range)?v.range:d.range, mono:v.mono===true };
   }catch(e){ return d; }
 }
-function specViewSave(){ try{ localStorage.setItem('bs_spec_view', JSON.stringify({ fmax:SPEC.fmax, clean:SPEC.clean, range:SPEC.range, mono:SPEC.mono, zoom:SPEC.zoom })); }catch(e){} }
-// 横の見え方（v246）: 既定は全体を画面の幅に収める。拡大は 1点＝1列（横のつまみで動かす。図の上をなぞると範囲を選ぶため）
-function specFit(){
-  const cv=document.getElementById('specCv'), sc=document.getElementById('specSel'), box=document.getElementById('specBox'); if(!cv || !sc) return;
-  for(const c of [cv, sc]){ c.style.width=SPEC.zoom ? '' : '100%'; c.style.height=SPEC_H+'px'; }
-  if(box){ box.style.display=SPEC.zoom ? 'inline-block' : 'block'; box.style.width=SPEC.zoom ? '' : '100%'; }
-  // 拡大のときだけ、横に動かすつまみを出す（スマホではスクロールバーを指でつかみにくく、図の上は範囲選びになるため）
-  const pan=document.getElementById('specPan'), wrap=document.getElementById('specWrap');
-  if(pan){ pan.style.display=SPEC.zoom ? 'block' : 'none'; pan.value='0'; }
-  if(wrap){ wrap.scrollLeft=0; if(!wrap._panBound){ wrap._panBound=true; wrap.addEventListener('scroll', ()=>{ const p=document.getElementById('specPan'), m=wrap.scrollWidth-wrap.clientWidth; if(p && m>0) p.value=String(Math.round(wrap.scrollLeft/m*1000)); }); } }
+function specViewSave(){ try{ localStorage.setItem('bs_spec_view', JSON.stringify({ fmax:SPEC.fmax, clean:SPEC.clean, range:SPEC.range, mono:SPEC.mono })); }catch(e){} }
+// 横の見え方（v247）: zoom は画面の幅に対する倍率（1＝全体、最大 SPEC_ZOOM_MAX）。開くたびに全体から。
+// 拡大中は図の下のつまみ・2本指で横に動かす（図の上の1本指は範囲選びのため）
+const SPEC_ZOOM_MAX=16;
+function specFit(keep){
+  const cv=document.getElementById('specCv'), sc=document.getElementById('specSel'), box=document.getElementById('specBox'), wrap=document.getElementById('specWrap');
+  if(!cv || !sc || !wrap) return;
+  const z=Math.max(1, Math.min(SPEC_ZOOM_MAX, SPEC.zoom||1)), W=wrap.clientWidth;
+  const frac=keep ? keep.frac : 0, at=keep ? keep.at : 0;   // 拡大しても、指（または枠の真ん中）の下の時刻を同じ場所に保つ
+  const w=z===1 ? '100%' : Math.round(W*z)+'px';
+  for(const c of [cv, sc]){ c.style.width=w; c.style.height=SPEC_H+'px'; }
+  if(box){ box.style.display='block'; box.style.width=w; }
+  const pan=document.getElementById('specPan'); if(pan) pan.style.display=z>1 ? 'block' : 'none';
+  wrap.scrollLeft=z>1 ? Math.max(0, frac*W*z-at) : 0;
+  specPanSync();
+  if(!wrap._panBound){ wrap._panBound=true; wrap.addEventListener('scroll', specPanSync); }
+  const zm=document.getElementById('specZm'); if(zm) zm.textContent=z===1 ? '全体' : `×${Math.round(z*10)/10}`;
 }
+function specPanSync(){ const w=document.getElementById('specWrap'), p=document.getElementById('specPan'); if(!w || !p) return; const m=w.scrollWidth-w.clientWidth; p.value=String(m>0 ? Math.round(w.scrollLeft/m*1000) : 0); }
 function specPanTo(v){ const w=document.getElementById('specWrap'); if(!w) return; const m=w.scrollWidth-w.clientWidth; w.scrollLeft=m>0 ? Math.round(Number(v)/1000*m) : 0; }
+// 倍率を変える。at＝図の枠の左からの位置（px）。その下の時刻を動かさない（省略時は枠の真ん中）
+function specZoomTo(z, at){
+  const wrap=document.getElementById('specWrap'); if(!wrap || !SPEC.pcm) return;
+  const W=wrap.clientWidth, cur=Math.max(1, SPEC.zoom||1); if(at===undefined) at=W/2;
+  const frac=(wrap.scrollLeft+at)/(W*cur);
+  SPEC.zoom=Math.max(1, Math.min(SPEC_ZOOM_MAX, z));
+  specFit({ frac, at }); specSelDraw();
+}
+// ＋／－: 全体 → ×2 → ×4 → ×8 → ×16（2本指で半端な倍率になっていても、次の段へ）
+function specZoomStep(dir){ const z=Math.max(1, SPEC.zoom||1), k=Math.log2(z);
+  specZoomTo(dir>0 ? Math.min(SPEC_ZOOM_MAX, Math.pow(2, Math.floor(k+1e-9)+1)) : Math.max(1, Math.pow(2, Math.ceil(k-1e-9)-1))); }
   // inflight: 声紋の判別の依頼が処理役に出ている（同時に1件だけ）。reqId: その依頼の番号。
   // 待ち時間（reqMs）が切れても処理役はまだ計算中のことがあるので、返事が届くか処理役が止まるまで inflight は下ろさない
 
@@ -10637,7 +10656,9 @@ function specOverlayHtml(title){
       <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specView('clean')">雑音: <span id="specCl">沈める</span></button>
       <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specView('range')">濃淡: <span id="specRg">ふつう</span></button>
       <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specView('mono')"><span id="specMo">白黒にする</span></button>
-      <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specView('zoom')">横: <span id="specZm">全体</span></button>
+      <span style="display:inline-flex; align-items:center; gap:4px;"><button type="button" class="btn" style="width:auto;padding:6px 12px;" onclick="specZoomStep(-1)" aria-label="縮小">－</button>
+        <span id="specZm" class="small" style="min-width:3em; text-align:center;">全体</span>
+        <button type="button" class="btn" style="width:auto;padding:6px 12px;" onclick="specZoomStep(1)" aria-label="拡大">＋</button></span>
     </div>
     <div class="row" style="gap:6px; flex-wrap:wrap; margin-top:6px;">
       <button type="button" class="btn" style="width:auto;padding:6px 10px;" onclick="specPlay()">▶ 選んだ部分</button>
@@ -10645,14 +10666,14 @@ function specOverlayHtml(title){
       <label class="small" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="specBand" style="width:auto;" onchange="SPEC.band=this.checked"> 高さの範囲も使う</label>
       <button type="button" class="btn ghost" style="width:auto;padding:6px 10px;" onclick="specSelClear()">選び直す</button>
     </div>
-    <div class="tiny muted">図の上をなぞると、時間と高さの範囲を選べます（選ばなければ全体）。▶ は囲んだ高さの音だけを鳴らします。「横: 拡大」では、図の下のつまみで横に動かせます。</div>
+    <div class="tiny muted">図の上をなぞると、時間と高さの範囲を選べます（選ばなければ全体）。▶ は囲んだ高さの音だけを鳴らします。「＋」「－」か2本指でつまむ・広げると拡大縮小、2本指でずらすか図の下のつまみで横に動かせます。</div>
     <div id="specRes"></div>`;
 }
 async function specOpen(src){
   specClose();
   const gen=++SPEC.gen;
   const v=specViewLoad();
-  SPEC.src=src; SPEC.fmax=v.fmax; SPEC.clean=v.clean; SPEC.range=v.range; SPEC.mono=v.mono; SPEC.zoom=v.zoom; SPEC.band=false; SPEC.db=null; SPEC.floor=null;
+  SPEC.src=src; SPEC.fmax=v.fmax; SPEC.clean=v.clean; SPEC.range=v.range; SPEC.mono=v.mono; SPEC.zoom=1; SPEC.band=false; SPEC.db=null; SPEC.floor=null;
   const ov=document.createElement('div'); ov.id='specOv'; ov.className='spec-ov';
   const title=src.kind==='clip' ? '声紋（聞こえた鳥の声）' : src.kind==='audio' ? '声紋（録音メモ）' : '声紋（端末の音声ファイル）';
   ov.innerHTML=specOverlayHtml(title); document.body.appendChild(ov);
@@ -10752,7 +10773,6 @@ function specViewLabels(){
   set('specCl', SPEC.clean?'沈める':'そのまま');
   set('specRg', SPEC_RANGES[SPEC.range].ja);
   set('specMo', SPEC.mono?'カラーにする':'白黒にする');
-  set('specZm', SPEC.zoom?'拡大':'全体');
   const w=document.getElementById('specWrap'); if(w) w.style.background=SPEC.mono?'#fff':'#111';
 }
 function specFmax(){ if(!SPEC.pcm) return; const i=SPEC_FMAXES.indexOf(SPEC.fmax); SPEC.fmax=SPEC_FMAXES[(i+1)%SPEC_FMAXES.length];
@@ -10762,7 +10782,6 @@ function specView(what){
   if(what==='clean') SPEC.clean=!SPEC.clean;
   else if(what==='range') SPEC.range=(SPEC.range+1)%SPEC_RANGES.length;
   else if(what==='mono') SPEC.mono=!SPEC.mono;
-  else if(what==='zoom'){ SPEC.zoom=!SPEC.zoom; specFit(); }
   else return;
   specViewSave();
   if(SPEC.db) specPaint(); else specViewLabels();
@@ -10781,11 +10800,36 @@ function specResClear(){ SPEC.job++; SPEC.res=null; SPEC.resSel=null; const b=do
 function specSelClear(){ SPEC.sel=null; specResClear(); specSelDraw(); }
 function specSelBind(){
   const sc=document.getElementById('specSel'); if(!sc || sc._bound) return; sc._bound=true;
-  let start=null;
+  let start=null, before=null, pinch=null;
+  const fingers=new Map();   // いま触れている指（pointerId → 画面の位置）
   const pt=e=>{ const r=sc.getBoundingClientRect(); return { x:Math.max(0, Math.min(sc.width, (e.clientX-r.left)*sc.width/r.width)), y:Math.max(0, Math.min(SPEC_H, (e.clientY-r.top)*SPEC_H/r.height)) }; };
-  sc.addEventListener('pointerdown', e=>{ start=pt(e); sc.setPointerCapture(e.pointerId); e.preventDefault(); });
-  sc.addEventListener('pointermove', e=>{ if(!start) return; specSetSel(start, pt(e)); });
-  sc.addEventListener('pointerup', e=>{ if(!start) return; const p=pt(e); if(Math.abs(p.x-start.x)>2) specSetSel(start, p); start=null; });
+  const two=()=>{ const [a,b]=[...fingers.values()]; const wl=document.getElementById('specWrap').getBoundingClientRect().left; return { d:Math.max(1, Math.hypot(a.x-b.x, a.y-b.y)), mid:(a.x+b.x)/2-wl }; };
+  sc.addEventListener('pointerdown', e=>{
+    fingers.set(e.pointerId, { x:e.clientX, y:e.clientY }); try{ sc.setPointerCapture(e.pointerId); }catch(_){}
+    e.preventDefault();
+    if(fingers.size===2){   // 2本目の指: 範囲選びをやめて（選ぶ前の範囲に戻す）、拡大縮小・横移動にする
+      if(start){ start=null; SPEC.sel=before; specSelDraw(); }
+      const wrap=document.getElementById('specWrap'), t=two(), z=Math.max(1, SPEC.zoom||1);
+      pinch={ d0:t.d, z0:z, frac:(wrap.scrollLeft+t.mid)/(wrap.clientWidth*z) };
+      return;
+    }
+    if(fingers.size===1 && !pinch){ before=SPEC.sel; start=pt(e); }
+  });
+  sc.addEventListener('pointermove', e=>{
+    if(!fingers.has(e.pointerId)) return;
+    fingers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+    if(pinch && fingers.size>=2){ const t=two(); SPEC.zoom=Math.max(1, Math.min(SPEC_ZOOM_MAX, pinch.z0*t.d/pinch.d0)); specFit({ frac:pinch.frac, at:t.mid }); specSelDraw(); return; }
+    if(start) specSetSel(start, pt(e));
+  });
+  const up=e=>{
+    if(!fingers.has(e.pointerId)) return;
+    fingers.delete(e.pointerId);
+    if(pinch){ if(!fingers.size) pinch=null; return; }   // 2本指の操作の後は、全部の指が離れるまで範囲選びをしない
+    if(start && e.type==='pointerup'){ const p=pt(e); if(Math.abs(p.x-start.x)>2) specSetSel(start, p); }
+    else if(start){ SPEC.sel=before; specSelDraw(); }   // 打ち切られた（着信・画面の端など）→ 選ぶ前の範囲に戻す
+    start=null;
+  };
+  sc.addEventListener('pointerup', up); sc.addEventListener('pointercancel', up);
 }
 function specSetSel(a, b){
   const sec=SPEC.pcm.length/AI_SR, toT=x=>Math.min(sec, x*SPEC.hop/AI_SR), toF=y=>Math.max(0, Math.min(SPEC.fmax, (SPEC_H-y)/SPEC_H*SPEC.fmax));
@@ -10926,6 +10970,24 @@ async function specLabel(what, name){
 /* ---------- 浮きボタン・ポップアップ（#main の外。画面の組み直しとは無関係に動く） ---------- */
 // 知らせ方（v230・2026-11-08 ユーザー決定「左下のボタンにまとめる」）:
 // 聞こえた鳥は画面に積まない。左下のボタンが「🐦 ウグイス ほか2」と変わるだけで、押すと新しく聞こえた鳥の小さな一覧が開く
+// 押している最中にボタンを作り直さない（v247: 聞き取り中は1秒ごとに作り直していて、押した瞬間と重なると押せなかった）。
+// 中身が同じなら何もしない。指（ポインタ）が触れている間は作り直しを待ち、押し終わって（click の後）から反映する
+function setHtmlCalm(el, html){
+  if(!el) return;
+  if(!el._calm){
+    el._calm={ hold:false, pending:null, t:0 };
+    const c=el._calm;
+    const release=()=>{ clearTimeout(c.t); c.t=setTimeout(()=>{ c.hold=false; if(c.pending!==null){ const h=c.pending; c.pending=null; setHtmlCalm(el, h); } }, 0); };
+    el.addEventListener('pointerdown', ()=>{ c.hold=true; clearTimeout(c.t); c.t=setTimeout(release, 1500); }, true);   // 押したまま離さないときも 1.5秒で戻す
+    el.addEventListener('click', release, true);
+    el.addEventListener('pointercancel', release, true);
+    el.addEventListener('pointerup', ()=>{ clearTimeout(c.t); c.t=setTimeout(release, 400); }, true);   // click が来ないとき（ずらした等）
+  }
+  const c=el._calm;
+  if(c.hold){ c.pending=html; return; }
+  if(el._calmHtml===html && el.firstChild===el._calmFirst) return;   // 同じ中身（ほかの処理が書き換えていなければ）
+  el.innerHTML=html; el._calmHtml=html; el._calmFirst=el.firstChild;
+}
 function aiFabUpdate(){
   let fab=document.getElementById('aiFab');
   const cur=(STACK[STACK.length-1]||{}).name||'home';
@@ -10951,8 +11013,8 @@ function aiFabUpdate(){
     cls='on'+(n?' has':''); }
   else { main='🐦 待機中'; cls='wait'; }
   fab.className='aifab '+cls;
-  fab.innerHTML=`<button type="button" class="aifab-main" onclick="aiFabTap()">${main}</button>`
-    +(AIL.want?`<button type="button" class="aifab-stop" onclick="aiListenStop()" title="止める">■</button>`:'')+extra;
+  setHtmlCalm(fab, `<button type="button" class="aifab-main" onclick="aiFabTap()">${main}</button>`
+    +(AIL.want?`<button type="button" class="aifab-stop" onclick="aiListenStop()" title="止める">■</button>`:'')+extra);
   aiPopRender();
 }
 // 押したとき: 聞いていなければ聞き始める（新しく聞こえた鳥が残っていれば、先にその一覧を開く）。聞いている間は小さな一覧を開け閉めする
@@ -10982,7 +11044,7 @@ function aiPopRender(){
   if(!box){ box=document.createElement('div'); box.id='aiPops'; document.body.appendChild(box); }
   const ids=AIL.pops.filter(id=>_aiPopRec.has(id));
   const sv=AIL.sv||currentSurveyUuid;
-  box.innerHTML=`<div class="aipop-hd"><b>新しく聞こえた鳥</b><button type="button" onclick="aiPopToggle(false)">閉じる</button></div>`
+  setHtmlCalm(box, `<div class="aipop-hd"><b>新しく聞こえた鳥</b><button type="button" onclick="aiPopToggle(false)">閉じる</button></div>`
     + (!AIL.want?`<div style="padding:2px 0 6px;"><button type="button" class="btn primary" style="min-height:40px;" onclick="aiPopToggle(false); aiListenStart()">🐦 聞き取りを始める</button></div>`
       :`<div style="padding:2px 0 6px;"><button type="button" class="btn" style="min-height:40px;" ${aiCanSaveNow()?'':'disabled'} onclick="aiSaveNow()">🎙 いまの音を残す（直前${AICFG.manual}秒）</button>
         ${aiCanSaveNow()?'':'<div class="tiny muted">音が届いているときだけ押せます</div>'}</div>`)
@@ -10996,7 +11058,7 @@ function aiPopRender(){
       </div>`; }).join('')
       : `<div class="tiny muted" style="padding:6px 2px;">まだ新しい鳥はいません</div>`)
     + `<div class="aipop-ft">${ids.length?`<button type="button" onclick="aiPopClear()">知らせを全部消す</button>`:''}`
-    + (sv?`<button type="button" onclick="aiPopMore()">聞こえた鳥の一覧へ</button>`:'')+`</div>`;
+    + (sv?`<button type="button" onclick="aiPopMore()">聞こえた鳥の一覧へ</button>`:'')+`</div>`);
   box.style.display='';
 }
 // いまの音を残す（v232）。聞き取り中に端末が覚えている直前の音（いまの連続した区間から最大30秒）を、
@@ -11129,11 +11191,11 @@ SCREENS.aiList=(sv)=>{
 };
 async function aiListLoad(sv){
   const gen=++_aiListGen;
-  let rows=[]; try{ rows=await aiDetsOf(sv); }catch(e){ const b=$('#aiListBox'); if(b) b.innerHTML='<div class="empty">読み込めませんでした</div>'; return; }
+  let rows=[]; try{ rows=await aiDetsOf(sv); }catch(e){ if(gen!==_aiListGen) return; setHtmlCalm($('#aiListBox'), '<div class="empty">読み込めませんでした</div>'); return; }   // 表示は全部 setHtmlCalm を通す（最新の要求だけが残る。v247 監査 Major）
   if(gen!==_aiListGen) return;
   const box=$('#aiListBox'); if(!box) return;
   const dets=rows.filter(r=>r.kind==='det'), gaps=rows.filter(r=>r.kind==='gap');
-  if(!rows.length){ box.innerHTML='<div class="empty">まだありません。調査中に画面の端の「🐦 聞く」を押すと、聞こえた鳥がここにたまります。</div>'; return; }
+  if(!rows.length){ setHtmlCalm(box, '<div class="empty">まだありません。調査中に画面の端の「🐦 聞く」を押すと、聞こえた鳥がここにたまります。</div>'); return; }
   const hms=t=>new Date(t).toTimeString().slice(0,8);
   const marked=dets.filter(d=>d.marked).sort((a,b)=>b.t0-a.t0);
   const others=dets.filter(d=>!d.marked).map(d=>({t:d.t0, d})).concat(gaps.map(g=>({t:g.t0, g}))).sort((a,b)=>b.t-a.t);
@@ -11152,9 +11214,9 @@ async function aiListLoad(sv){
       </div>`)}
       ${d.label_kind && !d.clip?`<div class="tiny muted">声が無いので、学習には使えません</div>`:''}</div>`;
   const gapRow=g=>`<div class="tiny muted" style="padding:4px 2px;">⏸ ${hms(g.t0)}〜${g.t1?hms(g.t1):''} 聞き取りが止まっていました（${esc(g.reason||'')}）</div>`;
-  box.innerHTML=`<div class="small muted" style="margin-bottom:6px;">検出 ${dets.length}件（印あり ${marked.length}件）</div>`
+  setHtmlCalm(box, `<div class="small muted" style="margin-bottom:6px;">検出 ${dets.length}件（印あり ${marked.length}件）</div>`
     + (marked.length?`<h3 class="muted small">★ 印あり</h3>${marked.map(row).join('')}`:'')
-    + `<h3 class="muted small">時刻順（新しい順）</h3>` + others.map(x=>x.d?row(x.d):gapRow(x.g)).join('');
+    + `<h3 class="muted small">時刻順（新しい順）</h3>` + others.map(x=>x.d?row(x.d):gapRow(x.g)).join(''));   // 押している最中は作り直さない（v247）
 }
 async function aiListMark(id, on){
   let rec=null; try{ const db=await aiDb(); rec=await aiReq(db.transaction('det').objectStore('det').get(id)); }catch(e){}
