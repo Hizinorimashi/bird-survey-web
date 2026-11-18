@@ -173,7 +173,8 @@ main{max-width:640px;margin:0 auto;padding:0 16px calc(var(--tabh) + var(--sb) +
 #mapBar .seg button{padding:8px 14px}
 #mapBar .seg{background:var(--surface);box-shadow:var(--shadow);border:1px solid var(--line)}
 #mapBar select{border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:0 12px;min-height:46px;font-size:15px;font-weight:700;box-shadow:var(--shadow);max-width:100%}
-#mapEmpty{position:absolute;left:16px;right:16px;bottom:16px;z-index:500;padding:14px 16px;text-align:center}
+/* 記録が無いときの札: 上の絞り込みのすぐ下に出し、指は地図・ボタンへ通す（v1.1.2: 下に出していて、地図の種類・◎・＋－にかぶって押せなかった） */
+#mapEmpty{position:absolute;left:16px;right:16px;top:70px;z-index:450;padding:10px 14px;text-align:center;pointer-events:none;font-size:15px;opacity:.95}
 .mapme{position:absolute;right:12px;bottom:16px;z-index:500;width:50px;height:50px;border-radius:50%;border:1px solid var(--line);background:var(--surface);box-shadow:var(--shadow);display:grid;place-items:center;color:var(--pri)}
 .mapme svg{width:24px;height:24px}
 .leaflet-popup-content{font-family:inherit;font-size:15px;margin:12px 14px}
@@ -278,7 +279,7 @@ main{max-width:640px;margin:0 auto;padding:0 16px calc(var(--tabh) + var(--sb) +
    鳥調査アプリ（bird_survey.html）の鳴き声AI（v247 時点）を切り出したもの。
    AI: BirdNET v2.4（端末の中だけで判定。音も記録もどこにも送らない）
    ===================================================================== */
-const APP_VERSION='1.1.1';
+const APP_VERSION='1.1.2';
 
 /* ---------- 定数 ---------- */
 const SR=48000, WIN=144000;          // 3秒区間（AIの入力）
@@ -1787,6 +1788,7 @@ function mapDraw(fit){
     em.hidden=false;
     const anyPos=[...DETS.values()].some(d=>d.lat!=null);
     em.innerHTML = anyPos ? 'この条件の記録はありません' : 'まだ場所つきの記録がありません<div class="small muted">「きく」で聞くと、聞こえた場所に印が付きます</div>';
+    const bar=$('#mapBar'); if(bar) em.style.top=(bar.offsetTop+bar.offsetHeight+8)+'px';   // 絞り込みが2段に折り返しても重ならない
     return;
   }
   em.hidden=true;

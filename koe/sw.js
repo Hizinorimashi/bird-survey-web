@@ -1,7 +1,7 @@
 // こえログ: 圏外でも開けるように、アプリの画面と地図の絵を端末に保存する
 // 保存庫の名前は必ず 'koelog-' で始める（同じサイトの鳥類調査記録アプリの保存庫に触らない・触られないため）
 // AI の部品（koelog-ai-app-*）と AI 本体（birdnet-ai-model-*）は画面側が管理する。ここでは扱わない
-const CACHE = 'koelog-v3';
+const CACHE = 'koelog-v4';
 const TILE_CACHE = 'koelog-tiles-v1';
 const TILE_MAX = 3000;
 const SHELL = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './leaflet.js', './leaflet.css'];
