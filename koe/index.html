@@ -140,7 +140,7 @@ main{max-width:640px;margin:0 auto;padding:0 16px calc(var(--tabh) + var(--sb) +
 .names span{background:var(--surface2);border-radius:999px;padding:3px 11px;font-size:14px}
 .back{display:inline-flex;align-items:center;gap:4px;border:none;background:none;color:var(--pri);font-weight:700;padding:8px 6px 8px 0;font-size:16px}
 .back svg{width:22px;height:22px}
-.minimap{height:210px;border-radius:var(--r);overflow:hidden;border:1px solid var(--line);margin:6px 0 4px;background:var(--surface2)}
+.minimap{position:relative;z-index:0;height:210px;border-radius:var(--r);overflow:hidden;border:1px solid var(--line);margin:6px 0 4px;background:var(--surface2)}  /* z-index:0 … 地図の部品が上に開いた画面より手前に出ないように（v1.1.0） */
 .row{display:flex;align-items:center;gap:12px;padding:11px 8px 11px 12px;border-bottom:1px solid var(--line)}
 .row:last-child{border-bottom:none}
 .row .tm{flex:none;width:48px;font-variant-numeric:tabular-nums;color:var(--muted);font-size:15px;font-weight:700}
@@ -205,6 +205,42 @@ main{max-width:640px;margin:0 auto;padding:0 16px calc(var(--tabh) + var(--sb) +
 .credit{font-size:12.5px;color:var(--muted);line-height:1.7}
 .credit a{color:var(--pri)}
 
+/* ---- 録音・声紋・正誤（v1.1.0） ---- */
+.recRow{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:14px;width:100%}
+.recRow .btn{flex:1 1 150px;min-height:48px;font-size:15.5px;padding:10px 12px}
+.recRow .btn.rec{white-space:nowrap}
+.btn.rec{background:var(--danger-soft);color:var(--danger)}
+.btn.rec.on{background:var(--danger);color:#fff}
+.btn.rec.on::before{content:"";width:10px;height:10px;border-radius:50%;background:#fff;animation:blink 1.2s infinite}
+#liveBox{margin:14px 0 0}
+#liveCv{display:block;width:100%;height:96px;border-radius:12px;background:#111;image-rendering:pixelated}
+.liveCap{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin:3px 4px 0}
+.chip.c-rec{background:var(--danger-soft);color:var(--danger)}
+.chip.c-ok{background:var(--hi-bg);color:var(--hi)}
+.chip.c-no{background:var(--lo-bg);color:var(--lo)}
+.verd{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:6px 0 4px}
+.verd .btn{min-height:46px;font-size:15.5px;padding:8px 10px;border:2px solid transparent}
+.verd .btn[aria-pressed="true"]{border-color:var(--pri);background:var(--pri-soft);color:var(--pri)}
+.memo{width:100%;min-height:64px;border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:10px 12px;font:inherit;font-size:16px;resize:vertical}
+.cands{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.cands button{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:14.5px;font-weight:700}
+.spBtn{flex:none;width:44px;height:44px;border-radius:50%;border:none;background:var(--surface2);color:var(--muted);display:grid;place-items:center}
+.spBtn svg{width:21px;height:21px}
+#spWrap{position:relative;overflow-x:auto;overflow-y:hidden;border-radius:12px;background:#111;-webkit-overflow-scrolling:touch}
+#spBox{position:relative;height:256px}
+#spCv,#spSel{position:absolute;left:0;top:0;height:256px;width:100%;image-rendering:pixelated}
+#spSel{touch-action:pan-x pinch-zoom}
+#spSel.pick{touch-action:none}
+.spAx{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin:3px 2px 0}
+.spTools{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 0}
+.spTools .btn{min-height:42px;font-size:14.5px;padding:6px 12px;flex:1 1 auto}
+.spRes{margin-top:8px}
+.spRes .birdrow{padding:8px 10px}
+
+/* ---- 地図の切り替え・今いる場所 ---- */
+.mapbase{position:absolute;right:12px;bottom:76px;z-index:500;background:var(--surface);box-shadow:var(--shadow);border:1px solid var(--line)}
+.mapbase button{padding:6px 10px;min-height:40px}
+
 /* ---- 暗い画面 ---- */
 #pocket{position:fixed;inset:0;z-index:200;background:#000;color:#6b6b6b;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;padding:30px;user-select:none}
 #pocket b{color:#9a9a9a;font-size:20px}
@@ -226,6 +262,7 @@ main{max-width:640px;margin:0 auto;padding:0 16px calc(var(--tabh) + var(--sb) +
 <div id="mapWrap" hidden>
   <div id="map" aria-label="聞こえた場所の地図"></div>
   <div id="mapBar"></div>
+  <div class="seg mapbase" id="mapBase" role="group" aria-label="地図の種類"></div>
   <button class="mapme" onclick="mapLocate()" aria-label="今いる場所へ" id="mapMe"></button>
   <div id="mapEmpty" class="card" hidden></div>
 </div>
@@ -241,7 +278,7 @@ main{max-width:640px;margin:0 auto;padding:0 16px calc(var(--tabh) + var(--sb) +
    鳥調査アプリ（bird_survey.html）の鳴き声AI（v247 時点）を切り出したもの。
    AI: BirdNET v2.4（端末の中だけで判定。音も記録もどこにも送らない）
    ===================================================================== */
-const APP_VERSION='1.0.0';
+const APP_VERSION='1.1.0';
 
 /* ---------- 定数 ---------- */
 const SR=48000, WIN=144000;          // 3秒区間（AIの入力）
@@ -262,6 +299,11 @@ const CACHE_MODEL='birdnet-ai-model-'+MODEL_COMMIT.slice(0,7); // AI本体（約
 const SENS={ low:{ label:'控えめ', thr:0.5, d:'はっきり聞こえた声だけ。間違いが少ない' },
              mid:{ label:'ふつう', thr:0.3, d:'おすすめ' },
              high:{ label:'たくさん', thr:0.15, d:'遠い声・小さな声も拾う。間違いも増える' } };
+const BACK_SECS=[10,20,30];          // いまの音を残す: 直前の秒数（RING_SEC 以内）
+const REC_MAX_SEC=300;               // 録音（開始・停止）の最長
+const CAND_MIN=0.05, CAND_N=5;       // 自分で録った音に付けるAIの候補（この値以上・上位5）
+const LABELS={ ok:{ ja:'合ってる', chip:'c-ok', short:'✓ 合ってる' }, other:{ ja:'別の鳥', chip:'c-mid', short:'名前を直した' },
+               nonbird:{ ja:'鳥ではない', chip:'c-no', short:'鳥ではない' }, unknown:{ ja:'分からない', chip:'c-no', short:'? 分からない' } };
 const AV_COLORS=['#3F7D5C','#B8692E','#3D6E9C','#8B5A88','#9C7A2C','#2F827D','#A54E45','#5F6FA6','#6D7F3A','#A0567A'];
 
 /* ---------- 小道具 ---------- */
@@ -288,7 +330,13 @@ function mb(b){ return b<1024*1024 ? Math.max(0.1,b/1024/1024).toFixed(1)+'MB' :
 function hash(s){ let h=0; for(const c of String(s)) h=(h*31+c.codePointAt(0))|0; return Math.abs(h); }
 function spColor(ja){ return AV_COLORS[hash(ja)%AV_COLORS.length]; }
 function avatar(ja, small){ return `<span class="av${small?' s':''}" style="background:${spColor(ja)}" aria-hidden="true">${esc(String(ja||'?').charAt(0))}</span>`; }
+// 名前の無い「自分で録った音」は「自分で録音」と出す。種の数えには名前があり「鳥ではない」でないものだけ入れる
+function nameOf(d){ return d.ja || (d.manual ? '自分で録音' : '?'); }
+function isBird(d){ return !!d.ja && d.label!=='nonbird'; }
 function conf(d){
+  if(d.manual){ const L=d.label&&LABELS[d.label];
+    return `<span class="chip c-rec">録音 ${Math.round(d.clip_sec||0)}秒</span>${L&&d.label!=='ok'?`<span class="chip ${L.chip}">${L.short}</span>`:''}`; }
+  if(d.label && d.label!=='other' && LABELS[d.label]) return `<span class="chip ${LABELS[d.label].chip}">${LABELS[d.label].short}</span>`;
   if(d.fixed) return '<span class="chip c-mid">名前を直した</span>';
   const v=d.max||0;
   if(v>=0.7) return '<span class="chip c-hi">ほぼ確実</span>';
@@ -318,14 +366,21 @@ const IC={
   locate:sv('<circle cx="12" cy="12" r="3.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7.5"/>'),
   wave:sv('<path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2"/>'),
   download:sv('<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>'),
+  rewind:sv('<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7.5V12l3 2"/>'),
+  spec:sv('<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 15v-2M10 16v-6M13 14V8M16 15v-4"/>'),
 };
 const safeId=v=>/^[\w-]{1,80}$/.test(String(v))?String(v):'';
 const playBtn=clip=>`<button class="play" data-play="${safeId(clip)}" onclick="playClip('${safeId(clip)}')" aria-label="声を聞く">${IC.play}${IC.pstop}</button>`;
 
 /* ---------- 設定 ---------- */
-const CFG_DEF={ sens:'mid', hk:true, clips:true };
+const CFG_DEF={ sens:'mid', hk:true, clips:true, agc:false, nr:true, back:20, base:'pale',
+  spFmax:12000, spClean:true, spRange:1, liveOn:true };
 let CFG=(()=>{ try{ return Object.assign({}, CFG_DEF, JSON.parse(localStorage.getItem('koelog_cfg')||'{}')||{}); }catch(e){ return Object.assign({}, CFG_DEF); } })();
 if(!SENS[CFG.sens]) CFG.sens='mid';
+if(!BACK_SECS.includes(CFG.back)) CFG.back=20;
+for(const k of ['hk','clips','agc','nr','spClean','liveOn']) if(typeof CFG[k]!=='boolean') CFG[k]=CFG_DEF[k];
+if(![3000,6000,12000].includes(CFG.spFmax)) CFG.spFmax=12000;
+if(![0,1,2].includes(CFG.spRange)) CFG.spRange=1;
 function cfgSet(k,v){ CFG[k]=v; try{ localStorage.setItem('koelog_cfg', JSON.stringify(CFG)); }catch(e){}
   if(k==='clips' && !v && typeof LS!=='undefined') LS.pending=[];   // 保存待ちの声も取り消す（監査 Minor1）
 }
@@ -396,7 +451,7 @@ function aiFiles(){
   const model=['model.json', ...Array.from({length:13},(_,i)=>`group1-shard${i+1}of13.bin`)].map(f=>base+'/'+f);
   return { app, model };
 }
-const AI={ state:'unknown', err:'', progress:0, prep:null, worker:null, workerP:null, reqId:0, pending:{}, haveModel:false };
+const AI={ state:'unknown', err:'', progress:0, prep:null, worker:null, workerP:null, reqId:0, pending:{}, haveModel:false, q:[], cur:null };
 // state: unknown / nosupport / none（未取り込み）/ installing / ready / failed
 async function aiCheck(){
   if(AI.state==='installing') return AI.state;
@@ -500,19 +555,31 @@ async function aiPrepare(){
 }
 
 /* ---------- 判別ワーカー ---------- */
-function workerKill(){
+function workerKill(err){
   if(AI.worker){ try{ AI.worker.terminate(); }catch(e){} }
-  AI.worker=null; AI.workerP=null;
-  Object.values(AI.pending).forEach(p=>p.rej(new Error('AIを止めました'))); AI.pending={};
+  AI.worker=null; AI.workerP=null; AI.cur=null;
+  err=err||new Error('AIを止めました');
+  const q=AI.q; AI.q=[]; q.forEach(j=>j.rej(err));
+  const p=AI.pending; AI.pending={}; Object.values(p).forEach(x=>x.rej(err));
 }
-function aiAsk(msg, transfer, ms){
+// worker への依頼は1件ずつ出す（v1.1.0 監査 Major）。聞き取り（prio 1）を声紋の「AIで調べる」（prio 0）より先に出し、
+// 返事の待ち時間は worker に出した時から数える（ほかの依頼の後ろで待った時間で、聞き取りが誤って止まらないように）。
+// 時間切れでも worker はその依頼を処理中なので、本当の返事が来るまで次は出さない
+function aiAsk(msg, transfer, ms, prio){
   return new Promise((res,rej)=>{
     if(!AI.worker){ rej(new Error('AIが動いていません')); return; }
-    const id=++AI.reqId; let tm=null;
-    AI.pending[id]={ res:v=>{ clearTimeout(tm); res(v); }, rej:e=>{ clearTimeout(tm); rej(e); } };
-    if(ms) tm=setTimeout(()=>{ if(AI.pending[id]){ delete AI.pending[id]; rej(new Error('AIの返事がありませんでした')); } }, ms);
-    AI.worker.postMessage(Object.assign({}, msg, {id}), transfer||[]);
+    AI.q.push({ msg, transfer, ms, prio:prio||0, res, rej }); aiDispatch();
   });
+}
+function aiDispatch(){
+  if(AI.cur || !AI.q.length || !AI.worker) return;
+  let k=0; for(let i=1;i<AI.q.length;i++) if(AI.q[i].prio>AI.q[k].prio) k=i;
+  const j=AI.q.splice(k,1)[0], id=++AI.reqId; let tm=null, settled=false;
+  AI.cur={ id };
+  const fin=()=>{ clearTimeout(tm); if(AI.cur && AI.cur.id===id){ AI.cur=null; setTimeout(aiDispatch, 0); } };
+  AI.pending[id]={ res:v=>{ fin(); if(!settled){ settled=true; j.res(v); } }, rej:e=>{ fin(); if(!settled){ settled=true; j.rej(e); } } };
+  if(j.ms) tm=setTimeout(()=>{ if(!settled){ settled=true; j.rej(new Error('AIの返事がありませんでした')); } }, j.ms);
+  AI.worker.postMessage(Object.assign({}, j.msg, {id}), j.transfer||[]);
 }
 function workerEnsure(){
   if(AI.workerP) return AI.workerP;
@@ -529,7 +596,11 @@ function workerEnsure(){
       delete AI.pending[data.id];
       if(data.message==='error') q.rej(new Error(data.text)); else q.res(data);
     };
-    w.onerror=()=>{ const err=new Error('AIの処理で問題が起きました'); Object.values(AI.pending).forEach(q=>q.rej(err)); AI.pending={}; };
+    // 処理役が壊れたら、待ち行列の残りを壊れた処理役へ出さない: 止めて、出した依頼も待っている依頼もすべて断る（v1.1.0 再監査 Major）。
+    // 聞き取り中なら止めて知らせる（もう一度「聞く」で作り直す）
+    w.onerror=()=>{ if(AI.worker!==w) return;
+      workerKill(new Error('AIの処理で問題が起きました'));
+      if(LS.want) setTimeout(()=>listenStop('鳴き声AIで問題が起きたため止めました。もう一度「聞く」を押してください'), 0); };
     await aiAsk({ message:'init', modelUrl:f.model[0], cacheName:CACHE_MODEL }, null, 120000);
   })();
   p.catch(()=>{ if(AI.workerP===p) workerKill(); });
@@ -542,7 +613,9 @@ function workerEnsure(){
 const LS={ want:false, preparing:false, cap:false, starting:false, gen:0, reasons:new Set(), needResume:false,
   ctx:null, stream:null, node:null, wake:null, geoId:null, pos:null, geoErr:false, lastPcm:0,
   ring:new Float32Array(SR*RING_SEC), written:0, next:0, judged:0, busy:null, seg:null,
-  events:[], pending:[], humanWins:new Set(), lost:[], sess:null, tick:null, level:0, lastName:'', flash:new Set() };
+  events:[], pending:[], humanWins:new Set(), lost:[], sess:null, tick:null, level:0, lastName:'', flash:new Set(),
+  winHits:new Map(), rec:null, manual:[], analyser:null };
+// winHits: 判定した3秒区間ごとのAIの上位（自分で録った音の候補に使う）。rec: 録音中（開始・停止）。manual: 判定を待って保存する自分の録音
 const REASON={ hidden:'画面が消えていました', play:'声の再生中', fail:'マイクを使えませんでした' };
 function canRun(){ return LS.want && !LS.preparing && LS.reasons.size===0 && !LS.needResume && !document.hidden && AI.state==='ready' && !!AI.worker; }
 function sync(){
@@ -586,6 +659,7 @@ function tick(){
   // マイクの音が5秒以上届かない → つなぎ直す
   if(LS.cap && Date.now()-LS.lastPcm>5000){ captureStop(); sync(); }
   const el=$('#elapsed'); if(el && LS.sess) el.textContent=dur(LS.sess.sec);
+  const rt=$('#recT'); if(rt && LS.rec) rt.textContent=dur(LS.rec.n/CLIP_SR);
 }
 
 /* ---------- マイク ---------- */
@@ -605,7 +679,7 @@ async function captureStart(){
   const o={stream:null, ctx:null, node:null};
   const stale=()=>gen!==LS.gen || !canRun();
   try{
-    o.stream=await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:false } });
+    o.stream=await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:!!CFG.agc } });
     if(stale()) throw 'stale';
     o.ctx=new (window.AudioContext||window.webkitAudioContext)({ sampleRate:SR });
     await addWorklet(o.ctx);
@@ -615,12 +689,14 @@ async function captureStart(){
     const src=o.ctx.createMediaStreamSource(o.stream);
     o.node=new AudioWorkletNode(o.ctx, 'pcm-recorder');
     LS.ring.fill(0); LS.written=0; LS.next=0; LS.judged=0; LS.busy=null;
-    LS.humanWins.clear(); LS.lost=[]; LS.pending=[];
+    LS.humanWins.clear(); LS.lost=[]; LS.pending=[]; LS.winHits.clear(); manualDropAll();
     for(const e of LS.events) e.closed=true; LS.events=[];
     LS.seg={ t0:Date.now() };
     o.node.port.onmessage=e=>{ if(gen===LS.gen) onPcm(e.data); };
     src.connect(o.node);
-    LS.stream=o.stream; LS.ctx=o.ctx; LS.node=o.node; LS.cap=true; LS.lastPcm=Date.now();
+    try{ const an=o.ctx.createAnalyser(); an.fftSize=1024; an.smoothingTimeConstant=0; an.minDecibels=-110; an.maxDecibels=-20; src.connect(an); o.analyser=an; }catch(e){ o.analyser=null; }
+    LS.stream=o.stream; LS.ctx=o.ctx; LS.node=o.node; LS.analyser=o.analyser; LS.cap=true; LS.lastPcm=Date.now();
+    liveStart();
     wakeOn(); geoStart();
   }catch(err){
     release(o);
@@ -635,9 +711,10 @@ async function captureStart(){
   }
 }
 function captureStop(){
+  if(LS.rec) recStop(true);   // 録音中なら、そこまでを残す
   flushPending(true);   // 止める前に、判定済みの声は残す（世代を進める前に呼ぶ）
   LS.gen++; LS.starting=false;
-  release(LS); LS.node=LS.stream=LS.ctx=null;
+  release(LS); LS.node=LS.stream=LS.ctx=null; LS.analyser=null;
   LS.cap=false; LS.level=0;
   if(LS.geoId!=null && navigator.geolocation){ try{ navigator.geolocation.clearWatch(LS.geoId); }catch(e){} } LS.geoId=null;
   if(LS.wake){ try{ const r=LS.wake.release(); if(r&&r.catch) r.catch(()=>{}); }catch(e){} LS.wake=null; }
@@ -652,7 +729,8 @@ function wakeOn(){
 function geoStart(){
   if(!navigator.geolocation || LS.geoId!=null) return;
   try{ LS.geoId=navigator.geolocation.watchPosition(p=>{
-      LS.pos={ lat:p.coords.latitude, lng:p.coords.longitude, acc:p.coords.accuracy, t:Date.now() }; LS.geoErr=false; paintMeta(); },
+      LS.pos={ lat:p.coords.latitude, lng:p.coords.longitude, acc:p.coords.accuracy, t:Date.now() }; LS.geoErr=false; paintMeta();
+      if(UI.tab==='map') mapMe(LS.pos, false); },
     ()=>{ LS.geoErr=true; paintMeta(); }, { enableHighAccuracy:true, maximumAge:10000 }); }catch(e){}
 }
 document.addEventListener('visibilitychange', ()=>{
@@ -665,6 +743,7 @@ function onPcm(chunk){
   const R=LS.ring.length;
   let s=0;
   for(let i=0;i<chunk.length;i++){ const v=chunk[i]; LS.ring[(LS.written+i)%R]=v; s+=v*v; }
+  if(LS.rec) recAppend(chunk);
   LS.written+=chunk.length; LS.lastPcm=Date.now();
   const dB=20*Math.log10(Math.sqrt(s/chunk.length)+1e-9);   // 音の大きさ（-60dB〜-15dB を 0〜1 に）
   LS.level=Math.max(0, Math.min(1, (dB+60)/45));
@@ -692,7 +771,7 @@ async function pump(){
   const pcm=ringGet(start,end); if(!pcm) return;
   LS.next=end; LS.busy=gen;
   try{
-    const r=await aiAsk({ message:'scores', pcm }, [pcm.buffer], 60000);
+    const r=await aiAsk({ message:'scores', pcm }, [pcm.buffer], 60000, 1);
     if(gen!==LS.gen) return;
     for(let f=0; f<r.n; f++) handleWindow(start+f*WIN, r.scores.subarray(f*r.C,(f+1)*r.C), seg);
     LS.judged=end;
@@ -708,10 +787,11 @@ async function pump(){
   }
   if(LS.cap && gen===LS.gen) setTimeout(pump, 0);
 }
-function speciesSet(){ const s=new Set(); for(const d of DETS.values()) s.add(d.ja); return s; }
+function speciesSet(){ const s=new Set(); for(const d of DETS.values()) if(isBird(d)) s.add(d.ja); return s; }
 function handleWindow(ws, row, seg){
   const P=AI.prep; if(!P) return;
   if(P.humanIdx!==undefined && row[P.humanIdx]>=HUMAN_THR) LS.humanWins.add(ws);
+  winHitsPut(ws, row);
   const thr=SENS[CFG.sens].thr;
   const hits=[];
   const cand = CFG.hk ? P.hkIdx : row.keys();
@@ -755,6 +835,7 @@ function handleWindow(ws, row, seg){
 }
 // 声の保存。force … 聞き取りを止めるとき（最後まで判定できていなくても、判定済みの所までで残す）
 function flushPending(force){
+  manualFlush(force);
   if(!CFG.clips){ LS.pending=[]; return; }
   const ready=LS.pending.filter(p=>p.gen===LS.gen && (LS.judged>=p.need || (force && LS.judged>=p.best[1])));
   if(!ready.length){ if(force) LS.pending=[]; return; }
@@ -770,7 +851,7 @@ function flushPending(force){
     const pcm=(!lost && !human) ? ringGet(p.a,b) : null;
     const nOut=pcm ? Math.floor(pcm.length/2) : 0, bytes=nOut*2, sec=nOut/CLIP_SR;
     const day=dayKey(rec.t0);
-    const sameDay=detList().filter(d=>d.clip && d.ja===rec.ja && dayKey(d.t0)===day).length;
+    const sameDay=detList().filter(d=>!d.manual && isBird(d) && d.clip && d.ja===rec.ja && dayKey(d.t0)===day).length;   // 自分で録った音・鳥ではない記録は枠に数えない（v1.1.0 監査 Major）
     let note='';
     if(human) note='人の声が入ったため、声は残していません';
     else if(lost || !pcm) note='音が途切れたため、声は残せませんでした';
@@ -798,8 +879,222 @@ function flushPending(force){
   }
 }
 
+/* ---------- 自分で録る（いまの音を残す・録音 開始/停止）v1.1.0 ----------
+   どちらも聞き取り中のマイクの音を使う（別にマイクを開かない）。
+   AIの判定が録った区間の終わりまで済んでから保存し、その間にAIが聞き取った鳥（上位5）と人の声の印を付ける。
+   聞き取りが止まるときは、判定済みの所までの候補で保存する。人の声が入っていても残す（ユーザー決定 2026-11-18） */
+const q16=v=>Math.max(-32768, Math.min(32767, Math.round(v*32767)));
+function to24k(f){ const n=Math.floor(f.length/2), o=new Int16Array(n); for(let i=0;i<n;i++) o[i]=q16((f[2*i]+f[2*i+1])*0.5); return o; }
+function winHitsPut(ws, row){
+  const P=AI.prep; if(!P) return;
+  const top=[], cand=CFG.hk ? P.hkIdx : row.keys();
+  for(const i of cand){ const s=row[i]; if(s>=CAND_MIN && !P.nonBird.has(i)) top.push([i,s]); }
+  top.sort((a,b)=>b[1]-a[1]); top.length=Math.min(top.length, CAND_N);
+  LS.winHits.set(ws, top);
+  const old=LS.written-SR*(REC_MAX_SEC+RING_SEC);   // 録音の最長より古い区間は捨てる（入れた順＝古い順）
+  for(const k of LS.winHits.keys()){ if(k<old) LS.winHits.delete(k); else break; }
+}
+function candsFor(a, b){
+  const P=AI.prep, m=new Map(); let human=false;
+  for(let s=Math.floor(a/WIN)*WIN; s<b; s+=WIN){
+    if(LS.humanWins.has(s)) human=true;
+    const t=LS.winHits.get(s); if(!t || !P) continue;
+    for(const [i,v] of t){ const ja=P.idxName.get(i) || (P.labels[i]&&P.labels[i].ja) || ''; if(!ja) continue;
+      const c=m.get(ja); if(!c || v>c.s) m.set(ja, { ja, sci:P.hkNames.get(ja)||P.labels[i].sci||'', s:Math.round(v*1000)/1000 }); }
+  }
+  return { cands:[...m.values()].sort((x,y)=>y.s-x.s).slice(0,CAND_N), human };
+}
+// 保存量の予約（v1.1.0 監査 Critical）: 自分で録る音は、録っている間・判定を待つ間も保存量を先に押さえる。
+// 押さえた分は保存の終わり（成功・失敗）・取り消し（短すぎ・世代違い・すべて消す）で必ず返す
+function resv(bytes){ if(CLIP_BYTES+CLIP_RESERVED+bytes>CLIP_DEV_BYTES) return false; CLIP_RESERVED+=bytes; return true; }
+function unresv(m){ if(m && m.res){ CLIP_RESERVED-=m.res; m.res=0; } }
+const FULL_MSG='声の保存量が上限（300MB）に達しました。古い記録を消してください';
+function saveBack(){
+  if(!LS.cap || !LS.seg){ toast('「聞く」で聞いている間に使えます'); return; }
+  const b=LS.written, a=Math.max(0, b-CFG.back*SR, b-LS.ring.length);
+  if(b-a<SR){ toast('まだ音がたまっていません。少し待ってから押してください'); return; }
+  const pcm=ringGet(a, b); if(!pcm){ toast('音を取り出せませんでした'); return; }
+  const i16=to24k(pcm);
+  if(!resv(i16.length*2)){ toast(FULL_MSG, 6000); return; }
+  manualQueue({ kind:'back', a, b, i16, res:i16.length*2 });
+  toast(`直前${Math.round((b-a)/SR)}秒の音を残しています…`, 2500);
+}
+function recToggle(){ if(LS.rec) recStop(false); else recStart(); }
+function recStart(){
+  if(!LS.cap || !LS.seg){ toast('「聞く」で聞いている間に使えます'); return; }
+  if(!resv(CLIP_SR*2)){ toast(FULL_MSG, 6000); return; }   // 最初の1秒分を押さえる（以後は届いた分ずつ）
+  playStop();
+  LS.rec={ a:LS.written, buf:new Int16Array(REC_MAX_SEC*CLIP_SR), n:0, odd:null, res:CLIP_SR*2 };
+  paintListen();
+}
+function recAppend(ch){
+  const r=LS.rec, buf=r.buf; let i=0, n=r.n;
+  const need=(n+Math.ceil((ch.length+1)/2))*2-r.res;   // この塊を書くのに足りない分を押さえる
+  if(need>0){ if(resv(need)) r.res+=need;
+    else { setTimeout(()=>{ if(LS.rec===r){ recStop(false); toast('声の保存量が上限（300MB）に達したため、ここまでの録音を残しました', 6000); } }, 0); return; } }
+  if(r.odd!==null && ch.length){ if(n<buf.length) buf[n++]=q16((r.odd+ch[0])*0.5); r.odd=null; i=1; }
+  for(; i+1<ch.length && n<buf.length; i+=2) buf[n++]=q16((ch[i]+ch[i+1])*0.5);
+  if(i===ch.length-1) r.odd=ch[i];
+  r.n=n;
+  if(n>=buf.length) setTimeout(()=>{ if(LS.rec===r){ recStop(false); toast(`録音は${REC_MAX_SEC/60}分までです。ここまでを残しました`, 4000); } }, 0);
+}
+// fromCap … 聞き取りが止まる途中（captureStop から）。そこまでを残す
+function recStop(fromCap){
+  const r=LS.rec; if(!r) return; LS.rec=null;
+  if(r.n<CLIP_SR*0.5){ unresv(r); toast('録音が短すぎるため残しませんでした'); }
+  else{ manualQueue({ kind:'rec', a:r.a, b:r.a+r.n*2, i16:r.buf.slice(0, r.n), res:r.res }); r.res=0;
+    toast(fromCap ? '聞き取りが止まったため、そこまでの録音を残しました' : '録音を残しています…', fromCap?4500:2500); }
+  if(!fromCap) paintListen();
+}
+function manualQueue(m){
+  m.seg=LS.seg; m.gen=LS.gen; m.need=Math.ceil(m.b/WIN)*WIN;
+  m.pos=LS.pos && Date.now()-LS.pos.t<=POS_MAX_AGE ? Object.assign({}, LS.pos) : null;
+  LS.manual.push(m); manualFlush(false);
+}
+function manualFlush(force){
+  if(!LS.manual.length) return;
+  const ready=LS.manual.filter(m=>m.gen===LS.gen && (force || LS.judged>=m.need));
+  LS.manual.filter(m=>m.gen!==LS.gen).forEach(unresv);   // 世代違い（通常は起きない）は捨てて予約を返す
+  LS.manual=LS.manual.filter(m=>m.gen===LS.gen && !ready.includes(m));
+  for(const m of ready) manualSave(m);
+}
+function manualDropAll(){ LS.manual.forEach(unresv); LS.manual=[]; if(LS.rec){ unresv(LS.rec); LS.rec=null; } }
+let DB_EPOCH=0;   // すべて消すたびに進める（消している間に書き終えた録音を残さない）
+async function manualSave(m){
+  const { cands, human }=candsFor(m.a, m.b);
+  const bytes=m.i16.length*2, sec=m.i16.length/CLIP_SR, ep=DB_EPOCH;   // 保存量は録ったときに押さえ済み（m.res）
+  const t0=tOf(m.seg,m.a), pos=m.pos;
+  const rec={ id:uuid(), ja:'', sci:'', manual:m.kind, max:0, count:0, t0, t1:tOf(m.seg,m.b),
+    lat:pos?pos.lat:null, lng:pos?pos.lng:null, acc:pos?Math.round(pos.acc):null,
+    clip:null, clip_sec:Math.round(sec*10)/10, clip_bytes:bytes, clip_note:'', human, cands, label:'', memo:'',
+    sess:LS.sess?LS.sess.id:'', model:MODEL_VER, created_at:new Date().toISOString() };
+  const clip={ id:uuid(), det:rec.id, pcm:m.i16, sr:CLIP_SR, t0 };
+  rec.clip=clip.id;
+  try{
+    const d=await db(); const tx=d.transaction(['det','clip'],'readwrite');
+    tx.objectStore('clip').put(clip); tx.objectStore('det').put(plain(rec)); await txDone(tx);
+    if(ep!==DB_EPOCH){ const t2=d.transaction(['det','clip'],'readwrite'); t2.objectStore('det').delete(rec.id); t2.objectStore('clip').delete(clip.id); await txDone(t2); return; }
+    DETS.set(rec.id, rec); CLIP_BYTES+=bytes; rec._clipCounted=true;
+    toast(`録音を残しました（${Math.round(sec)}秒）。「きろく」で聞けます${human?'（人の声が入っています）':''}`, 4000);
+    liveUpdate();
+  }catch(e){ console.warn(e); toast('録音を保存できませんでした（端末の空き容量など）', 5000); }
+  finally{ unresv(m); }
+}
+
+/* ---------- 音の計算（FFT・フィルタ・雑音を減らす）v1.1.0 ---------- */
+const _fftC={};
+function fftTab(N){
+  if(_fftC[N]) return _fftC[N];
+  const rev=new Uint32Array(N), cs=new Float32Array(N/2), sn=new Float32Array(N/2), bits=Math.round(Math.log2(N));
+  for(let i=0;i<N;i++){ let r=0, x=i; for(let b=0;b<bits;b++){ r=(r<<1)|(x&1); x>>=1; } rev[i]=r; }
+  for(let i=0;i<N/2;i++){ cs[i]=Math.cos(2*Math.PI*i/N); sn[i]=-Math.sin(2*Math.PI*i/N); }
+  return (_fftC[N]={ rev, cs, sn });
+}
+function fft(re, im, inv){
+  const N=re.length, { rev, cs, sn }=fftTab(N);
+  for(let i=0;i<N;i++){ const j=rev[i]; if(j>i){ let t=re[i]; re[i]=re[j]; re[j]=t; t=im[i]; im[i]=im[j]; im[j]=t; } }
+  for(let size=2; size<=N; size<<=1){ const h=size>>1, step=N/size;
+    for(let i=0;i<N;i+=size) for(let j=0;j<h;j++){ const k=j*step, wr=cs[k], wi=inv?-sn[k]:sn[k], a=i+j, b=a+h;
+      const tr=re[b]*wr-im[b]*wi, ti=re[b]*wi+im[b]*wr; re[b]=re[a]-tr; im[b]=im[a]-ti; re[a]+=tr; im[a]+=ti; } }
+  if(inv) for(let i=0;i<N;i++){ re[i]/=N; im[i]/=N; }
+}
+const _hann={};
+function hann(N){ return _hann[N] || (_hann[N]=Float32Array.from({length:N}, (_,i)=>0.5-0.5*Math.cos(2*Math.PI*i/N))); }
+function biquad(x, sr, type, fc){
+  fc=Math.max(10, Math.min(sr/2-50, fc));
+  const w=2*Math.PI*fc/sr, c=Math.cos(w), al=Math.sin(w)/(2*Math.SQRT1_2);
+  const [b0,b1,b2]= type==='hp' ? [(1+c)/2, -(1+c), (1+c)/2] : [(1-c)/2, 1-c, (1-c)/2];
+  const a0=1+al, A1=-2*c/a0, A2=(1-al)/a0, B0=b0/a0, B1=b1/a0, B2=b2/a0;
+  const y=new Float32Array(x.length); let x1=0,x2=0,y1=0,y2=0;
+  for(let i=0;i<x.length;i++){ const v=x[i], o=B0*v+B1*x1+B2*x2-A1*y1-A2*y2; x2=x1; x1=v; y2=y1; y1=o; y[i]=o; }
+  return y;
+}
+// 高さで絞る（声紋で囲んだ範囲だけ鳴らす）。2段ずつで急な切れ目にする
+function bandpass(x, sr, f0, f1){ return biquad(biquad(biquad(biquad(x,sr,'hp',f0),sr,'hp',f0),sr,'lp',f1),sr,'lp',f1); }
+const i16f=a=>{ const f=new Float32Array(a.length); for(let i=0;i<a.length;i++) f[i]=a[i]/32768; return f; };
+const f16=f=>{ const a=new Int16Array(f.length); for(let i=0;i<f.length;i++) a[i]=q16(f[i]); return a; };
+// 雑音を減らす（再生用。保存した音は変えない）: 200Hz より低い音（風・車）を切り、
+// 周波数ごとの「いつも鳴っている音」（全体の下から2割の大きさ）を差し引く。差し引きすぎによるキュルキュル音は、前の区間・隣の高さとならして抑える
+const NR_HP=200, NR_N=1024, NR_HOP=256, NR_ALPHA=2, NR_FLOOR=0.12, NR_SAMPLE=400;
+// 省メモリ版（v1.1.0 監査 Major）: 前後に N ずつ無音を足したと見なして区間を読み、結果へ直接重ねる。
+// 周期ハン窓・ずらし N/4 なので、どの位置も窓の2乗の和はちょうど 1.5（重ね直しの割り算は定数でよい）。
+// 5分（24kHz）で 入力・高域通過・出力 の3本ぶん（約90MB）。処理は専用の worker で行う（画面を止めない）
+function denoise(x, sr){
+  const N=NR_N, H=NR_HOP, K=N/2+1, w=hann(N), L=x.length;
+  if(L<N) return x;
+  let hp=biquad(x,sr,'hp',NR_HP); hp=biquad(hp,sr,'hp',NR_HP);
+  const nF=Math.floor((L+N)/H)+1;   // 区間の始まり s=0,H,…（足した無音を含む座標。本物の音は N〜N+L）
+  const re=new Float32Array(N), im=new Float32Array(N);
+  const frame=s=>{ const o=s-N; for(let i=0;i<N;i++){ const j=o+i; re[i]=(j>=0 && j<L ? hp[j] : 0)*w[i]; im[i]=0; } fft(re, im, false); };
+  const S=Math.min(nF, NR_SAMPLE), mags=Array.from({length:K}, ()=>new Float32Array(S));
+  for(let j=0;j<S;j++){ frame(Math.floor(j*nF/S)*H); for(let k=0;k<K;k++) mags[k][j]=Math.hypot(re[k], im[k]); }
+  const noise=new Float32Array(K); for(let k=0;k<K;k++){ const a=mags[k].sort(); noise[k]=a[Math.floor(S*0.2)]; }
+  const y=new Float32Array(L), g=new Float32Array(K), gPrev=new Float32Array(K).fill(1), WS=1/1.5;
+  for(let f=0; f<nF; f++){
+    const s=f*H; frame(s);
+    for(let k=0;k<K;k++){ const m=Math.hypot(re[k], im[k])+1e-12; g[k]=Math.max(NR_FLOOR, 1-NR_ALPHA*noise[k]/m, 0.6*gPrev[k]); }
+    for(let k=0;k<K;k++){ const gs=(g[Math.max(0,k-1)]+2*g[k]+g[Math.min(K-1,k+1)])/4; gPrev[k]=g[k];
+      re[k]*=gs; im[k]*=gs; if(k>0 && k<N/2){ re[N-k]*=gs; im[N-k]*=gs; } }
+    fft(re, im, true);
+    const o=s-N; for(let i=0;i<N;i++){ const j=o+i; if(j>=0 && j<L) y[j]+=re[i]*w[i]*WS; }
+  }
+  let pk=0; for(let i=0;i<L;i++){ const a=Math.abs(y[i]); if(a>pk) pk=a; }
+  if(pk>0.98) for(let i=0;i<L;i++) y[i]*=0.98/pk;
+  return y;
+}
+// 声紋の計算（純粋な関数。worker でも動く）。H … 縦の段数、maxCols … 横の列数の上限
+function specCore(x, sr, fm, H, maxCols){
+  fm=Math.min(fm, sr/2);
+  const N=fm<=3000?4096:fm<=6000?2048:1024;
+  const hop=Math.max(32, Math.ceil(x.length/maxCols)), cols=Math.max(1, Math.floor(x.length/hop));
+  const w=hann(N), re=new Float32Array(N), im=new Float32Array(N), db=new Float32Array(cols*H), binHz=sr/N, maxBin=N/2;
+  const k0s=new Int32Array(H), k1s=new Int32Array(H);
+  for(let y=0;y<H;y++){ const fA=(H-1-y)/H*fm, fB=(H-y)/H*fm; const k0=Math.min(maxBin, Math.floor(fA/binHz)); k0s[y]=k0; k1s[y]=Math.min(maxBin, Math.max(k0, Math.ceil(fB/binHz)-1)); }
+  const norm=N*N/16;
+  for(let c=0;c<cols;c++){ const s=Math.round(c*hop+hop/2-N/2);
+    for(let i=0;i<N;i++){ const j=s+i; re[i]=(j>=0 && j<x.length ? x[j] : 0)*w[i]; im[i]=0; }
+    fft(re, im, false);
+    for(let y=0;y<H;y++){ let p=0; for(let k=k0s[y];k<=k1s[y];k++){ const v=re[k]*re[k]+im[k]*im[k]; if(v>p) p=v; }
+      db[y*cols+c]=Math.max(-120, 10*Math.log10(p/norm+1e-12)); } }
+  const floor=new Float32Array(H), tmp=new Float32Array(cols);
+  for(let y=0;y<H;y++){ for(let c=0;c<cols;c++) tmp[c]=db[y*cols+c]; floor[y]=tmp.slice().sort()[Math.floor(cols/2)]; }
+  return { db, floor, cols };
+}
+/* 音の計算専用の worker（v1.1.0 監査 Major: 長い録音で画面を止めない）。上の関数をそのまま写して作る。
+   dspRun … 依頼。owner が 'sp' の依頼は声紋の画面を離れるときに打ち切る（worker ごと止めて作り直す） */
+const DSP={ w:null, id:0, p:{} };
+function dspSrc(){
+  return `const NR_HP=${NR_HP},NR_N=${NR_N},NR_HOP=${NR_HOP},NR_ALPHA=${NR_ALPHA},NR_FLOOR=${NR_FLOOR},NR_SAMPLE=${NR_SAMPLE};const _fftC={},_hann={};\n`
+    + [fftTab, fft, hann, biquad, denoise, specCore].map(String).join('\n')
+    + `\nonmessage=({data})=>{ try{ let r, tr;
+      if(data.kind==='nr'){ r=denoise(data.x, data.sr); tr=[r.buffer]; }
+      else { r=specCore(data.x, data.sr, data.fm, data.H, data.maxCols); tr=[r.db.buffer, r.floor.buffer]; }
+      postMessage({ id:data.id, r }, tr); }catch(e){ postMessage({ id:data.id, err:String(e&&e.message||e) }); } };`;
+}
+function dspRun(kind, x, sr, extra, owner){
+  return new Promise((res,rej)=>{
+    try{
+      if(!DSP.w){ const u=URL.createObjectURL(new Blob([dspSrc()], {type:'text/javascript'}));
+        try{ DSP.w=new Worker(u); } finally{ setTimeout(()=>URL.revokeObjectURL(u), 60000); }
+        DSP.w.onmessage=({data})=>{ const q=DSP.p[data.id]; if(!q) return; delete DSP.p[data.id]; if(data.err) q.rej(new Error(data.err)); else q.res(data.r); };
+        DSP.w.onerror=()=>dspStop(null, '音の処理で問題が起きました'); }
+      const id=++DSP.id, c=x.slice();   // 呼び手の元の音は残す（写しを渡す）
+      DSP.p[id]={ res, rej, owner:owner||'' };
+      DSP.w.postMessage(Object.assign({ id, kind, x:c, sr }, extra||{}), [c.buffer]);
+    }catch(e){ rej(e); }
+  });
+}
+// owner を指定したときは、その持ち主の依頼が待っているときだけ止める
+function dspStop(owner, msg){
+  if(!DSP.w) return;
+  if(owner && !Object.values(DSP.p).some(q=>q.owner===owner)) return;
+  try{ DSP.w.terminate(); }catch(e){}
+  DSP.w=null; const p=DSP.p; DSP.p={};
+  const err=new Error(msg||'打ち切りました'); err.cancel=!msg; Object.values(p).forEach(q=>q.rej(err));
+}
+
 /* ---------- 声の再生（再生中は聞き取りを止め、再生音をAIが拾わないようにする） ---------- */
-let _player=null, _playId=null, _playGen=0;
+let _player=null, _playId=null, _playGen=0, _playOff=0;
 function wav(i16, sr){
   const buf=new ArrayBuffer(44+i16.length*2), v=new DataView(buf);
   const w=(o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
@@ -809,23 +1104,37 @@ function wav(i16, sr){
   new Int16Array(buf,44).set(i16);
   return new Blob([buf], {type:'audio/wav'});
 }
-function playMark(){ document.querySelectorAll('[data-play]').forEach(b=>b.classList.toggle('playing', b.dataset.play===_playId)); }
+function playMark(){ document.querySelectorAll('[data-play]').forEach(b=>b.classList.toggle('playing', b.dataset.play===_playId));
+  const a=document.getElementById('spPlay'); if(a) a.textContent=_playId==='sp:all'?'■ 止める':'▶ 全体を聞く';
+  const s=document.getElementById('spPlaySel'); if(s) s.textContent=_playId==='sp:sel'?'■ 止める':'▶ 選んだ所だけ聞く'; }
 function playStop(){
   _playGen++;
   if(_player){ const p=_player; _player=null; try{ p.onended=p.onpause=p.onerror=null; p.pause(); }catch(e){} try{ URL.revokeObjectURL(p.src); }catch(e){} }
   _playId=null; playMark();
   resumeFor('play');
 }
+function canPlay(){ if(LS.rec){ toast('録音中は再生できません。録音を止めてから聞いてください', 3500); return false; } return true; }
 async function playClip(id){
   if(_playId===id){ playStop(); return; }
+  if(!canPlay()) return;
   playStop();
   const g=_playGen;
   let c=null; try{ c=await dbGet('clip', id); }catch(e){}
   if(g!==_playGen) return;
   if(!c || !c.pcm){ toast('声が見つかりませんでした'); return; }
+  const sr=c.sr||CLIP_SR;
+  if(CFG.nr){ let f=null;
+    if(c.pcm.length>CLIP_SR*20) toast('雑音を減らしています…', 2000);
+    try{ f=await dspRun('nr', i16f(c.pcm), sr); }catch(e){ if(e.cancel) return; console.warn(e); }   // 打ち切り（画面を離れた）なら鳴らさない
+    if(g!==_playGen) return;
+    if(f){ playPcm(id, f16(f), sr); return; } }
+  playPcm(id, c.pcm, sr);
+}
+// i16 … 16bit の音。off … 声紋の再生位置の線のための開始時刻（秒）
+function playPcm(key, i16, sr, off){
   pauseFor('play');
-  const a=new Audio(URL.createObjectURL(wav(c.pcm, c.sr||CLIP_SR)));
-  _player=a; _playId=id; playMark();
+  const a=new Audio(URL.createObjectURL(wav(i16, sr)));
+  _player=a; _playId=key; _playOff=off||0; playMark();
   const end=()=>{ if(_player===a) playStop(); };
   a.onended=end; a.onpause=end; a.onerror=end;
   a.play().catch(end);
@@ -834,6 +1143,246 @@ async function playClip(id){
 /* =====================================================================
    画面
    ===================================================================== */
+/* ---------- 声紋（スペクトログラム）v1.1.0 ----------
+   鳥調査アプリ v247 の声紋の見え方（高さ・雑音を沈める・濃淡・拡大）にならう。
+   「雑音: 沈める」… 高さごとに、いつも鳴っている音（中央値）を差し引いて、声を浮かせて見せる（表示だけ）
+   囲んだ所だけ聞く … 囲んだ時間を切り出し、囲んだ高さの外を切って鳴らす（高さ150Hz未満のなぞりは時間だけ）
+   AIで調べる … 囲んだ所（無ければ全体）を3秒ずつAIに渡し、種ごとの最大値を出す */
+const SP_H=256, SP_MAX_COLS=6000, SP_FMAXES=[3000,6000,12000];
+const SP_RANGES=[{ db:25, ja:'くっきり' }, { db:45, ja:'ふつう' }, { db:70, ja:'かすかな音も' }];
+const SP={ gen:0, det:null, f32:null, nr:null, sr:CLIP_SR, sel:null, zoom:1, db:null, floor:null, cols:0, pick:false, res:null };
+const _luts={};
+function specLut(){
+  if(_luts.c) return _luts.c;
+  const t=new Uint8Array(256*3), stops=[[0,[0,0,4]],[0.25,[59,15,112]],[0.5,[140,41,129]],[0.75,[254,159,109]],[1,[252,253,191]]];
+  for(let i=0;i<256;i++){ const v=i/255; let j=0; while(j<stops.length-2 && v>stops[j+1][0]) j++;
+    const [a0,c0]=stops[j], [a1,c1]=stops[j+1], u=(v-a0)/(a1-a0);
+    for(let q=0;q<3;q++) t[i*3+q]=Math.round(c0[q]+(c1[q]-c0[q])*u); }
+  return (_luts.c=t);
+}
+async function openSpec(id){
+  const d=DETS.get(id); if(!d || !d.clip) return;
+  const g=++SP.gen;
+  let c=null; try{ c=await dbGet('clip', d.clip); }catch(e){}
+  if(g!==SP.gen) return;
+  if(!c || !c.pcm){ toast('声が見つかりませんでした'); return; }
+  openSheet(specHtml(d));   // ここで SP.gen が進む
+  const g2=SP.gen;
+  Object.assign(SP, { det:id, f32:i16f(c.pcm), nr:null, sr:c.sr||CLIP_SR, sel:null, zoom:1, db:null, pick:false, res:null });
+  specLabels(); specSelPaint(); specFit(); specBind();
+  await specCompute(g2);
+}
+function specHtml(d){
+  return `<h2 id="spTitle" style="margin-bottom:2px">声紋 ・ ${esc(nameOf(d))}</h2>
+    <div class="small muted" style="margin-bottom:10px">${shortDate(d.t0)} ${hm(d.t0)} ・ ${d.clip_sec||''}秒　横が時間、縦が音の高さ。明るいほど強い音</div>
+    <div id="spWrap"><div id="spBox"><canvas id="spCv" height="${SP_H}"></canvas><canvas id="spSel" height="${SP_H}" aria-label="声紋。範囲を選ぶを押してからなぞると囲めます"></canvas></div></div>
+    <div class="spAx"><span id="spAxT"></span><span id="spAxF"></span></div>
+    <div class="spTools">
+      <button class="btn pri" id="spPlay" onclick="specPlay(false)">▶ 全体を聞く</button>
+      <button class="btn" id="spPickB" onclick="specPickToggle()" aria-pressed="false">□ 範囲を選ぶ</button>
+    </div>
+    <div class="spTools">
+      <button class="btn" onclick="specToggle('fmax')">高さ <span id="spF"></span></button>
+      <button class="btn" onclick="specToggle('clean')">雑音: <span id="spC"></span></button>
+      <button class="btn" onclick="specToggle('range')">濃淡: <span id="spR"></span></button>
+      <button class="btn" onclick="specZoom(-1)" aria-label="縮める">－</button>
+      <button class="btn" onclick="specZoom(1)" aria-label="広げる">＋</button>
+    </div>
+    <div id="spSelBox" style="margin-top:10px"></div>
+    <div class="card" style="margin-top:12px"><div class="setrow"><div class="body"><div class="t">聞くとき雑音を減らす</div><div class="d">低い音（風・車）を切り、いつも鳴っている音を差し引いて鳴らします。保存した音は変えません</div></div>
+      <button class="sw" role="switch" id="spNr" aria-checked="${CFG.nr}" onclick="cfgSet('nr',!CFG.nr);this.setAttribute('aria-checked',CFG.nr)" aria-label="聞くとき雑音を減らす"></button></div></div>
+    <div class="acts" style="margin-top:14px"><button class="btn wide" onclick="detMenu('${safeId(d.id)}')">正しいかを記入する・メモ</button><button class="btn wide" onclick="closeSheet()">閉じる</button></div>`;
+}
+function specLabels(){
+  const set=(id,t)=>{ const e=document.getElementById(id); if(e) e.textContent=t; };
+  set('spF', `0〜${CFG.spFmax/1000}kHz`); set('spC', CFG.spClean?'沈める':'そのまま'); set('spR', SP_RANGES[CFG.spRange].ja);
+  set('spAxT', SP.f32 ? `0〜${(SP.f32.length/SP.sr).toFixed(1)}秒${SP.zoom>1?' ・ ×'+SP.zoom+'（横に動かせます）':''}` : '');
+  set('spAxF', `縦 0〜${CFG.spFmax/1000}kHz`);
+}
+// 声紋を worker で計算して描く。g … 開いた声紋の世代。高さを切り替えたら前の計算の結果は捨てる（cid）
+let _specCid=0;
+async function specCompute(g){
+  if(!SP.f32) return;
+  const cid=++_specCid, ax=document.getElementById('spAxT');
+  if(ax) ax.textContent='声紋を描いています…';
+  let r=null;
+  try{ r=await dspRun('spec', SP.f32, SP.sr, { fm:CFG.spFmax, H:SP_H, maxCols:SP_MAX_COLS }, 'sp'); }
+  catch(e){ if(!e.cancel && g===SP.gen){ console.warn(e); toast('声紋を描けませんでした: '+(e&&e.message||e), 5000); } return; }
+  if(g!==SP.gen || cid!==_specCid) return;
+  Object.assign(SP, { db:r.db, floor:r.floor, cols:r.cols });
+  specPaint(); specSelDraw();
+}
+// 色を塗る。上端は強さの上位0.3%（一番強い1点に引きずられない）、下端は上端から濃淡の幅だけ下（鳥調査アプリと同じ）
+function specPaint(){
+  const cv=document.getElementById('spCv'), db=SP.db, fl=SP.floor; if(!cv || !db) return;
+  const cols=SP.cols, H=SP_H, clean=CFG.spClean;
+  cv.width=cols; const sc=document.getElementById('spSel'); if(sc) sc.width=cols;
+  const step=Math.max(1, Math.floor(cols*H/60000)), smp=[];
+  for(let i=0;i<cols*H;i+=step){ const y=Math.floor(i/cols); smp.push(clean ? db[i]-fl[y] : db[i]); }
+  smp.sort((a,b)=>a-b);
+  let top=smp[Math.min(smp.length-1, Math.floor(smp.length*0.997))], bot=top-SP_RANGES[CFG.spRange].db;
+  bot=clean ? Math.max(bot, 3) : Math.max(bot, -100);
+  if(top<bot+(clean?20:10)) top=bot+(clean?20:10);
+  const lut=specLut(), ctx=cv.getContext('2d'), img=ctx.createImageData(cols, H), sp=1/(top-bot);
+  for(let y=0;y<H;y++){ const off=clean ? fl[y] : 0;
+    for(let c=0;c<cols;c++){ const v=Math.max(0, Math.min(1, (db[y*cols+c]-off-bot)*sp)), k=(v*255|0)*3, p=(y*cols+c)*4;
+      img.data[p]=lut[k]; img.data[p+1]=lut[k+1]; img.data[p+2]=lut[k+2]; img.data[p+3]=255; } }
+  ctx.putImageData(img, 0, 0);
+  specLabels();
+}
+function specFit(){
+  const wrap=document.getElementById('spWrap'), box=document.getElementById('spBox'); if(!wrap || !box) return;
+  const w=SP.zoom===1 ? '100%' : Math.round(wrap.clientWidth*SP.zoom)+'px';
+  box.style.width=w; for(const id of ['spCv','spSel']){ const e=document.getElementById(id); if(e) e.style.width=w; }
+}
+function specZoom(dir){
+  const wrap=document.getElementById('spWrap'); if(!wrap || !SP.f32) return;
+  const z0=SP.zoom, z=Math.max(1, Math.min(16, dir>0 ? z0*2 : z0/2)); if(z===z0) return;
+  const mid=(wrap.scrollLeft+wrap.clientWidth/2)/(wrap.clientWidth*z0);   // 真ん中の時刻を動かさない
+  SP.zoom=z; specFit(); wrap.scrollLeft=Math.max(0, mid*wrap.clientWidth*z-wrap.clientWidth/2); specLabels();
+}
+function specToggle(what){
+  if(!SP.f32) return;
+  if(what==='fmax'){ const i=SP_FMAXES.indexOf(CFG.spFmax); cfgSet('spFmax', SP_FMAXES[(i+1)%SP_FMAXES.length]); SP.sel=null; SP.res=null; specSelPaint(); specLabels(); specCompute(SP.gen); return; }
+  else if(what==='clean') cfgSet('spClean', !CFG.spClean);
+  else if(what==='range') cfgSet('spRange', (CFG.spRange+1)%SP_RANGES.length);
+  specPaint(); specSelDraw();
+}
+function specPickToggle(){
+  SP.pick=!SP.pick;
+  const b=document.getElementById('spPickB'), sc=document.getElementById('spSel');
+  if(b){ b.setAttribute('aria-pressed', SP.pick); b.textContent=SP.pick?'□ なぞって囲む（押すと終わり）':'□ 範囲を選ぶ'; }
+  if(sc) sc.classList.toggle('pick', SP.pick);
+}
+function specBind(){
+  const sc=document.getElementById('spSel'); if(!sc) return;
+  let st=null;
+  const at=e=>{ const r=sc.getBoundingClientRect(); return { x:Math.max(0, Math.min(1, (e.clientX-r.left)/r.width)), y:Math.max(0, Math.min(1, (e.clientY-r.top)/r.height)) }; };
+  sc.onpointerdown=e=>{ if(!SP.pick) return; st=at(e); try{ sc.setPointerCapture(e.pointerId); }catch(x){} e.preventDefault(); };
+  sc.onpointermove=e=>{ if(!st) return; SP.sel=specBoxFrom(st, at(e)); specSelDraw(); };
+  sc.onpointerup=sc.onpointercancel=e=>{ if(!st) return; const s=specBoxFrom(st, at(e)); st=null;
+    SP.sel = s.t1-s.t0>=0.1 ? s : null; SP.res=null; specSelDraw(); specSelPaint(); };
+}
+function specBoxFrom(a, b){
+  const dur=SP.f32.length/SP.sr, fm=CFG.spFmax;
+  let f0=(1-Math.max(a.y,b.y))*fm, f1=(1-Math.min(a.y,b.y))*fm;
+  if(f1-f0<150){ f0=null; f1=null; }   // 横になぞっただけ → 高さでは絞らない
+  return { t0:Math.min(a.x,b.x)*dur, t1:Math.max(a.x,b.x)*dur, f0, f1 };
+}
+function specSelDraw(head){
+  const sc=document.getElementById('spSel'); if(!sc || !SP.f32) return;
+  const ctx=sc.getContext('2d'), W=sc.width, H=sc.height, dur=SP.f32.length/SP.sr, fm=CFG.spFmax;
+  ctx.clearRect(0,0,W,H);
+  const s=SP.sel;
+  if(s){ const x0=s.t0/dur*W, x1=s.t1/dur*W, y0=s.f1!=null?(1-Math.min(1,s.f1/fm))*H:0, y1=s.f0!=null?(1-s.f0/fm)*H:H;
+    ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(0,0,W,H); ctx.clearRect(x0,y0,x1-x0,y1-y0);
+    // 横に引き伸ばして表示するので、縦の線は表示の幅に合わせて太くし、横の線は2pxのまま
+    const kx=W/Math.max(1, sc.clientWidth||W), vx=2*kx;
+    ctx.fillStyle='#7FE0B0'; ctx.fillRect(x0,y0,x1-x0,2); ctx.fillRect(x0,y1-2,x1-x0,2); ctx.fillRect(x0,y0,vx,y1-y0); ctx.fillRect(x1-vx,y0,vx,y1-y0); }
+  if(head!=null){ const kx=W/Math.max(1, sc.clientWidth||W), x=head/dur*W; ctx.fillStyle='#fff'; ctx.fillRect(x-kx, 0, 2*kx, H); }
+}
+function specSelPaint(){
+  const el=document.getElementById('spSelBox'); if(!el) return;
+  const s=SP.sel, aiOk=AI.state==='ready';
+  el.innerHTML = (s ? `<div class="small muted">選んだ所: ${s.t0.toFixed(1)}〜${s.t1.toFixed(1)}秒${s.f0!=null?` ・ ${(s.f0/1000).toFixed(1)}〜${(s.f1/1000).toFixed(1)}kHz`:''}</div>
+      <div class="spTools"><button class="btn pri" id="spPlaySel" onclick="specPlay(true)">▶ 選んだ所だけ聞く</button>
+        <button class="btn" onclick="specAsk()" ${aiOk?'':'disabled'}>選んだ所をAIで調べる</button>
+        <button class="btn" onclick="SP.sel=null;SP.res=null;specSelDraw();specSelPaint()">選び直す</button></div>`
+    : `<div class="spTools"><button class="btn" onclick="specAsk()" ${aiOk?'':'disabled'}>全体をAIで調べる</button></div>`)
+    + `<div id="spRes" class="spRes"></div>`;
+  playMark(); specResPaint();
+}
+async function specPlay(onlySel){
+  const key=onlySel?'sp:sel':'sp:all';
+  if(_playId===key){ playStop(); return; }
+  if(!SP.f32 || !canPlay()) return;
+  playStop();
+  const g=SP.gen, pg=_playGen, sr=SP.sr, s=onlySel && SP.sel;
+  let f=SP.f32;
+  if(CFG.nr){   // 全体で雑音を見積もってから切り出す（worker で計算。結果は開いている間とっておく）
+    if(!SP.nr){ if(SP.f32.length>CLIP_SR*20) toast('雑音を減らしています…', 2000);
+      try{ const r=await dspRun('nr', SP.f32, sr, null, 'sp'); if(g===SP.gen) SP.nr=r; }catch(e){ if(e.cancel) return; console.warn(e); } }
+    if(g!==SP.gen || pg!==_playGen || (onlySel && SP.sel!==s)) return;   // 待つ間に選び直した・消したなら古い範囲は鳴らさない（v1.1.0 再監査 Major）
+    if(SP.nr) f=SP.nr;
+  }
+  let off=0;
+  if(s){ f=f.slice(Math.floor(s.t0*sr), Math.ceil(s.t1*sr)); off=s.t0; if(s.f0!=null) f=bandpass(f, sr, s.f0, s.f1); }
+  if(g!==SP.gen || pg!==_playGen || (onlySel && SP.sel!==s)) return;
+  playPcm(key, f16(f), sr, off);
+  const loop=()=>{ if(g!==SP.gen || _playId!==key || !_player){ specSelDraw(); return; }
+    specSelDraw(_playOff+_player.currentTime); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+}
+// 48kHz（AIの入力）の i 番目の値を、元の音から直線でつないで作る（全体を48kHzに広げた写しは作らない。5分で58MBになるため）
+function at48(f, sr, i){ const p=i*sr/SR, j=Math.floor(p), u=p-j; if(j>=f.length) return 0; return f[j]*(1-u)+(j+1<f.length?f[j+1]:f[j])*u; }
+const ASK_PER=4;   // 声紋の「AIで調べる」は4区間ずつ頼む（聞き取りの判定をはさめるように）
+async function specAsk(){
+  if(AI.state!=='ready'){ toast('先に鳴き声AIを取り込んでください'); return; }
+  if(!SP.f32) return;
+  const g=SP.gen, s=SP.sel, el=()=>document.getElementById('spRes');
+  SP.res='busy'; specResPaint();
+  try{
+    await workerEnsure();
+    let f=SP.f32;
+    if(s){ f=f.slice(Math.floor(s.t0*SP.sr), Math.ceil(s.t1*SP.sr)); if(s.f0!=null) f=bandpass(f, SP.sr, s.f0, s.f1); }
+    const sr=SP.sr, n48=Math.floor(f.length*SR/sr), starts=[];
+    if(n48<=WIN) starts.push(-1);
+    else { const step=n48>60*SR ? WIN : WIN/2; let st=0; for(; st+WIN<=n48; st+=step) starts.push(st); if(starts[starts.length-1]+WIN<n48) starts.push(n48-WIN); }
+    const P=AI.prep, best=new Map();
+    for(let i0=0;i0<starts.length;i0+=ASK_PER){
+      const part=starts.slice(i0, i0+ASK_PER), pcm=new Float32Array(part.length*WIN);
+      part.forEach((st,i)=>{ const o=i*WIN;
+        if(st<0){ const pad=Math.floor((WIN-n48)/2); for(let k=0;k<n48;k++) pcm[o+pad+k]=at48(f, sr, k); }   // 3秒に満たない音は真ん中に置く
+        else for(let k=0;k<WIN;k++) pcm[o+k]=at48(f, sr, st+k); });
+      const r=await aiAsk({ message:'scores', pcm }, [pcm.buffer], 60000, 0);
+      if(g!==SP.gen || SP.sel!==s) return;
+      for(let k=0;k<r.n;k++){ const row=r.scores.subarray(k*r.C, (k+1)*r.C), cand=CFG.hk ? P.hkIdx : row.keys();
+        for(const i of cand){ const v=row[i]; if(v<CAND_MIN || P.nonBird.has(i)) continue;
+          const ja=P.idxName.get(i) || (P.labels[i]&&P.labels[i].ja) || ''; if(ja && (!best.has(ja) || v>best.get(ja))) best.set(ja, v); } }
+    }
+    SP.res=[...best.entries()].sort((a,b)=>b[1]-a[1]).slice(0, CAND_N);
+  }catch(e){ if(g!==SP.gen) return; SP.res={ err:String(e&&e.message||e) }; }
+  specResPaint();
+}
+function specResPaint(){
+  const el=document.getElementById('spRes'); if(!el) return;
+  const r=SP.res;
+  if(!r){ el.innerHTML=''; return; }
+  if(r==='busy'){ el.innerHTML='<div class="small muted">AIが調べています…</div>'; return; }
+  if(r.err){ el.innerHTML=`<div class="small" style="color:var(--danger)">調べられませんでした: ${esc(r.err)}</div>`; return; }
+  el.innerHTML = r.length ? `<div class="small muted" style="margin:6px 2px">AIの答え（押すとこの記録の名前にします。確からしさは目安）</div>
+      <div class="card list">${r.map(([ja,v])=>`<button class="birdrow" data-act="setname" data-id="${esc(SP.det)}" data-v="${esc(ja)}" data-keep="1">${avatar(ja,true)}<div class="body"><div class="nm">${esc(ja)}</div></div><span class="n">${Math.round(v*100)}%</span></button>`).join('')}</div>`
+    : '<div class="small muted">鳥の声は見つかりませんでした（どの鳥も5%未満）</div>';
+}
+
+/* ---------- いまの音の声紋（きく画面の流れる帯） ---------- */
+let _liveRaf=0, _liveDrawT=0, _liveBuf=null, _liveFloor=null;
+function liveStart(){ if(!_liveRaf) _liveRaf=requestAnimationFrame(liveDraw); }
+function liveDraw(){
+  _liveRaf=0;
+  const an=LS.analyser; if(!an || !LS.cap) return;   // 聞き取りが止まったら描くのもやめる
+  _liveRaf=requestAnimationFrame(liveDraw);
+  const cv=document.getElementById('liveCv');
+  if(!cv || !CFG.liveOn || UI.tab!=='listen' || document.hidden || !$('#pocket').hidden) return;
+  const now=performance.now(); if(now-_liveDrawT<40) return; _liveDrawT=now;
+  const bins=an.frequencyBinCount, H=cv.height, W=cv.width;
+  if(!_liveBuf || _liveBuf.length!==bins){ _liveBuf=new Float32Array(bins); _liveFloor=null; }
+  an.getFloatFrequencyData(_liveBuf);
+  const sr=LS.ctx ? LS.ctx.sampleRate : SR, top=Math.min(bins, Math.floor(12000/(sr/an.fftSize)));
+  if(!_liveFloor || _liveFloor.length!==H) _liveFloor=new Float32Array(H).fill(-100);
+  const ctx=cv.getContext('2d'); ctx.drawImage(cv, -2, 0);
+  const img=ctx.createImageData(2, H), lut=specLut();
+  for(let y=0;y<H;y++){
+    const k0=Math.floor((H-1-y)/H*top), k1=Math.max(k0+1, Math.floor((H-y)/H*top));
+    let v=-140; for(let k=k0;k<k1;k++){ const a=_liveBuf[k]; if(a>v) v=a; }
+    if(!isFinite(v)) v=-140;
+    const fl=_liveFloor[y]; _liveFloor[y]= v<fl ? fl+(v-fl)*0.3 : fl+(v-fl)*0.004;   // いつも鳴っている音をゆっくり追う
+    const e=CFG.spClean ? (v-_liveFloor[y]-3)/30 : (v+100)/70, q=Math.max(0, Math.min(255, e*255|0))*3;
+    for(let x=0;x<2;x++){ const p=(y*2+x)*4; img.data[p]=lut[q]; img.data[p+1]=lut[q+1]; img.data[p+2]=lut[q+2]; img.data[p+3]=255; }
+  }
+  ctx.putImageData(img, W-2, 0);
+}
+
 const UI={ tab:'listen', day:null, birdSort:'new', mapPeriod:'all', mapSp:'' };
 const TABS=[['listen','きく',IC.ear],['log','きろく',IC.list],['map','地図',IC.map],['birds','見つけた鳥',IC.bird]];
 function paintTabs(){
@@ -874,7 +1423,9 @@ function renderListen(){
   if(AI.state==='nosupport'){
     m.innerHTML=`<div class="card welcome"><h2>この端末では使えません</h2><p class="muted">マイク・AIの処理に対応していないブラウザです。Chrome（Android）か Safari（iPhone）の新しい版で開いてください。</p></div>`; return; }
   if(AI.state!=='ready'){ m.innerHTML=welcomeHtml()+todaySection(); paintToday(); return; }
-  m.innerHTML=`<div class="stage" id="stage"></div>${todaySection()}`;
+  m.innerHTML=`<div class="stage" id="stage"></div>
+    <div id="liveBox" hidden><canvas id="liveCv" width="320" height="96" aria-label="いまの音の声紋"></canvas><div class="liveCap"><span>いまの音（声紋・右が今）</span><span>0〜12kHz</span></div></div>
+    ${todaySection()}`;
   paintListen(); paintToday();
 }
 function welcomeHtml(){
@@ -916,7 +1467,12 @@ function paintListen(){
     <p class="hint">${on
       ? '画面をつけたままにしてください。画面が消えると一時停止し、つけ直すと続きから聞きます'
       : '外で押すと、聞こえた鳥の名前・時刻・場所・声を記録します'}</p>
-    <div class="metaRow" id="metaRow"></div>`;
+    <div class="metaRow" id="metaRow"></div>
+    ${LS.cap ? `<div class="recRow">
+      <button class="btn" onclick="saveBack()">${IC.rewind}いまの音を残す（直前${CFG.back}秒）</button>
+      <button class="btn rec${LS.rec?' on':''}" onclick="recToggle()">${LS.rec?`止める <span id="recT" style="font-variant-numeric:tabular-nums">${dur(LS.rec.n/CLIP_SR)}</span>`:'録音する'}</button>
+    </div>` : ''}`;
+  const lb=$('#liveBox'); if(lb) lb.hidden=!(LS.cap && CFG.liveOn);
   paintMeta();
 }
 function paintMeta(){
@@ -927,7 +1483,7 @@ function paintMeta(){
 }
 function todayAgg(){
   const k=dayKey(Date.now()), m=new Map();
-  for(const d of DETS.values()){ if(dayKey(d.t0)!==k) continue;
+  for(const d of DETS.values()){ if(dayKey(d.t0)!==k || !isBird(d)) continue;
     let a=m.get(d.ja); if(!a){ a={ ja:d.ja, n:0, last:0, best:null, max:0, fixed:false }; m.set(d.ja,a); }
     a.n++; if(d.t1>a.last) a.last=d.t1; if(d.fixed) a.fixed=true;
     if((d.max||0)>a.max) a.max=d.max||0;
@@ -952,7 +1508,7 @@ function paintToday(){
       : `<div class="empty card">${IC.bird}<div>${LS.want?'耳をすませています…<br><span class="small">鳥の声が聞こえると、ここに出てきます</span>':'まだありません'}</div></div>`);
   LS.flash.clear(); playMark();
 }
-function firstSeen(){ const m=new Map(); for(const d of DETS.values()){ const k=dayKey(d.t0); if(!m.has(d.ja) || k<m.get(d.ja)) m.set(d.ja,k); } return m; }
+function firstSeen(){ const m=new Map(); for(const d of DETS.values()){ if(!isBird(d)) continue; const k=dayKey(d.t0); if(!m.has(d.ja) || k<m.get(d.ja)) m.set(d.ja,k); } return m; }
 
 /* ---------- 暗い画面（電池の節約。聞き取りは続ける） ---------- */
 let _pocketTap=0;
@@ -966,7 +1522,7 @@ function paintPocket(){ const p=$('#pocket'); if(p.hidden) return;
 /* ---------- きろく ---------- */
 function dayGroups(){
   const g=new Map();
-  for(const d of DETS.values()){ const k=dayKey(d.t0); let a=g.get(k); if(!a){ a={ key:k, dets:[], sp:new Map(), sec:0 }; g.set(k,a); } a.dets.push(d); a.sp.set(d.ja, (a.sp.get(d.ja)||0)+1); }
+  for(const d of DETS.values()){ const k=dayKey(d.t0); let a=g.get(k); if(!a){ a={ key:k, dets:[], sp:new Map(), sec:0, recs:0 }; g.set(k,a); } a.dets.push(d); if(d.manual) a.recs++; if(isBird(d)) a.sp.set(d.ja, (a.sp.get(d.ja)||0)+1); }
   for(const s of SESS.values()){ const a=g.get(dayKey(s.t0)); if(a) a.sec+=s.sec||0; }
   return [...g.values()].sort((a,b)=>a.key<b.key?1:-1);
 }
@@ -976,7 +1532,7 @@ function renderLog(){
   $('#main').innerHTML = gs.length ? gs.map(g=>{
     const names=[...g.sp.entries()].sort((a,b)=>b[1]-a[1]).map(x=>x[0]);
     return `<button class="card day" onclick="openDay('${g.key}')">
-      <div class="top"><span class="dt">${dayLabel(g.key)}</span><span class="cnt">${g.sp.size}種 ・ ${g.dets.length}回</span></div>
+      <div class="top"><span class="dt">${dayLabel(g.key)}</span><span class="cnt">${g.sp.size}種 ・ ${g.dets.length-g.recs}回${g.recs?' ・ 録音'+g.recs:''}</span></div>
       ${g.sec?`<div class="small muted">聞いた時間 ${durWords(g.sec)}</div>`:''}
       <div class="names">${names.slice(0,8).map(n=>`<span>${esc(n)}</span>`).join('')}${names.length>8?`<span>ほか${names.length-8}種</span>`:''}</div>
     </button>`; }).join('')
@@ -987,7 +1543,7 @@ function renderDay(){
   const k=UI.day;
   const ds=detList().filter(d=>dayKey(d.t0)===k);
   if(!ds.length){ UI.day=null; renderLog(); return; }
-  const sp=new Set(ds.map(d=>d.ja));
+  const sp=new Set(ds.filter(isBird).map(d=>d.ja));
   hdr(`<button class="back" onclick="history.back()" aria-label="きろくへ戻る">${IC.back}きろく</button>`);
   const hasPos=ds.some(d=>d.lat!=null);
   $('#main').innerHTML=`<div class="sec-h" style="margin-top:4px"><h2 style="font-size:23px">${dayLabel(k)}</h2><span>${sp.size}種 ・ ${ds.length}回</span></div>
@@ -1001,9 +1557,9 @@ function rowHtml(d){
   const note=d.clip?'':(d.clip_note?`<span>${esc(d.clip_note)}</span>`:'');
   return `<div class="row">
     <span class="tm">${hm(d.t0)}</span>
-    ${avatar(d.ja,true)}
-    <div class="body"><div class="nm">${esc(d.ja)}</div>
-      <div class="sub">${conf(d)}${d.count>1?`<span>${Math.round((d.t1-d.t0)/1000)}秒間</span>`:''}${d.lat==null?'<span>場所なし</span>':''}${note}</div></div>
+    ${avatar(nameOf(d),true)}
+    <div class="body"><div class="nm">${esc(nameOf(d))}</div>
+      <div class="sub">${conf(d)}${!d.manual&&d.count>1?`<span>${Math.round((d.t1-d.t0)/1000)}秒間</span>`:''}${d.manual&&d.human?'<span>人の声あり</span>':''}${d.manual&&!d.ja&&d.cands&&d.cands.length?`<span>AI: ${esc(d.cands[0].ja)}ほか</span>`:''}${d.lat==null?'<span>場所なし</span>':''}${d.memo?'<span>メモあり</span>':''}${note}</div></div>
     ${d.clip?playBtn(d.clip):''}
     <button class="more" onclick="detMenu('${safeId(d.id)}')" aria-label="この記録の操作">${IC.more}</button>
   </div>`;
@@ -1014,16 +1570,58 @@ async function delDay(k){
   try{ await delDets(ids); toast('消しました'); }catch(e){ toast('消せませんでした'); }
   history.back();
 }
+// 記録の詳しい画面: 声・声紋・正しいかの記入（合ってる／別の鳥／鳥ではない／分からない）・メモ
 function detMenu(id){
   const d=DETS.get(id); if(!d) return;
-  openSheet(`<h2>${esc(d.ja)}</h2>
-    <p class="muted small" style="margin-top:-6px">${shortDate(d.t0)} ${hm(d.t0)} ・ ${d.fixed?'名前を直した（AIは「'+esc(d.orig_ja)+'」）':'AIの判定 '+Math.round((d.max||0)*100)+'%'}${d.acc!=null?' ・ 位置 ±'+d.acc+'m':''}</p>
-    <div class="acts">
-      <button class="btn wide" onclick="fixName('${safeId(id)}')">名前を直す（AIの間違い）</button>
-      <button class="btn wide" data-act="species" data-v="${esc(d.ja)}">${esc(d.ja)}の記録をまとめて見る</button>
-      <button class="btn danger wide" onclick="delOne('${safeId(id)}')">この記録を消す</button>
+  const L=d.label||'', sid=safeId(id);
+  const vb=(k,t)=>`<button class="btn" aria-pressed="${L===k}" onclick="labelSet('${sid}','${k}')">${t}</button>`;
+  const info = d.manual
+    ? `自分で録音（${d.manual==='back'?'さかのぼり':'開始・停止'}）・${d.clip_sec}秒${d.human?' ・ 人の声を含む':''}${d.ja?'':' ・ 名前なし'}`
+    : (d.fixed?'名前を直した（AIは「'+esc(d.orig_ja)+'」）':'AIの判定 '+Math.round((d.max||0)*100)+'%');
+  const cands = !d.manual ? '' : (d.cands && d.cands.length
+    ? `<h3>この間にAIが聞き取った鳥（押すとその名前にします）</h3><div class="cands">${d.cands.map(c=>`<button data-act="setname" data-id="${esc(id)}" data-v="${esc(c.ja)}" data-keep="1" aria-pressed="${c.ja===d.ja}">${esc(c.ja)} ${Math.round(c.s*100)}%</button>`).join('')}</div>`
+    : '<p class="small muted">この間にAIが聞き取った鳥はありません。声紋の「AIで調べる」も使えます</p>');
+  openSheet(`<h2>${esc(nameOf(d))}</h2>
+    <p class="muted small" style="margin-top:-6px">${shortDate(d.t0)} ${hm(d.t0)} ・ ${info}${d.acc!=null?' ・ 位置 ±'+d.acc+'m':''}</p>
+    ${d.clip?`<div style="display:flex;gap:10px;align-items:center;margin-bottom:4px">${playBtn(d.clip)}<button class="btn" style="flex:1" onclick="openSpec('${sid}')">${IC.spec}声紋を見る</button></div>`
+      :(d.clip_note?`<p class="small muted">${esc(d.clip_note)}</p>`:'')}
+    ${cands}
+    <h3>${d.manual?'名前と、確かめた結果':'この判定は正しい？'}</h3>
+    <div class="verd">
+      ${d.manual ? `<button class="btn" aria-pressed="${!!d.ja}" onclick="fixName('${sid}')">${d.ja?'名前を変える':'名前を付ける'}</button>`
+        : vb('ok','✓ 合ってる')+`<button class="btn" aria-pressed="${L==='other'}" onclick="fixName('${sid}')">別の鳥（名前を直す）</button>`}
+      ${vb('nonbird','鳥ではない')}
+      ${vb('unknown','? 分からない')}
+    </div>
+    <div class="tiny muted" style="margin:2px 4px 0">もう一度押すと取り消し。「鳥ではない」は、見つけた鳥の数に入れません</div>
+    <h3>メモ</h3>
+    <textarea class="memo" id="memo" maxlength="300" placeholder="気づいたこと（姿も見た・さえずり・地鳴き など）" oninput="memoInput('${sid}', this.value)">${esc(d.memo||'')}</textarea>
+    <div class="acts" style="margin-top:14px">
+      ${isBird(d)?`<button class="btn wide" data-act="species" data-v="${esc(d.ja)}">${esc(d.ja)}の記録をまとめて見る</button>`:''}
+      <button class="btn danger wide" onclick="delOne('${sid}')">この記録を消す</button>
       <button class="btn wide" onclick="closeSheet()">閉じる</button>
     </div>`);
+  playMark();
+}
+async function labelSet(id, kind){
+  const d=DETS.get(id); if(!d || !LABELS[kind] || kind==='other') return;
+  if(kind==='ok' && !d.ja) return;
+  d.label = d.label===kind ? '' : kind;
+  d.labeled_at=d.updated_at=new Date().toISOString();
+  LS.events.forEach(e=>{ if(e.rec.id===id) e.closed=true; });   // 記入した記録には、聞き取りの続きを足さない
+  await savDet(d);
+  detMenu(id); render();
+}
+let _memo=null;   // { id, t }  入力の0.6秒後にまとめて保存
+function memoInput(id, v){
+  const d=DETS.get(id); if(!d) return;
+  d.memo=String(v).slice(0,300);
+  clearTimeout(_memo&&_memo.t); _memo={ id, t:setTimeout(memoFlush, 600) };
+}
+function memoFlush(){
+  if(!_memo) return; const m=_memo; _memo=null; clearTimeout(m.t);
+  const d=DETS.get(m.id); if(!d) return;
+  d.updated_at=new Date().toISOString(); savDet(d);
 }
 async function delOne(id){
   if(!confirm('この記録（声も）を消します。よろしいですか？')) return;
@@ -1032,8 +1630,8 @@ async function delOne(id){
 }
 function fixName(id){
   const d=DETS.get(id); if(!d) return;
-  openSheet(`<h2>正しい名前を選ぶ</h2>
-    <p class="muted small" style="margin-top:-6px">いまの名前: ${esc(d.ja)}${d.fixed?'（AIは「'+esc(d.orig_ja)+'」）':''}</p>
+  openSheet(`<h2>${d.manual?'名前を選ぶ':'正しい名前を選ぶ'}</h2>
+    <p class="muted small" style="margin-top:-6px">いまの名前: ${esc(nameOf(d))}${d.fixed?'（AIは「'+esc(d.orig_ja)+'」）':''}</p>
     <input class="search" id="fixQ" placeholder="名前で探す（ひらがなでも可）" oninput="fixList('${safeId(id)}')" autocomplete="off">
     <div class="card list" id="fixL" style="margin-top:10px"></div>`);
   fixList(id);
@@ -1041,7 +1639,7 @@ function fixName(id){
 }
 function nameCandidates(){
   const P=AI.prep; const m=new Map();
-  for(const d of DETS.values()) if(!m.has(d.ja)) m.set(d.ja, d.sci||'');
+  for(const d of DETS.values()) if(d.ja && !m.has(d.ja)) m.set(d.ja, d.sci||'');
   if(P){ for(const [ja,sci] of P.hkNames) if(!m.has(ja)) m.set(ja, sci);
     if(!CFG.hk) for(const l of P.labels) if(l.ja && !m.has(l.ja) && !/[A-Za-z]/.test(l.ja)) m.set(l.ja, l.sci); }
   return m;
@@ -1052,30 +1650,42 @@ function fixList(id){
   const cur=DETS.get(id); if(!cur) return;
   const all=[...nameCandidates().entries()].filter(([ja])=>ja!==cur.ja);
   const used=speciesSet();
-  let hit=q ? all.filter(([ja])=>ja.includes(q)) : all.filter(([ja])=>used.has(ja));
-  hit.sort((a,b)=>(q ? (a[0].indexOf(q)-b[0].indexOf(q)) : 0) || a[0].localeCompare(b[0],'ja'));
+  const cand=new Map((cur.cands||[]).map((c,i)=>[c.ja,i]));   // 自分で録った音: AIの候補を先に
+  let hit=q ? all.filter(([ja])=>ja.includes(q)) : all.filter(([ja])=>used.has(ja) || cand.has(ja));
+  hit.sort((a,b)=>(q ? (a[0].indexOf(q)-b[0].indexOf(q)) : 0) || ((cand.has(a[0])?cand.get(a[0]):99)-(cand.has(b[0])?cand.get(b[0]):99)) || a[0].localeCompare(b[0],'ja'));
   const more=hit.length>60; hit=hit.slice(0,60);
   el.innerHTML = (q?'':'<div class="small muted" style="padding:10px 14px 0">これまでに記録した鳥（ほかは名前で探してください）</div>')
     + (hit.length ? hit.map(([ja])=>`<button class="birdrow" data-act="fix" data-id="${esc(id)}" data-v="${esc(ja)}">${avatar(ja,true)}<div class="body"><div class="nm">${esc(ja)}</div></div></button>`).join('')
        : '<div class="empty small">見つかりません</div>')
     + (more?'<div class="small muted" style="padding:10px 14px">さらに絞り込んでください</div>':'');
 }
-async function fixApply(id, ja){
-  const d=DETS.get(id); if(!d) return;
-  const sci=(AI.prep && AI.prep.hkNames.get(ja)) || nameCandidates().get(ja) || '';   // 書き換える前に引く
-  if(!d.fixed){ d.orig_ja=d.ja; d.orig_sci=d.sci; }
-  d.ja=ja; d.sci=sci; d.fixed=(ja!==d.orig_ja);
-  if(!d.fixed){ d.sci=d.orig_sci; delete d.orig_ja; delete d.orig_sci; }
-  d.updated_at=new Date().toISOString();
+// keep … 開いている画面（声紋・詳しい画面）を閉じずに名前だけ変える
+async function fixApply(id, ja, keep){
+  const d=DETS.get(id); if(!d || !ja) return;
+  const cs=(d.cands||[]).find(c=>c.ja===ja);
+  const sci=(AI.prep && AI.prep.hkNames.get(ja)) || nameCandidates().get(ja) || (cs&&cs.sci) || '';   // 書き換える前に引く
+  if(d.manual){ d.ja=ja; d.sci=sci; d.label='ok'; }   // 自分で録った音: 自分で付けた名前＝確かめた名前
+  else if(ja===d.ja){ d.label='ok'; }                 // 今の名前と同じ＝合ってる
+  else {
+    if(!d.fixed){ d.orig_ja=d.ja; d.orig_sci=d.sci; }
+    d.ja=ja; d.sci=sci; d.fixed=(ja!==d.orig_ja);
+    if(!d.fixed){ d.sci=d.orig_sci; delete d.orig_ja; delete d.orig_sci; }
+    d.label=d.fixed ? 'other' : 'ok';
+  }
+  d.labeled_at=d.updated_at=new Date().toISOString();
   LS.events.forEach(e=>{ if(e.rec.id===id) e.closed=true; });   // 聞き取り中でも、直した記録には足さない
   await savDet(d);
-  closeSheet(); render(); toast(`「${ja}」に直しました`);
+  if(keep){ const t=document.getElementById('spTitle');
+    if(t) t.textContent='声紋 ・ '+nameOf(d); else if(!$('#sheet').hidden) detMenu(id);
+    render(); }
+  else { closeSheet(); render(); }
+  toast(`「${ja}」にしました`);
 }
 
 /* ---------- 見つけた鳥 ---------- */
 function birdAgg(){
   const m=new Map();
-  for(const d of DETS.values()){
+  for(const d of DETS.values()){ if(!isBird(d)) continue;
     let a=m.get(d.ja); if(!a){ a={ ja:d.ja, sci:d.sci, n:0, first:d.t0, last:d.t0, days:new Set(), best:null }; m.set(d.ja,a); }
     a.n++; a.days.add(dayKey(d.t0)); if(d.t0<a.first) a.first=d.t0; if(d.t0>a.last) a.last=d.t0;
     if(d.clip && (!a.best || (d.max||0)>(a.best.max||0))) a.best=d;
@@ -1098,7 +1708,7 @@ function renderBirds(){
 }
 function openSpecies(ja){
   const a=birdAgg().find(x=>x.ja===ja); if(!a){ closeSheet(); return; }
-  const ds=detList().filter(d=>d.ja===ja);
+  const ds=detList().filter(d=>isBird(d) && d.ja===ja);
   const days=[...a.days].sort().reverse();
   openSheet(`<div style="display:flex;align-items:center;gap:14px;margin-bottom:6px">${avatar(ja)}<div style="flex:1;min-width:0"><h2 style="margin:0">${esc(ja)}</h2><div class="small muted"><i>${esc(a.sci||'')}</i></div></div>${a.best?playBtn(a.best.clip):''}</div>
     <div class="small muted">はじめて ${shortDate(a.first)} ・ さいご ${shortDate(a.last)} ・ ${a.days.size}日 ・ ${a.n}回</div>
@@ -1110,21 +1720,44 @@ function openSpecies(ja){
 function mapFor(ja){ closeSheet(); UI.mapSp=ja; UI.mapPeriod='all'; UI.tab='map'; UI.day=null; render(); }
 
 /* ---------- 地図 ---------- */
-let MAP=null, MAPLAYER=null, MINI=null;
-const TILE='https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png';
+let MAP=null, MAPLAYER=null, MINI=null, MAPBASE=null, MEPOS=null;
 const TILE_ATTR='<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>';
+// 地図の種類（v1.1.0）。写真は地理院の「全国最新写真（シームレス）」
+const BASES={
+  pale:{ ja:'淡色', url:'https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png' },
+  std:{ ja:'標準', url:'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png' },
+  photo:{ ja:'写真', url:'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg' } };
+if(!BASES[CFG.base]) CFG.base='pale';
+function baseLayer(){ return window.L.tileLayer(BASES[CFG.base].url, { attribution:TILE_ATTR, maxZoom:19, maxNativeZoom:18 }); }
+function mapBaseSet(k){
+  if(!BASES[k]) return; cfgSet('base', k);
+  if(MAP){ if(MAPBASE) MAP.removeLayer(MAPBASE); MAPBASE=baseLayer().addTo(MAP); MAPBASE.bringToBack(); }
+  mapBasePaint();
+}
+function mapBasePaint(){ const el=$('#mapBase'); if(!el) return;
+  el.innerHTML=Object.entries(BASES).map(([k,b])=>`<button aria-pressed="${CFG.base===k}" onclick="mapBaseSet('${k}')">${b.ja}</button>`).join(''); }
 function renderMap(){
   hdr('地図');
   $('#mapMe').innerHTML=IC.locate;
   if(!window.L || !window.L.map){ $('#mapEmpty').hidden=false; $('#mapEmpty').textContent='地図の部品を読み込めませんでした'; return; }
   if(!MAP){
-    MAP=window.L.map('map', { zoomControl:false, attributionControl:true }).setView([43.06,141.35], 7);
-    window.L.tileLayer(TILE, { attribution:TILE_ATTR, maxZoom:18, maxNativeZoom:18 }).addTo(MAP);
+    MAP=window.L.map('map', { zoomControl:false, attributionControl:true, maxZoom:19 }).setView([43.06,141.35], 7);
+    MAPBASE=baseLayer().addTo(MAP);
     window.L.control.zoom({ position:'bottomleft' }).addTo(MAP);
     MAPLAYER=window.L.layerGroup().addTo(MAP);
+    MEPOS=window.L.layerGroup().addTo(MAP);
   }
-  mapBar();
+  mapBar(); mapBasePaint();
+  const p=LS.pos; if(p && Date.now()-p.t<=POS_MAX_AGE) mapMe(p, false);
   setTimeout(()=>{ MAP.invalidateSize(); mapDraw(true); }, 30);
+}
+// 今いる場所: 青い点と誤差の円。move … そこへ寄る（17。すでに寄っていればそのまま）
+function mapMe(p, move){
+  if(!MAP || !MEPOS) return;
+  MEPOS.clearLayers();
+  window.L.circle([p.lat,p.lng], { radius:Math.max(3, p.acc||0), color:'#2B7BE4', weight:1, fillColor:'#2B7BE4', fillOpacity:.12, interactive:false }).addTo(MEPOS);
+  window.L.circleMarker([p.lat,p.lng], { radius:8, color:'#fff', weight:3, fillColor:'#2B7BE4', fillOpacity:1, interactive:false }).addTo(MEPOS);
+  if(move) MAP.setView([p.lat,p.lng], Math.max(MAP.getZoom(), 17));
 }
 function mapBar(){
   const p=UI.mapPeriod, seg=(k,l)=>`<button aria-pressed="${p===k}" onclick="UI.mapPeriod='${k}';mapBar();mapDraw(true)">${l}</button>`;
@@ -1136,12 +1769,12 @@ function mapBar(){
 function mapDets(){
   const now=Date.now(), today=dayKey(now);
   return detList().filter(d=>d.lat!=null && d.lng!=null
-    && (!UI.mapSp || d.ja===UI.mapSp)
+    && (!UI.mapSp || (isBird(d) && d.ja===UI.mapSp))
     && (UI.mapPeriod==='all' || (UI.mapPeriod==='today' ? dayKey(d.t0)===today : now-d.t0<=7*864e5)));
 }
-function popHtml(d){ return `<div class="pop">${avatar(d.ja,true)}<div style="flex:1"><b>${esc(d.ja)}</b><div class="small muted">${shortDate(d.t0)} ${hm(d.t0)}</div><div>${conf(d)}</div></div>${d.clip?playBtn(d.clip):''}</div>`; }
+function popHtml(d){ return `<div class="pop">${avatar(nameOf(d),true)}<div style="flex:1"><b>${esc(nameOf(d))}</b><div class="small muted">${shortDate(d.t0)} ${hm(d.t0)}</div><div>${conf(d)}</div></div>${d.clip?playBtn(d.clip):''}</div>`; }
 function marker(d){
-  return window.L.circleMarker([d.lat,d.lng], { radius:9, color:'#fff', weight:2.5, fillColor:spColor(d.ja), fillOpacity:.95 })
+  return window.L.circleMarker([d.lat,d.lng], { radius:9, color:'#fff', weight:2.5, fillColor:spColor(nameOf(d)), fillOpacity:.95 })
     .bindPopup(()=>popHtml(d), { closeButton:true, autoPanPadding:[30,80] }).on('popupopen', playMark);
 }
 function mapDraw(fit){
@@ -1160,15 +1793,17 @@ function mapDraw(fit){
   if(fit){ const b=window.L.latLngBounds(ds.map(d=>[d.lat,d.lng])); MAP.fitBounds(b, { padding:[50,50], maxZoom:15 }); }
 }
 function mapLocate(){
+  const p=LS.pos;
+  if(p && Date.now()-p.t<15000){ mapMe(p, true); return; }   // 聞き取り中の新しい位置があればすぐ
   if(!navigator.geolocation){ toast('位置を使えません'); return; }
   toast('今いる場所を探しています…', 2000);
-  navigator.geolocation.getCurrentPosition(p=>{ if(MAP) MAP.setView([p.coords.latitude,p.coords.longitude], 15); },
-    ()=>toast('位置を取得できませんでした（位置の使用を許可してください）', 4000), { enableHighAccuracy:true, timeout:15000, maximumAge:30000 });
+  navigator.geolocation.getCurrentPosition(q=>{ mapMe({ lat:q.coords.latitude, lng:q.coords.longitude, acc:q.coords.accuracy }, true); },
+    ()=>toast('位置を取得できませんでした（位置の使用を許可してください）', 4000), { enableHighAccuracy:true, timeout:15000, maximumAge:10000 });
 }
 function miniMap(ds){
   if(!window.L || !window.L.map) return;
-  MINI=window.L.map('mini', { zoomControl:false, attributionControl:true, scrollWheelZoom:false });
-  window.L.tileLayer(TILE, { attribution:TILE_ATTR, maxZoom:18 }).addTo(MINI);
+  MINI=window.L.map('mini', { zoomControl:false, attributionControl:true, scrollWheelZoom:false, maxZoom:19 });
+  baseLayer().addTo(MINI);
   const pts=ds.filter(d=>d.lat!=null);
   pts.slice().reverse().forEach(d=>marker(d).addTo(MINI));
   MINI.fitBounds(window.L.latLngBounds(pts.map(d=>[d.lat,d.lng])), { padding:[30,30], maxZoom:15 });
@@ -1176,13 +1811,17 @@ function miniMap(ds){
 function destroyMini(){ if(MINI){ try{ MINI.remove(); }catch(e){} MINI=null; } }
 
 /* ---------- シート ---------- */
+// 画面を替える・閉じるときは、書きかけのメモを保存し、声紋の再生・計算を止める
+function sheetLeave(){ memoFlush(); if(_playId && String(_playId).startsWith('sp:')) playStop(); dspStop('sp'); SP.gen++; SP.f32=SP.nr=SP.db=null; SP.res=null; }
 function openSheet(html){
+  sheetLeave();
   const s=$('#sheet');
   s.innerHTML=`<div class="backdrop" onclick="closeSheet()"></div><div class="panel" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div>`;
   if(s.hidden){ s.hidden=false; history.pushState(Object.assign({}, history.state||{}, {sheet:1}),''); }
 }
 function closeSheet(fromPop){
   const s=$('#sheet'); if(s.hidden) return;
+  sheetLeave();
   s.hidden=true; s.innerHTML='';
   if(!fromPop && history.state && history.state.sheet) history.back();
 }
@@ -1208,8 +1847,25 @@ function openSettings(){
     <div class="card" style="margin-top:10px">
       <div class="setrow"><div class="body"><div class="t">北海道の鳥に絞る</div><div class="d">オフにすると世界の約6,500種から探します（間違いが増えます）</div></div>
         <button class="sw" role="switch" aria-checked="${CFG.hk}" onclick="cfgSet('hk',${!CFG.hk});openSettings()" aria-label="北海道の鳥に絞る"></button></div>
-      <div class="setrow"><div class="body"><div class="t">声も残す</div><div class="d">よく聞こえた7秒ほどを残します（同じ鳥は1日3件まで）。人の声が入った所は残しません</div></div>
+      <div class="setrow"><div class="body"><div class="t">声も残す</div><div class="d">AIが聞き取った鳥の、よく聞こえた7秒ほどを残します（同じ鳥は1日3件まで）。人の声が入った所は残しません</div></div>
         <button class="sw" role="switch" aria-checked="${CFG.clips}" onclick="cfgSet('clips',${!CFG.clips});openSettings()" aria-label="声も残す"></button></div>
+      <div class="setrow"><div class="body"><div class="t">いまの音の声紋を出す</div><div class="d">聞いている間、きく画面に流れる声紋を出します</div></div>
+        <button class="sw" role="switch" aria-checked="${CFG.liveOn}" onclick="cfgSet('liveOn',${!CFG.liveOn});openSettings();paintListen()" aria-label="いまの音の声紋を出す"></button></div>
+    </div>
+    <h3>自分で録る</h3>
+    <div class="card" style="padding:14px 14px 12px">
+      <div class="t" style="font-weight:700;margin-bottom:8px">「いまの音を残す」の長さ</div>
+      <div class="seg">${BACK_SECS.map(v=>`<button aria-pressed="${CFG.back===v}" onclick="cfgSet('back',${v});openSettings();paintListen()">直前${v}秒</button>`).join('')}</div>
+      <div class="small muted" style="margin-top:8px">押したときから、さかのぼって残します。「録音する」は止めるまで（最長${REC_MAX_SEC/60}分）。自分で録った音は、人の声が入っていても残します（印が付きます）</div>
+    </div>
+    <h3>雑音</h3>
+    <div class="card">
+      <div class="setrow"><div class="body"><div class="t">聞くとき雑音を減らす</div><div class="d">低い音（風・車）を切り、いつも鳴っている音（川・虫・機械）を差し引いて鳴らします。保存した音は変えません</div></div>
+        <button class="sw" role="switch" aria-checked="${CFG.nr}" onclick="cfgSet('nr',${!CFG.nr});openSettings()" aria-label="聞くとき雑音を減らす"></button></div>
+      <div class="setrow"><div class="body"><div class="t">マイクの自動音量調整</div><div class="d">オンにすると小さな音を拾いやすくなりますが、雑音も大きくなります。AIは音の大きさより声の形で判断します${LS.want?'（次に聞き始めたときから効きます）':''}</div></div>
+        <button class="sw" role="switch" aria-checked="${CFG.agc}" onclick="cfgSet('agc',${!CFG.agc});openSettings()" aria-label="マイクの自動音量調整"></button></div>
+      <div class="setrow"><div class="body"><div class="t">声紋の「雑音: 沈める」</div><div class="d">いつも鳴っている音を差し引いて、鳥の声を浮かせて見せます（見え方だけ）</div></div>
+        <button class="sw" role="switch" aria-checked="${CFG.spClean}" onclick="cfgSet('spClean',${!CFG.spClean});openSettings()" aria-label="声紋の雑音を沈める"></button></div>
     </div>
     <h3>AI</h3><div class="card">${ai}</div>
     <h3>記録</h3>
@@ -1225,7 +1881,7 @@ function openSettings(){
       鳴き声AI: <a href="https://birdnet.cornell.edu/" target="_blank" rel="noopener">BirdNET</a>（Cornell Lab of Ornithology / Chemnitz University of Technology）CC BY-SA 4.0<br>
       判定の処理: BirdNET Live（BirdNET-Team）・birdnet-web（georg95）MIT License<br>
       TensorFlow.js Apache License 2.0 ／ Leaflet BSD-2-Clause<br>
-      地図: 国土地理院 地理院タイル（淡色地図）
+      地図: 国土地理院 地理院タイル（淡色地図・標準地図・全国最新写真（シームレス））
     </div></div>`);
 }
 async function delAll(){
@@ -1233,7 +1889,7 @@ async function delAll(){
   if(!confirm('本当に消しますか？（書き出していない記録は二度と見られません）')) return;
   if(LS.want) listenStop();
   playStop();
-  DETS.clear(); SESS.clear(); CLIP_BYTES=0; LS.pending=[];   // 先に手元から外す（書き戻し防止）
+  DETS.clear(); SESS.clear(); CLIP_BYTES=0; LS.pending=[]; manualDropAll(); DB_EPOCH++;   // 先に手元から外す（書き戻し防止）
   try{ const d=await db(); const tx=d.transaction(['det','clip','sess'],'readwrite');
     tx.objectStore('det').clear(); tx.objectStore('clip').clear(); tx.objectStore('sess').clear(); await txDone(tx);
     toast('すべて消しました'); }
@@ -1250,11 +1906,15 @@ function csvCell(v){
 }
 function isoLocal(ms){ const d=new Date(ms); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`; }
 function exportCsv(){
-  const cols=['日付','聞こえ始め','聞こえ終わり','鳥','学名','AIの判定(%)','目安','回数(3秒区間)','緯度','経度','位置の誤差(m)','名前を直した','AIの判定名','声','AIの版','記録ID'];
-  const rows=detList().slice().reverse().map(d=>[dayKey(d.t0), isoLocal(d.t0).slice(11), isoLocal(d.t1).slice(11), d.ja, d.sci||'', Math.round((d.max||0)*100),
-    d.fixed?'名前を直した':(d.max>=0.7?'ほぼ確実':d.max>=0.4?'たぶん':'かも'), d.count||0,
+  const cols=['日付','聞こえ始め','聞こえ終わり','鳥','学名','AIの判定(%)','目安','回数(3秒区間)','緯度','経度','位置の誤差(m)','名前を直した','AIの判定名','声','AIの版','記録ID',
+    '記録の種類','確かめた結果','メモ','人の声','AIの候補'];
+  const rows=detList().slice().reverse().map(d=>[dayKey(d.t0), isoLocal(d.t0).slice(11), isoLocal(d.t1).slice(11), d.ja||'', d.sci||'', d.manual?'':Math.round((d.max||0)*100),
+    d.manual?'':d.fixed?'名前を直した':(d.max>=0.7?'ほぼ確実':d.max>=0.4?'たぶん':'かも'), d.manual?'':(d.count||0),
     d.lat!=null?Number(d.lat.toFixed(6)):'', d.lng!=null?Number(d.lng.toFixed(6)):'', d.acc!=null?Number(d.acc):'',
-    d.fixed?1:0, d.fixed?d.orig_ja:'', d.clip?'あり':'', d.model||'', d.id]);
+    d.fixed?1:0, d.fixed?d.orig_ja:'', d.clip?'あり':'', d.model||'', d.id,
+    d.manual==='back'?'自分で録音（さかのぼり）':d.manual==='rec'?'自分で録音（開始・停止）':'AIが聞き取った',
+    d.label&&LABELS[d.label]?LABELS[d.label].ja:'', d.memo||'', d.manual&&d.human?'あり':'',
+    (d.cands||[]).map(c=>`${c.ja} ${Math.round(c.s*100)}%`).join(' / ')]);
   const body='﻿'+[cols].concat(rows).map(r=>r.map(csvCell).join(',')).join('\r\n');
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([body],{type:'text/csv;charset=utf-8'}));
   a.download=`こえログ_${dayKey(Date.now())}.csv`; document.body.appendChild(a); a.click();
@@ -1269,6 +1929,7 @@ document.addEventListener('click', e=>{
   if(a==='species') openSpecies(v);
   else if(a==='mapfor') mapFor(v);
   else if(a==='fix') fixApply(id, v);
+  else if(a==='setname') fixApply(id, v, true);
 });
 
 /* ---------- 起動 ---------- */
