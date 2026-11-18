@@ -1,0 +1,1285 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#F5F3EC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101613" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="こえログ">
+<meta name="description" content="鳴き声AIで、どこでどんな鳥の声が聞こえたかを記録するアプリ">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="leaflet.css">
+<title>こえログ</title>
+<style>
+:root{
+  --bg:#F5F3EC; --surface:#FFFFFF; --surface2:#EEEBE2; --line:#E2DED2;
+  --text:#1D2620; --muted:#5B675F; --faint:#88938C;
+  --pri:#2E6A4E; --pri-ink:#FFFFFF; --pri-soft:#DCEBE2;
+  --acc:#C8701F; --danger:#B3402F; --danger-soft:#F6E1DC;
+  --hi:#24603F; --hi-bg:#D8EBDF; --mid:#2F5F8F; --mid-bg:#DDE8F4; --lo:#66614F; --lo-bg:#ECE8DC;
+  --shadow:0 1px 2px rgba(30,40,30,.06),0 6px 18px rgba(30,40,30,.07);
+  --r:18px; --tabh:66px; --hdrh:58px;
+  --sb:env(safe-area-inset-bottom,0px); --st:env(safe-area-inset-top,0px);
+  color-scheme:light dark;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#101613; --surface:#18201C; --surface2:#212B26; --line:#2B3631;
+  --text:#E6EDE8; --muted:#A6B2AB; --faint:#7E8B84;
+  --pri:#72C49C; --pri-ink:#0D1A13; --pri-soft:#1D3A2C;
+  --acc:#F0A04B; --danger:#EC7B67; --danger-soft:#3A221E;
+  --hi:#86D8AE; --hi-bg:#1D3A2C; --mid:#93BCE8; --mid-bg:#1C2B3C; --lo:#C2BDAD; --lo-bg:#2A2924;
+  --shadow:none;
+}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--text)}
+body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic UI",Meiryo,sans-serif;
+  font-size:17px;line-height:1.6;min-height:100dvh;-webkit-font-smoothing:antialiased;overscroll-behavior-y:none}
+button{font:inherit;color:inherit;cursor:pointer}
+input,select{font:inherit;color:inherit}
+svg{display:block}
+[hidden]{display:none!important}
+
+/* ---- 見出し ---- */
+#hdr{position:sticky;top:0;z-index:30;background:var(--bg);padding:calc(var(--st) + 8px) 18px 8px;display:flex;align-items:center;gap:10px;min-height:var(--hdrh)}
+#hdr h1{font-size:24px;margin:0;font-weight:800;letter-spacing:.02em;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#hdr .logo{display:flex;align-items:center;gap:8px}
+#hdr .logo i{width:30px;height:30px;border-radius:9px;background:var(--pri);color:var(--pri-ink);display:grid;place-items:center}
+#hdr .logo i svg{width:18px;height:18px}
+.iconbtn{width:46px;height:46px;border-radius:50%;border:none;background:transparent;display:grid;place-items:center;color:var(--muted)}
+.iconbtn:active{background:var(--surface2)}
+.iconbtn svg{width:26px;height:26px}
+main{max-width:640px;margin:0 auto;padding:0 16px calc(var(--tabh) + var(--sb) + 28px)}
+
+/* ---- 下のタブ ---- */
+#tabs{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--surface);border-top:1px solid var(--line);
+  display:flex;padding-bottom:var(--sb);height:calc(var(--tabh) + var(--sb))}
+#tabs button{flex:1;border:none;background:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  font-size:12.5px;font-weight:600;color:var(--faint);position:relative}
+#tabs button svg{width:26px;height:26px}
+#tabs button[aria-current="page"]{color:var(--pri)}
+#tabs button[aria-current="page"]::before{content:"";position:absolute;top:0;left:30%;right:30%;height:3px;border-radius:0 0 3px 3px;background:var(--pri)}
+#tabs .dot{position:absolute;top:9px;left:calc(50% + 9px);width:9px;height:9px;border-radius:50%;background:var(--danger);box-shadow:0 0 0 2px var(--surface)}
+
+/* ---- 部品 ---- */
+.card{background:var(--surface);border-radius:var(--r);box-shadow:var(--shadow);border:1px solid var(--line)}
+.sec-h{display:flex;align-items:baseline;justify-content:space-between;margin:26px 4px 10px}
+.sec-h h2{font-size:19px;margin:0;font-weight:800}
+.sec-h span{color:var(--muted);font-size:15px}
+.muted{color:var(--muted)} .small{font-size:14px} .tiny{font-size:12.5px}
+.btn{border:none;border-radius:14px;padding:13px 20px;font-weight:700;font-size:17px;background:var(--surface2);color:var(--text);min-height:50px;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.btn svg{width:20px;height:20px}
+.btn.pri{background:var(--pri);color:var(--pri-ink)}
+.btn.danger{background:var(--danger-soft);color:var(--danger)}
+.btn.wide{width:100%}
+.btn:disabled{opacity:.5}
+.btn:active{filter:brightness(.95)}
+.chip{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 10px;font-size:13px;font-weight:700;white-space:nowrap}
+.c-hi{background:var(--hi-bg);color:var(--hi)} .c-mid{background:var(--mid-bg);color:var(--mid)} .c-lo{background:var(--lo-bg);color:var(--lo)}
+.c-new{background:var(--acc);color:#fff}
+.av{flex:none;width:46px;height:46px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:800;font-size:19px}
+.av.s{width:36px;height:36px;font-size:15px}
+.play{flex:none;width:48px;height:48px;border-radius:50%;border:none;background:var(--pri-soft);color:var(--pri);display:grid;place-items:center}
+.play svg{width:22px;height:22px}
+.play .i-stop{display:none}
+.play.playing{background:var(--pri);color:var(--pri-ink)}
+.play.playing .i-play{display:none} .play.playing .i-stop{display:block}
+.noplay{flex:none;width:48px;text-align:center;color:var(--faint);font-size:11.5px;line-height:1.3}
+.empty{text-align:center;color:var(--muted);padding:34px 18px}
+.empty svg{width:54px;height:54px;margin:0 auto 10px;color:var(--faint)}
+.progress{height:10px;border-radius:99px;background:var(--surface2);overflow:hidden}
+.progress i{display:block;height:100%;background:var(--pri);border-radius:99px;transition:width .3s}
+
+/* ---- きく ---- */
+.stage{display:flex;flex-direction:column;align-items:center;padding:6px 0 4px}
+.status{display:inline-flex;align-items:center;gap:8px;padding:7px 16px;border-radius:999px;background:var(--surface2);color:var(--muted);font-weight:700;font-size:15.5px;margin-bottom:22px}
+.status .d{width:10px;height:10px;border-radius:50%;background:var(--faint)}
+.status.on{background:var(--hi-bg);color:var(--hi)}
+.status.on .d{background:var(--hi);animation:blink 1.6s infinite}
+.status.wait{background:var(--lo-bg);color:var(--lo)}
+.status.wait .d{background:var(--acc)}
+@keyframes blink{50%{opacity:.25}}
+.bigwrap{position:relative;width:236px;height:236px;display:grid;place-items:center}
+.ring{position:absolute;inset:18px;border-radius:50%;background:var(--pri);opacity:0;pointer-events:none}
+.on .ring.lv{opacity:.18;transform:scale(calc(1 + var(--lv,0) * .22));transition:transform .45s ease-out}
+.on .ring.pulse{animation:pulse 2.4s ease-out infinite}
+@keyframes pulse{0%{transform:scale(1);opacity:.28}100%{transform:scale(1.28);opacity:0}}
+.bigbtn{position:relative;width:196px;height:196px;border-radius:50%;border:none;background:var(--pri);color:var(--pri-ink);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:25px;font-weight:800;letter-spacing:.08em;
+  box-shadow:0 12px 32px rgba(46,106,78,.33)}
+.bigbtn svg{width:60px;height:60px}
+.bigbtn:active{transform:scale(.97)}
+.on .bigbtn{background:var(--surface);color:var(--danger);box-shadow:0 0 0 4px var(--danger) inset,0 12px 32px rgba(0,0,0,.12)}
+.bigbtn.busy{opacity:.75}
+.hint{color:var(--muted);text-align:center;font-size:15px;margin:18px 8px 6px;max-width:360px}
+.metaRow{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:6px}
+.meta{display:inline-flex;align-items:center;gap:6px;font-size:14px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:5px 12px}
+.meta svg{width:16px;height:16px}
+.meta.btnlike{cursor:pointer;color:var(--text);font-weight:700}
+.sp-card{display:flex;align-items:center;gap:14px;padding:12px 12px 12px 14px;margin-bottom:10px}
+.sp-card .nm{font-size:19px;font-weight:800;line-height:1.3}
+.sp-card .sub{font-size:14px;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px}
+.sp-card .body{flex:1;min-width:0}
+.sp-card.flash{animation:flash 1.6s ease-out}
+@keyframes flash{0%{background:var(--hi-bg);transform:scale(1.02)}100%{background:var(--surface);transform:none}}
+.welcome{padding:24px 20px;text-align:center}
+.welcome h2{font-size:22px;margin:6px 0 4px}
+.steps{text-align:left;margin:18px 0 20px;padding:0;list-style:none;counter-reset:s}
+.steps li{display:flex;gap:12px;align-items:flex-start;margin:12px 0;font-size:16px}
+.steps li::before{counter-increment:s;content:counter(s);flex:none;width:28px;height:28px;border-radius:50%;background:var(--pri-soft);color:var(--pri);font-weight:800;display:grid;place-items:center;font-size:15px}
+
+/* ---- きろく ---- */
+.day{display:block;width:100%;text-align:left;border:1px solid var(--line);padding:15px 16px;margin-bottom:12px}
+.day .top{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.day .dt{font-size:19px;font-weight:800}
+.day .cnt{color:var(--muted);font-size:14.5px;white-space:nowrap}
+.names{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.names span{background:var(--surface2);border-radius:999px;padding:3px 11px;font-size:14px}
+.back{display:inline-flex;align-items:center;gap:4px;border:none;background:none;color:var(--pri);font-weight:700;padding:8px 6px 8px 0;font-size:16px}
+.back svg{width:22px;height:22px}
+.minimap{height:210px;border-radius:var(--r);overflow:hidden;border:1px solid var(--line);margin:6px 0 4px;background:var(--surface2)}
+.row{display:flex;align-items:center;gap:12px;padding:11px 8px 11px 12px;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:none}
+.row .tm{flex:none;width:48px;font-variant-numeric:tabular-nums;color:var(--muted);font-size:15px;font-weight:700}
+.row .body{flex:1;min-width:0}
+.row .nm{font-weight:800;font-size:17px}
+.row .sub{font-size:13.5px;color:var(--muted);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.more{flex:none;width:40px;height:44px;border:none;background:none;color:var(--faint);display:grid;place-items:center;border-radius:10px}
+.more svg{width:22px;height:22px}
+.list{padding:2px 0}
+
+/* ---- 見つけた鳥 ---- */
+.total{display:flex;align-items:center;gap:16px;padding:18px 20px;margin:4px 0 6px}
+.total b{font-size:44px;line-height:1;color:var(--pri);font-weight:900}
+.seg{display:flex;background:var(--surface2);border-radius:12px;padding:3px;gap:3px}
+.seg button{flex:1;white-space:nowrap;border:none;background:none;border-radius:10px;padding:8px 6px;font-size:14.5px;font-weight:700;color:var(--muted);min-height:40px}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.birdrow{display:flex;align-items:center;gap:13px;padding:11px 14px;border:none;border-bottom:1px solid var(--line);background:none;width:100%;text-align:left}
+.birdrow:last-child{border-bottom:none}
+.birdrow .body{flex:1;min-width:0}
+.birdrow .nm{font-weight:800;font-size:17.5px}
+.birdrow .sub{font-size:13.5px;color:var(--muted)}
+.birdrow .n{font-weight:800;color:var(--muted);font-size:15px;white-space:nowrap}
+.search{width:100%;border:1px solid var(--line);background:var(--surface);border-radius:14px;padding:12px 14px;font-size:17px;min-height:50px}
+
+/* ---- 地図 ---- */
+#mapWrap{position:fixed;left:0;right:0;top:calc(var(--hdrh) + var(--st));bottom:calc(var(--tabh) + var(--sb));z-index:5}
+#map{position:absolute;inset:0;background:var(--surface2)}
+#mapBar{position:absolute;top:10px;left:10px;right:10px;z-index:500;display:flex;gap:8px;flex-wrap:wrap;pointer-events:none}
+#mapBar>*{pointer-events:auto}
+#mapBar .seg button{padding:8px 14px}
+#mapBar .seg{background:var(--surface);box-shadow:var(--shadow);border:1px solid var(--line)}
+#mapBar select{border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:0 12px;min-height:46px;font-size:15px;font-weight:700;box-shadow:var(--shadow);max-width:100%}
+#mapEmpty{position:absolute;left:16px;right:16px;bottom:16px;z-index:500;padding:14px 16px;text-align:center}
+.mapme{position:absolute;right:12px;bottom:16px;z-index:500;width:50px;height:50px;border-radius:50%;border:1px solid var(--line);background:var(--surface);box-shadow:var(--shadow);display:grid;place-items:center;color:var(--pri)}
+.mapme svg{width:24px;height:24px}
+.leaflet-popup-content{font-family:inherit;font-size:15px;margin:12px 14px}
+.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--surface);color:var(--text)}
+.pop{display:flex;align-items:center;gap:12px;min-width:180px}
+.pop b{font-size:17px}
+.leaflet-container a.leaflet-popup-close-button{color:var(--muted)}
+
+/* ---- シート ---- */
+#sheet{position:fixed;inset:0;z-index:100}
+#sheet .backdrop{position:absolute;inset:0;background:rgba(10,15,12,.45);animation:fade .2s}
+#sheet .panel{position:absolute;left:0;right:0;bottom:0;max-height:92dvh;overflow:auto;background:var(--bg);border-radius:22px 22px 0 0;
+  padding:8px 18px calc(22px + var(--sb));animation:up .25s ease-out;max-width:640px;margin:0 auto}
+#sheet .grab{width:42px;height:5px;border-radius:9px;background:var(--line);margin:4px auto 10px}
+#sheet h2{font-size:21px;margin:4px 0 12px}
+#sheet h3{font-size:16px;margin:22px 4px 8px;color:var(--muted)}
+@keyframes up{from{transform:translateY(40px);opacity:0}}
+@keyframes fade{from{opacity:0}}
+.acts{display:flex;flex-direction:column;gap:10px}
+.setrow{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line)}
+.setrow:last-child{border-bottom:none}
+.setrow .body{flex:1;min-width:0}
+.setrow .t{font-weight:700}
+.setrow .d{font-size:13.5px;color:var(--muted)}
+.sw{position:relative;flex:none;width:56px;height:32px;border-radius:99px;border:none;background:var(--line);transition:background .2s}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}
+.sw[aria-checked="true"]{background:var(--pri)}
+.sw[aria-checked="true"]::after{transform:translateX(24px)}
+.credit{font-size:12.5px;color:var(--muted);line-height:1.7}
+.credit a{color:var(--pri)}
+
+/* ---- 暗い画面 ---- */
+#pocket{position:fixed;inset:0;z-index:200;background:#000;color:#6b6b6b;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;padding:30px;user-select:none}
+#pocket b{color:#9a9a9a;font-size:20px}
+#pocket .last{color:#7d7d7d;font-size:17px;min-height:1.6em}
+#pocket .help{position:absolute;bottom:calc(30px + var(--sb));font-size:14px}
+
+/* ---- お知らせ ---- */
+#toast{position:fixed;left:50%;bottom:calc(var(--tabh) + var(--sb) + 16px);transform:translateX(-50%) translateY(20px);z-index:300;
+  background:#1E2823;color:#fff;padding:12px 18px;border-radius:14px;font-size:15.5px;max-width:min(92vw,520px);box-shadow:0 8px 24px rgba(0,0,0,.25);
+  opacity:0;pointer-events:none;transition:opacity .2s,transform .2s}
+#toast.show{opacity:1;transform:translateX(-50%)}
+@media (prefers-color-scheme:dark){#toast{background:#E6EDE8;color:#101613}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<header id="hdr"></header>
+<main id="main"></main>
+<div id="mapWrap" hidden>
+  <div id="map" aria-label="聞こえた場所の地図"></div>
+  <div id="mapBar"></div>
+  <button class="mapme" onclick="mapLocate()" aria-label="今いる場所へ" id="mapMe"></button>
+  <div id="mapEmpty" class="card" hidden></div>
+</div>
+<nav id="tabs" aria-label="画面の切り替え"></nav>
+<div id="sheet" hidden></div>
+<div id="pocket" hidden></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="leaflet.js"></script>
+<script>
+'use strict';
+/* =====================================================================
+   こえログ — 鳴き声AIで、どこでどんな鳥の声が聞こえたかを記録する
+   鳥調査アプリ（bird_survey.html）の鳴き声AI（v247 時点）を切り出したもの。
+   AI: BirdNET v2.4（端末の中だけで判定。音も記録もどこにも送らない）
+   ===================================================================== */
+const APP_VERSION='1.0.0';
+
+/* ---------- 定数 ---------- */
+const SR=48000, WIN=144000;          // 3秒区間（AIの入力）
+const BATCH=4;                       // 一度にAIへ渡す区間の数
+const RING_SEC=40;                   // 直近40秒の音を持っておく（声の切り出し用）
+const MERGE_WINS=5;                  // 同じ鳥をひとまとめにする間隔（区間数＝15秒）
+const MAX_PER_WIN=3;                 // 1区間で記録する種の上限
+const HUMAN_THR=0.3;                 // 人の声とみなす値
+const POS_MAX_AGE=60000;             // 位置を付けてよい時間差（ms）
+const CLIP_SR=24000, CLIP_PAD=2;     // 声の保存: 24kHz・いちばんよく聞こえた3秒の前後2秒
+const CLIP_PER_SP_DAY=3;             // 声の保存: 同じ鳥は1日3件まで
+const CLIP_DEV_BYTES=300*1024*1024;  // 声の保存: 端末全体で300MBまで
+const NONBIRD_SCI=['Dog','Engine','Environmental','Fireworks','Gun','Human non-vocal','Human vocal','Human whistle','Noise','Power tools','Siren'];
+const MODEL_COMMIT='7e1e996105e4d2bfdf1cf9e84c5c5d3d715513b5';
+const MODEL_VER='BirdNET v2.4（'+MODEL_COMMIT.slice(0,7)+'）';
+const CACHE_APP='koelog-ai-app-v1';                          // こえログの ai/ の部品（版を変えたら名前も変える）
+const CACHE_MODEL='birdnet-ai-model-'+MODEL_COMMIT.slice(0,7); // AI本体（約64MB）。鳥調査アプリと同じ名前＝同じサイトなら共有される
+const SENS={ low:{ label:'控えめ', thr:0.5, d:'はっきり聞こえた声だけ。間違いが少ない' },
+             mid:{ label:'ふつう', thr:0.3, d:'おすすめ' },
+             high:{ label:'たくさん', thr:0.15, d:'遠い声・小さな声も拾う。間違いも増える' } };
+const AV_COLORS=['#3F7D5C','#B8692E','#3D6E9C','#8B5A88','#9C7A2C','#2F827D','#A54E45','#5F6FA6','#6D7F3A','#A0567A'];
+
+/* ---------- 小道具 ---------- */
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uuid=()=>(crypto.randomUUID?crypto.randomUUID():'id'+Date.now().toString(36)+Math.random().toString(36).slice(2));
+const pad2=n=>String(n).padStart(2,'0');
+const WD='日月火水木金土';
+function dayKey(ms){ const d=new Date(ms); return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate()); }
+function hm(ms){ const d=new Date(ms); return d.getHours()+':'+pad2(d.getMinutes()); }
+function dayLabel(key, withRel=true){
+  const [y,m,d]=key.split('-').map(Number), dt=new Date(y,m-1,d);
+  const base=`${m}月${d}日（${WD[dt.getDay()]}）`;
+  const now=new Date(); const yr=y!==now.getFullYear()?y+'年':'';
+  if(withRel){ if(key===dayKey(Date.now())) return '今日 '+base; if(key===dayKey(Date.now()-864e5)) return '昨日 '+base; }
+  return yr+base;
+}
+function shortDate(ms){ const d=new Date(ms), now=new Date();
+  return (d.getFullYear()!==now.getFullYear()?d.getFullYear()+'年':'')+(d.getMonth()+1)+'月'+d.getDate()+'日'; }
+function dur(sec){ sec=Math.max(0,Math.floor(sec)); const h=Math.floor(sec/3600), m=Math.floor(sec%3600/60), s=sec%60;
+  return h? `${h}:${pad2(m)}:${pad2(s)}` : `${pad2(m)}:${pad2(s)}`; }
+function durWords(sec){ const m=Math.round(sec/60); if(m<1) return '1分未満'; if(m<60) return m+'分'; return Math.floor(m/60)+'時間'+(m%60?m%60+'分':''); }
+function mb(b){ return b<1024*1024 ? Math.max(0.1,b/1024/1024).toFixed(1)+'MB' : Math.round(b/1024/1024)+'MB'; }
+function hash(s){ let h=0; for(const c of String(s)) h=(h*31+c.codePointAt(0))|0; return Math.abs(h); }
+function spColor(ja){ return AV_COLORS[hash(ja)%AV_COLORS.length]; }
+function avatar(ja, small){ return `<span class="av${small?' s':''}" style="background:${spColor(ja)}" aria-hidden="true">${esc(String(ja||'?').charAt(0))}</span>`; }
+function conf(d){
+  if(d.fixed) return '<span class="chip c-mid">名前を直した</span>';
+  const v=d.max||0;
+  if(v>=0.7) return '<span class="chip c-hi">ほぼ確実</span>';
+  if(v>=0.4) return '<span class="chip c-mid">たぶん</span>';
+  return '<span class="chip c-lo">かも</span>';
+}
+function kata(s){ return String(s).replace(/[ぁ-ゖ]/g, c=>String.fromCharCode(c.charCodeAt(0)+0x60)); }
+let _toastT=null;
+function toast(msg, ms=2800){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove('show'), ms); }
+
+/* ---------- 絵（線の絵） ---------- */
+const sv=(p,extra='')=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${p}</svg>`;
+const IC={
+  mic:sv('<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/>'),
+  stop:sv('<rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" stroke="none"/>'),
+  ear:sv('<path d="M6 9a6 6 0 1 1 12 0c0 3-2 4-3 5.5S14 18 12.5 19.5 8 20 8 17"/><path d="M9.5 9.5a2.5 2.5 0 1 1 5 0c0 1.5-1.5 2-1.5 3"/>'),
+  list:sv('<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1" fill="currentColor"/><circle cx="3.5" cy="12" r="1" fill="currentColor"/><circle cx="3.5" cy="18" r="1" fill="currentColor"/>'),
+  map:sv('<path d="M9 4 3 6.5v13.5l6-2.5 6 2.5 6-2.5V4l-6 2.5z"/><path d="M9 4v13.5M15 6.5V20"/>'),
+  bird:sv('<path d="M18 10.8V12c0 3.9-3.6 7-8 7H4.5l2.6-2.7C6.4 15.3 6 14 6 12.6 6 9.5 9 7 12.8 7h1.4c2.1 0 3.8 1.7 3.8 3.8z"/><path d="m18 9.2 3.2 1-3.2 1"/><circle cx="14.6" cy="10" r=".9" fill="currentColor" stroke="none"/><path d="M9.5 13.3c1.8 1.5 4.3 1.3 5.9-.5"/><path d="M11 19v2.5M13.6 18.6v2.9"/>'),
+  gear:sv('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+  play:sv('<path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/>','class="i-play"'),
+  pstop:sv('<rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/>','class="i-stop"'),
+  back:sv('<path d="m15 18-6-6 6-6"/>'),
+  more:sv('<circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/>'),
+  pin:sv('<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>'),
+  moon:sv('<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>'),
+  locate:sv('<circle cx="12" cy="12" r="3.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7.5"/>'),
+  wave:sv('<path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2"/>'),
+  download:sv('<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>'),
+};
+const safeId=v=>/^[\w-]{1,80}$/.test(String(v))?String(v):'';
+const playBtn=clip=>`<button class="play" data-play="${safeId(clip)}" onclick="playClip('${safeId(clip)}')" aria-label="声を聞く">${IC.play}${IC.pstop}</button>`;
+
+/* ---------- 設定 ---------- */
+const CFG_DEF={ sens:'mid', hk:true, clips:true };
+let CFG=(()=>{ try{ return Object.assign({}, CFG_DEF, JSON.parse(localStorage.getItem('koelog_cfg')||'{}')||{}); }catch(e){ return Object.assign({}, CFG_DEF); } })();
+if(!SENS[CFG.sens]) CFG.sens='mid';
+function cfgSet(k,v){ CFG[k]=v; try{ localStorage.setItem('koelog_cfg', JSON.stringify(CFG)); }catch(e){}
+  if(k==='clips' && !v && typeof LS!=='undefined') LS.pending=[];   // 保存待ちの声も取り消す（監査 Minor1）
+}
+
+/* =====================================================================
+   記録（端末の中: IndexedDB 'koelog'）
+   det  … 聞こえた鳥（同じ鳥が15秒以内に続けて聞こえたら1件にまとめる）
+   clip … 声（24kHz・16bit）
+   sess … 聞いた時間
+   ===================================================================== */
+let _db=null;
+function db(){
+  if(_db) return _db;
+  _db=new Promise((res,rej)=>{
+    const r=indexedDB.open('koelog',1);
+    r.onupgradeneeded=()=>{ const d=r.result;
+      if(!d.objectStoreNames.contains('det')) d.createObjectStore('det',{keyPath:'id'}).createIndex('t0','t0');
+      if(!d.objectStoreNames.contains('clip')) d.createObjectStore('clip',{keyPath:'id'});
+      if(!d.objectStoreNames.contains('sess')) d.createObjectStore('sess',{keyPath:'id'}); };
+    r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); r.onblocked=()=>rej(new Error('blocked'));
+  });
+  _db.catch(()=>{ _db=null; });
+  return _db;
+}
+const txDone=tx=>new Promise((res,rej)=>{ tx.oncomplete=()=>res(true); tx.onerror=()=>rej(tx.error); tx.onabort=()=>rej(tx.error||new Error('abort')); });
+const reqP=r=>new Promise((res,rej)=>{ r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); });
+async function dbAll(store){ const d=await db(); return reqP(d.transaction(store).objectStore(store).getAll()); }
+async function dbGet(store,id){ const d=await db(); return reqP(d.transaction(store).objectStore(store).get(id)); }
+function plain(o){ const c={}; for(const k in o) if(k[0]!=='_') c[k]=o[k]; return c; }
+async function dbPut(store,obj){ const d=await db(); const tx=d.transaction(store,'readwrite'); tx.objectStore(store).put(plain(obj)); return txDone(tx); }
+function savDet(d){ if(!DETS.has(d.id)) return Promise.resolve(); return dbPut('det', d).catch(e=>{ console.warn(e); toast('記録を保存できませんでした（端末の空き容量など）', 5000); }); }
+
+const DETS=new Map();   // id → det
+const SESS=new Map();   // id → sess
+let CLIP_BYTES=0, CLIP_RESERVED=0;
+async function loadAll(){
+  const [ds, ss]=await Promise.all([dbAll('det'), dbAll('sess')]);
+  DETS.clear(); SESS.clear(); CLIP_BYTES=0;
+  for(const d of ds){ DETS.set(d.id, d); if(d.clip){ CLIP_BYTES+=d.clip_bytes||0; d._clipCounted=true; } }
+  for(const s of ss) SESS.set(s.id, s);
+}
+function detList(){ return [...DETS.values()].sort((a,b)=>b.t0-a.t0); }
+// 先に手元の一覧から外し、聞き取り中の追記・保存待ちの声を止めてから保存庫を消す（監査 Major3）。
+// 外した記録は savDet・声の保存が書き戻さない（DETS に無いものは書かない）
+async function delDets(ids){
+  const recs=[];
+  for(const id of ids){ const r=DETS.get(id); if(!r) continue; recs.push(r); DETS.delete(id);
+    LS.events.forEach(e=>{ if(e.rec.id===id) e.closed=true; });
+    LS.pending=LS.pending.filter(p=>p.ev.rec.id!==id);
+    if(r.clip && r._clipCounted){ CLIP_BYTES-=r.clip_bytes||0; r._clipCounted=false; } }
+  const d=await db(); const tx=d.transaction(['det','clip'],'readwrite');
+  for(const r of recs){ tx.objectStore('det').delete(r.id); if(r.clip) tx.objectStore('clip').delete(r.clip); }
+  await txDone(tx);
+}
+
+/* =====================================================================
+   鳴き声AI（鳥調査アプリ v247 の ai* を元に、調査の仕組みを外したもの）
+   ===================================================================== */
+function modelBase(){
+  return location.hostname.endsWith('github.io')
+    ? 'https://raw.githubusercontent.com/Hizinorimashi/bird-survey-web/'+MODEL_COMMIT+'/birdnet'
+    : new URL('models/birdnet', location.href).href;   // 手元の試験用（tests/serve.js が用意する）
+}
+function aiFiles(){
+  const app=['birdnet-worker.js','tf.min.js','pcm-recorder.js','labels_en_us.txt','labels_ja.txt','hokkaido_list.json','hokkaido_alias.json']
+    .map(f=>new URL('ai/'+f, location.href).href);
+  const base=modelBase();
+  const model=['model.json', ...Array.from({length:13},(_,i)=>`group1-shard${i+1}of13.bin`)].map(f=>base+'/'+f);
+  return { app, model };
+}
+const AI={ state:'unknown', err:'', progress:0, prep:null, worker:null, workerP:null, reqId:0, pending:{}, haveModel:false };
+// state: unknown / nosupport / none（未取り込み）/ installing / ready / failed
+async function aiCheck(){
+  if(AI.state==='installing') return AI.state;
+  if(!('caches' in window) || !window.AudioWorkletNode || !(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia) || !window.indexedDB || !window.Worker){
+    AI.state='nosupport'; return AI.state; }
+  try{
+    const f=aiFiles(); const ca=await caches.open(CACHE_APP), cm=await caches.open(CACHE_MODEL);
+    let a=0, m=0;
+    for(const u of f.app) if(await ca.match(u)) a++;
+    for(const u of f.model) if(await cm.match(u)) m++;
+    AI.haveModel = m===f.model.length;
+    if(a===f.app.length && AI.haveModel){
+      try{ AI.prep=await aiPrepare(); AI.state='ready'; AI.err=''; }
+      catch(e){ AI.state='failed'; AI.err=String(e&&e.message||e); }
+    } else AI.state='none';
+  }catch(e){ AI.state='failed'; AI.err=String(e&&e.message||e); }
+  return AI.state;
+}
+async function aiInstall(){
+  if(AI.state==='installing' || AI.state==='nosupport') return;
+  AI.state='installing'; AI.err=''; AI.progress=0; render();
+  try{
+    for(const k of await caches.keys()) if(k.startsWith('koelog-ai-app-') && k!==CACHE_APP) await caches.delete(k);
+    const f=aiFiles(); const ca=await caches.open(CACHE_APP), cm=await caches.open(CACHE_MODEL);
+    const jobs=f.app.map(u=>[ca,u,1]).concat(f.model.map(u=>[cm,u,u.endsWith('.bin')?5:1]));   // 重さ（進み具合の目安）
+    const total=jobs.reduce((s,j)=>s+j[2],0); let done=0;
+    for(const [c,u,w] of jobs){
+      if(!(await c.match(u))){   // 前回の途中まで・鳥調査アプリで取り込み済みの分は取り直さない
+        const res=await fetch(u, { cache:'no-store' });
+        if(!res.ok) throw new Error(`${u.split('/').pop()} を取り込めませんでした（${res.status}）`);
+        const body=await res.clone().arrayBuffer();
+        if(!body.byteLength) throw new Error(`中身が空でした（${u.split('/').pop()}）`);
+        if((res.headers.get('content-type')||'').includes('text/html')) throw new Error('想定と違う中身でした');
+        await c.put(u, res);
+      }
+      done+=w; AI.progress=done/total; aiProgressPaint();
+    }
+    AI.state='unknown';
+    const st=await aiCheck();
+    if(st!=='ready') throw new Error(AI.err||'取り込んだ中身を確かめられませんでした');
+    try{ if(navigator.storage && navigator.storage.persist) await navigator.storage.persist(); }catch(e){}
+    toast('鳴き声AIの準備ができました。圏外でも使えます', 4000);
+  }catch(e){
+    AI.state='failed'; AI.err=String(e&&e.message||e);
+    toast('取り込めませんでした。電波の良い所でもう一度押してください', 6000);
+  }
+  AI.progress=0; render();
+}
+function aiProgressPaint(){ document.querySelectorAll('[data-aiprog]').forEach(el=>{ el.style.width=Math.round(AI.progress*100)+'%'; });
+  document.querySelectorAll('[data-aiprogt]').forEach(el=>{ el.textContent=Math.round(AI.progress*100)+'%'; }); }
+async function aiUninstall(){
+  if(AI.state==='installing') return;
+  if(!confirm('鳴き声AI（約64MB）を端末から消します。\nこれまでの記録と声は消えません。\n\n同じ端末の「鳥類調査記録」アプリでも同じAIを使っている場合、そちらも取り込み直しになります。\nよろしいですか？')) return;
+  if(LS.want) listenStop();
+  workerKill();
+  try{ await caches.delete(CACHE_APP); await caches.delete(CACHE_MODEL); }catch(e){}
+  AI.prep=null; AI.state='unknown'; await aiCheck(); render();
+  toast('鳴き声AIを端末から消しました');
+}
+async function cacheText(name,url){ const c=await caches.open(name); const r=await c.match(url);
+  if(!r) throw new Error('AIのファイルが端末にありません: '+url.split('/').pop()); return r.text(); }
+// 種名ラベルと北海道の一覧を読み、検査する（鳥調査アプリと同じ検査。おかしければAIを使わせない）
+async function aiPrepare(){
+  const f=aiFiles(); const at=n=>f.app.find(u=>u.endsWith('/'+n));
+  const [en, ja, hkT, alT]=await Promise.all(['labels_en_us.txt','labels_ja.txt','hokkaido_list.json','hokkaido_alias.json'].map(n=>cacheText(CACHE_APP, at(n))));
+  const bad=m=>{ throw new Error('北海道の種の一覧が壊れています: '+m); };
+  let hk, al; try{ hk=JSON.parse(hkT); al=JSON.parse(alT); }catch(e){ bad('読み取れません'); }
+  const enL=en.split('\n'), jaL=ja.split('\n');
+  const labels=enL.filter(l=>l.trim()).map((l,i)=>{ const [sci,enName]=l.trim().split('_');
+    return { sci, en:enName, ja:((jaL[i]||'').trim().split('_')[1]||enName) }; });
+  const sciIndex=Object.create(null); labels.forEach((b,i)=>{ sciIndex[b.sci]=i; });
+  const isLabel=x=>typeof x==='string' && Object.prototype.hasOwnProperty.call(sciIndex,x);
+  if(!hk || hk.format!=='hokkaido-list' || hk.version!==1 || !Array.isArray(hk.species)) bad('形式');
+  if(!al || al.format!=='hokkaido-alias' || al.version!==1 || !al.alias || typeof al.alias!=='object' || Array.isArray(al.alias)) bad('対応表の形式');
+  const ids=new Set(); const okStr=(v,n)=>typeof v==='string' && v.length>0 && v.length<=n;
+  for(const sp of hk.species){
+    if(!sp || !okStr(sp.id,60) || !okStr(sp.list_ja,60) || !okStr(sp.master_ja,60) || !okStr(sp.sci,60) || ids.has(sp.id)) bad('種の行');
+    if(!Array.isArray(sp.birdnet) || !sp.birdnet.every(isLabel)) bad('対応先 '+sp.id);
+    ids.add(sp.id);
+  }
+  if(hk.species.length!==505) bad('種数');
+  for(const [id,arr] of Object.entries(al.alias)) if(!ids.has(id) || !Array.isArray(arr) || !arr.length || !arr.every(isLabel)) bad('承認済み対応 '+id);
+  const extra = al.extra===undefined ? [] : al.extra;
+  if(!Array.isArray(extra) || extra.length>50) bad('追加種の形式');
+  for(const x of extra){
+    if(!x || !okStr(x.id,200) || ids.has(x.id) || !okStr(x.list_ja,200) || !okStr(x.master_ja,200) || !okStr(x.sci,200)) bad('追加種の行');
+    if(!Array.isArray(x.birdnet) || !x.birdnet.length || !x.birdnet.every(isLabel)) bad('追加種の対応先 '+x.id);
+    ids.add(x.id);
+  }
+  const hkIdx=new Set(), idxName=new Map();
+  for(const sp of hk.species.concat(extra)){
+    const targets=sp.birdnet.length? sp.birdnet : (al.alias[sp.id]||[]);
+    for(const s of targets){ const i=sciIndex[s];
+      if(idxName.has(i) && idxName.get(i)!==sp.list_ja) bad('同じ分類に2つの種が対応しています '+s);
+      hkIdx.add(i); idxName.set(i, sp.list_ja); }
+  }
+  const nonBird=new Set(NONBIRD_SCI.filter(s=>sciIndex[s]!==undefined).map(s=>sciIndex[s]));
+  // 名前を直すときの候補: 北海道の種（505＋追加）。北海道に絞らないときは BirdNET の和名も
+  const hkNames=new Map(); for(const sp of hk.species.concat(extra)) if(!hkNames.has(sp.list_ja)) hkNames.set(sp.list_ja, sp.sci);
+  return { labels, hkIdx, idxName, nonBird, humanIdx:sciIndex['Human vocal'], hkNames };
+}
+
+/* ---------- 判別ワーカー ---------- */
+function workerKill(){
+  if(AI.worker){ try{ AI.worker.terminate(); }catch(e){} }
+  AI.worker=null; AI.workerP=null;
+  Object.values(AI.pending).forEach(p=>p.rej(new Error('AIを止めました'))); AI.pending={};
+}
+function aiAsk(msg, transfer, ms){
+  return new Promise((res,rej)=>{
+    if(!AI.worker){ rej(new Error('AIが動いていません')); return; }
+    const id=++AI.reqId; let tm=null;
+    AI.pending[id]={ res:v=>{ clearTimeout(tm); res(v); }, rej:e=>{ clearTimeout(tm); rej(e); } };
+    if(ms) tm=setTimeout(()=>{ if(AI.pending[id]){ delete AI.pending[id]; rej(new Error('AIの返事がありませんでした')); } }, ms);
+    AI.worker.postMessage(Object.assign({}, msg, {id}), transfer||[]);
+  });
+}
+function workerEnsure(){
+  if(AI.workerP) return AI.workerP;
+  const p=AI.workerP=(async()=>{
+    if(AI.state!=='ready') throw new Error('鳴き声AIがまだ取り込まれていません');
+    const f=aiFiles(); const at=n=>f.app.find(u=>u.endsWith('/'+n));
+    const [tfT, wT]=await Promise.all([cacheText(CACHE_APP, at('tf.min.js')), cacheText(CACHE_APP, at('birdnet-worker.js'))]);
+    const url=URL.createObjectURL(new Blob([tfT,'\n;\n',wT], {type:'text/javascript'}));
+    const w=new Worker(url); AI.worker=w;
+    setTimeout(()=>URL.revokeObjectURL(url), 60000);
+    w.onmessage=({data})=>{
+      if(data.message==='progress') return;
+      const q=data && AI.pending[data.id]; if(!q) return;
+      delete AI.pending[data.id];
+      if(data.message==='error') q.rej(new Error(data.text)); else q.res(data);
+    };
+    w.onerror=()=>{ const err=new Error('AIの処理で問題が起きました'); Object.values(AI.pending).forEach(q=>q.rej(err)); AI.pending={}; };
+    await aiAsk({ message:'init', modelUrl:f.model[0], cacheName:CACHE_MODEL }, null, 120000);
+  })();
+  p.catch(()=>{ if(AI.workerP===p) workerKill(); });
+  return p;
+}
+
+/* =====================================================================
+   聞き取り
+   ===================================================================== */
+const LS={ want:false, preparing:false, cap:false, starting:false, gen:0, reasons:new Set(), needResume:false,
+  ctx:null, stream:null, node:null, wake:null, geoId:null, pos:null, geoErr:false, lastPcm:0,
+  ring:new Float32Array(SR*RING_SEC), written:0, next:0, judged:0, busy:null, seg:null,
+  events:[], pending:[], humanWins:new Set(), lost:[], sess:null, tick:null, level:0, lastName:'', flash:new Set() };
+const REASON={ hidden:'画面が消えていました', play:'声の再生中', fail:'マイクを使えませんでした' };
+function canRun(){ return LS.want && !LS.preparing && LS.reasons.size===0 && !LS.needResume && !document.hidden && AI.state==='ready' && !!AI.worker; }
+function sync(){
+  if(canRun()){ if(!LS.cap && !LS.starting) captureStart(); }
+  else if(LS.cap || LS.starting) captureStop();
+  paintListen();
+}
+function pauseFor(r){ LS.reasons.add(r); sync(); }
+function resumeFor(r){ if(!LS.reasons.has(r)) return; LS.reasons.delete(r); sync(); }
+
+async function listenToggle(){ if(LS.want) listenStop(); else listenStart(); }
+async function listenStart(){
+  if(LS.want) return;
+  playStop();   // 再生音をマイクが拾わないように（監査 Major4）
+  if(AI.state==='nosupport'){ toast('この端末・ブラウザでは使えません', 5000); return; }
+  if(AI.state!=='ready'){ toast('先に鳴き声AIを取り込んでください'); return; }
+  LS.want=true; LS.preparing=true; LS.needResume=false; LS.reasons.delete('fail');
+  paintListen();
+  try{ await workerEnsure(); }
+  catch(e){ LS.want=false; LS.preparing=false; toast('鳴き声AIを起動できませんでした: '+(e&&e.message||e), 6000); paintListen(); return; }
+  LS.preparing=false;
+  if(!LS.want) return;   // 準備中に止めた
+  LS.sess={ id:uuid(), t0:Date.now(), t1:Date.now(), sec:0 }; SESS.set(LS.sess.id, LS.sess); dbPut('sess', LS.sess).catch(()=>{});
+  clearInterval(LS.tick); LS.tick=setInterval(tick, 1000);
+  sync();
+}
+function listenStop(msg){
+  if(!LS.want) return;
+  LS.want=false; LS.preparing=false;
+  captureStop();
+  for(const e of LS.events) e.closed=true; LS.events=[];
+  clearInterval(LS.tick); LS.tick=null;
+  if(LS.sess){ LS.sess.t1=Date.now(); dbPut('sess', LS.sess).catch(()=>{}); LS.sess=null; }
+  pocketClose();
+  render();
+  if(msg) toast(msg, 5000);
+}
+function tick(){
+  if(!LS.want) return;
+  if(LS.cap && LS.sess){ LS.sess.sec++; if(LS.sess.sec%15===0){ LS.sess.t1=Date.now(); dbPut('sess', LS.sess).catch(()=>{}); } }
+  // マイクの音が5秒以上届かない → つなぎ直す
+  if(LS.cap && Date.now()-LS.lastPcm>5000){ captureStop(); sync(); }
+  const el=$('#elapsed'); if(el && LS.sess) el.textContent=dur(LS.sess.sec);
+}
+
+/* ---------- マイク ---------- */
+async function addWorklet(ctx){
+  const u=aiFiles().app.find(x=>x.endsWith('/pcm-recorder.js'));
+  const t=await cacheText(CACHE_APP, u);
+  const bu=URL.createObjectURL(new Blob([t], {type:'text/javascript'}));
+  try{ await ctx.audioWorklet.addModule(bu); } finally{ URL.revokeObjectURL(bu); }
+}
+function release(o){
+  try{ o.node && (o.node.port.onmessage=null, o.node.disconnect()); }catch(e){}
+  try{ o.stream && o.stream.getTracks().forEach(t=>t.stop()); }catch(e){}
+  try{ o.ctx && o.ctx.close(); }catch(e){}
+}
+async function captureStart(){
+  const gen=++LS.gen; LS.starting=true; paintListen();
+  const o={stream:null, ctx:null, node:null};
+  const stale=()=>gen!==LS.gen || !canRun();
+  try{
+    o.stream=await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:false } });
+    if(stale()) throw 'stale';
+    o.ctx=new (window.AudioContext||window.webkitAudioContext)({ sampleRate:SR });
+    await addWorklet(o.ctx);
+    if(stale()) throw 'stale';
+    if(o.ctx.state==='suspended'){ try{ await o.ctx.resume(); }catch(e){} }
+    if(stale()) throw 'stale';
+    const src=o.ctx.createMediaStreamSource(o.stream);
+    o.node=new AudioWorkletNode(o.ctx, 'pcm-recorder');
+    LS.ring.fill(0); LS.written=0; LS.next=0; LS.judged=0; LS.busy=null;
+    LS.humanWins.clear(); LS.lost=[]; LS.pending=[];
+    for(const e of LS.events) e.closed=true; LS.events=[];
+    LS.seg={ t0:Date.now() };
+    o.node.port.onmessage=e=>{ if(gen===LS.gen) onPcm(e.data); };
+    src.connect(o.node);
+    LS.stream=o.stream; LS.ctx=o.ctx; LS.node=o.node; LS.cap=true; LS.lastPcm=Date.now();
+    wakeOn(); geoStart();
+  }catch(err){
+    release(o);
+    if(gen===LS.gen && err!=='stale'){
+      console.warn(err);
+      LS.needResume=true; LS.reasons.add('fail');
+      toast('マイクを使えませんでした。マイクの使用を許可してから、もう一度押してください', 7000);
+      listenStop();
+    }
+  }finally{
+    if(gen===LS.gen){ LS.starting=false; paintListen(); }
+  }
+}
+function captureStop(){
+  flushPending(true);   // 止める前に、判定済みの声は残す（世代を進める前に呼ぶ）
+  LS.gen++; LS.starting=false;
+  release(LS); LS.node=LS.stream=LS.ctx=null;
+  LS.cap=false; LS.level=0;
+  if(LS.geoId!=null && navigator.geolocation){ try{ navigator.geolocation.clearWatch(LS.geoId); }catch(e){} } LS.geoId=null;
+  if(LS.wake){ try{ const r=LS.wake.release(); if(r&&r.catch) r.catch(()=>{}); }catch(e){} LS.wake=null; }
+}
+function wakeOn(){
+  if(!('wakeLock' in navigator) || !LS.cap) return;
+  const gen=LS.gen;
+  navigator.wakeLock.request('screen').then(w=>{
+    if(gen===LS.gen && LS.cap){ if(LS.wake){ try{ LS.wake.release(); }catch(e){} } LS.wake=w; } else { try{ w.release(); }catch(e){} }
+  }).catch(()=>{});
+}
+function geoStart(){
+  if(!navigator.geolocation || LS.geoId!=null) return;
+  try{ LS.geoId=navigator.geolocation.watchPosition(p=>{
+      LS.pos={ lat:p.coords.latitude, lng:p.coords.longitude, acc:p.coords.accuracy, t:Date.now() }; LS.geoErr=false; paintMeta(); },
+    ()=>{ LS.geoErr=true; paintMeta(); }, { enableHighAccuracy:true, maximumAge:10000 }); }catch(e){}
+}
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden){ LS.reasons.add('hidden'); sync(); return; }
+  LS.reasons.delete('hidden'); sync();
+});
+
+/* ---------- 判別 ---------- */
+function onPcm(chunk){
+  const R=LS.ring.length;
+  let s=0;
+  for(let i=0;i<chunk.length;i++){ const v=chunk[i]; LS.ring[(LS.written+i)%R]=v; s+=v*v; }
+  LS.written+=chunk.length; LS.lastPcm=Date.now();
+  const dB=20*Math.log10(Math.sqrt(s/chunk.length)+1e-9);   // 音の大きさ（-60dB〜-15dB を 0〜1 に）
+  LS.level=Math.max(0, Math.min(1, (dB+60)/45));
+  const r=$('#lvRing'); if(r) r.style.setProperty('--lv', LS.level.toFixed(2));
+  pump();
+}
+function ringGet(a,b){
+  const R=LS.ring.length;
+  if(a<0 || a<LS.written-R || b>LS.written) return null;
+  const out=new Float32Array(b-a);
+  for(let s=a;s<b;s++) out[s-a]=LS.ring[s%R];
+  return out;
+}
+const tOf=(seg,s)=>seg.t0+s/SR*1000;
+async function pump(){
+  if(LS.busy!==null || !LS.cap || !LS.seg) return;
+  const gen=LS.gen, seg=LS.seg, R=LS.ring.length;
+  if(LS.next < LS.written-R){   // 処理が遅れて消えた音は判定にも保存にも使わない
+    const nn=Math.ceil((LS.written-R)/WIN)*WIN;
+    LS.lost.push([LS.next, nn]); LS.next=nn; LS.judged=nn;
+  }
+  const avail=Math.floor((LS.written-LS.next)/WIN);
+  if(avail<1){ flushPending(false); return; }
+  const n=Math.min(BATCH, avail), start=LS.next, end=start+n*WIN;
+  const pcm=ringGet(start,end); if(!pcm) return;
+  LS.next=end; LS.busy=gen;
+  try{
+    const r=await aiAsk({ message:'scores', pcm }, [pcm.buffer], 60000);
+    if(gen!==LS.gen) return;
+    for(let f=0; f<r.n; f++) handleWindow(start+f*WIN, r.scores.subarray(f*r.C,(f+1)*r.C), seg);
+    LS.judged=end;
+    flushPending(false);
+  }catch(err){
+    console.warn(err);
+    if(gen===LS.gen){ LS.lost.push([start,end]); LS.judged=end; }
+    if(gen===LS.gen && /返事がありません|問題が起き|動いていません/.test(String(err&&err.message))){
+      workerKill(); setTimeout(()=>listenStop('鳴き声AIが応答しなくなったため止めました。もう一度「聞く」を押してください'), 0);
+    }
+  }finally{
+    if(LS.busy===gen) LS.busy=null;
+  }
+  if(LS.cap && gen===LS.gen) setTimeout(pump, 0);
+}
+function speciesSet(){ const s=new Set(); for(const d of DETS.values()) s.add(d.ja); return s; }
+function handleWindow(ws, row, seg){
+  const P=AI.prep; if(!P) return;
+  if(P.humanIdx!==undefined && row[P.humanIdx]>=HUMAN_THR) LS.humanWins.add(ws);
+  const thr=SENS[CFG.sens].thr;
+  const hits=[];
+  const cand = CFG.hk ? P.hkIdx : row.keys();
+  for(const i of cand){ const s=row[i]; if(!P.nonBird.has(i) && s>=thr) hits.push({i, s}); }
+  hits.sort((a,b)=>b.s-a.s); hits.length=Math.min(hits.length, MAX_PER_WIN);
+  const tw=tOf(seg,ws);
+  let changed=false;
+  for(const h of hits){
+    const ja=P.idxName.get(h.i) || (P.labels[h.i]&&P.labels[h.i].ja) || '';
+    if(!ja) continue;
+    let ev=LS.events.find(e=>e.ja===ja && !e.closed && e.seg===seg && ws-e.endS<=MERGE_WINS*WIN);
+    if(!ev){
+      const known=speciesSet(), todayHas=detList().some(d=>d.ja===ja && dayKey(d.t0)===dayKey(tw));
+      const pos=LS.pos, posOk=pos && Math.abs(pos.t-tw)<=POS_MAX_AGE;
+      const rec={ id:uuid(), ja, sci:P.labels[h.i].sci, max:0, count:0, t0:tw, t1:tOf(seg,ws+WIN),
+        lat:posOk?pos.lat:null, lng:posOk?pos.lng:null, acc:posOk?Math.round(pos.acc):null,
+        clip:null, clip_sec:0, clip_bytes:0, clip_note:'', sess:LS.sess?LS.sess.id:'', model:MODEL_VER, created_at:new Date().toISOString() };
+      ev={ rec, ja, seg, endS:ws+WIN, closed:false };
+      LS.events.push(ev); DETS.set(rec.id, rec);
+      LS.flash.add(ja); LS.lastName=ja;
+      if(!known.has(ja)){ toast('はじめての鳥: '+ja, 4000); try{ navigator.vibrate&&navigator.vibrate([40,60,40]); }catch(e){} }
+      else if(!todayHas){ try{ navigator.vibrate&&navigator.vibrate(30); }catch(e){} }
+    }
+    const rec=ev.rec;
+    rec.count++; ev.endS=ws+WIN; rec.t1=tOf(seg,ws+WIN);
+    if(rec.lat==null && LS.pos && Math.abs(LS.pos.t-tw)<=POS_MAX_AGE){ rec.lat=LS.pos.lat; rec.lng=LS.pos.lng; rec.acc=Math.round(LS.pos.acc); }
+    if(h.s>rec.max){
+      rec.max=h.s;
+      // いちばんよく聞こえた区間の前後を、その範囲を判定し終えたら切り出す（保存前なら差し替える）
+      if(CFG.clips && !rec.clip && !rec._saving){
+        const a=Math.max(0, ws-CLIP_PAD*SR), b=ws+WIN+CLIP_PAD*SR;
+        LS.pending=LS.pending.filter(p=>p.ev!==ev);
+        LS.pending.push({ ev, a, b, best:[ws, ws+WIN], need:Math.ceil(b/WIN)*WIN, seg, gen:LS.gen });
+      }
+    }
+    savDet(rec); changed=true;
+  }
+  for(const e of LS.events) if(!e.closed && e.seg===seg && ws-e.endS>MERGE_WINS*WIN) e.closed=true;
+  LS.events=LS.events.filter(e=>!e.closed || LS.pending.some(p=>p.ev===e));
+  if(changed) liveUpdate();
+}
+// 声の保存。force … 聞き取りを止めるとき（最後まで判定できていなくても、判定済みの所までで残す）
+function flushPending(force){
+  if(!CFG.clips){ LS.pending=[]; return; }
+  const ready=LS.pending.filter(p=>p.gen===LS.gen && (LS.judged>=p.need || (force && LS.judged>=p.best[1])));
+  if(!ready.length){ if(force) LS.pending=[]; return; }
+  LS.pending=LS.pending.filter(p=>!ready.includes(p));
+  if(force) LS.pending=[];
+  for(const p of ready){
+    const rec=p.ev.rec;
+    if(rec.clip || rec._saving || !DETS.has(rec.id)) continue;
+    const b=Math.min(p.b, LS.judged, LS.written);
+    let human=false;
+    for(let s=Math.floor(p.a/WIN)*WIN; s<b; s+=WIN) if(LS.humanWins.has(s)){ human=true; break; }
+    const lost=LS.lost.some(([x,y])=>p.a<y && x<b);
+    const pcm=(!lost && !human) ? ringGet(p.a,b) : null;
+    const nOut=pcm ? Math.floor(pcm.length/2) : 0, bytes=nOut*2, sec=nOut/CLIP_SR;
+    const day=dayKey(rec.t0);
+    const sameDay=detList().filter(d=>d.clip && d.ja===rec.ja && dayKey(d.t0)===day).length;
+    let note='';
+    if(human) note='人の声が入ったため、声は残していません';
+    else if(lost || !pcm) note='音が途切れたため、声は残せませんでした';
+    else if(sameDay>=CLIP_PER_SP_DAY) note=`この日の${rec.ja}の声は${CLIP_PER_SP_DAY}件残してあります`;
+    else if(CLIP_BYTES+CLIP_RESERVED+bytes>CLIP_DEV_BYTES) note='声の保存量が上限（300MB）に達しました';
+    if(note){ rec.clip_note=note; savDet(rec); continue; }
+    // 48kHz → 24kHz（2つずつ平均）・16bit
+    const i16=new Int16Array(nOut);
+    for(let i=0;i<nOut;i++){ const v=(pcm[2*i]+pcm[2*i+1])*0.5; i16[i]=Math.max(-32768, Math.min(32767, Math.round(v*32767))); }
+    const clip={ id:uuid(), det:rec.id, pcm:i16, sr:CLIP_SR, t0:tOf(p.seg,p.a) };
+    rec._saving=true; CLIP_RESERVED+=bytes;
+    (async()=>{
+      const d=await db();
+      if(!DETS.has(rec.id)) return;   // 待っている間に消された
+      const tx=d.transaction(['det','clip'],'readwrite');
+      Object.assign(rec, { clip:clip.id, clip_sec:Math.round(sec*10)/10, clip_bytes:bytes, clip_note:'' });
+      tx.objectStore('clip').put(clip); tx.objectStore('det').put(plain(rec));   // 声と記録を一緒に確定する
+      await txDone(tx);
+      if(DETS.has(rec.id)){ CLIP_BYTES+=bytes; rec._clipCounted=true; return; }
+      // 書いている間に消された → 書いた分も消す
+      const t2=d.transaction(['det','clip'],'readwrite'); t2.objectStore('det').delete(rec.id); t2.objectStore('clip').delete(clip.id); await txDone(t2);
+    })().catch(e=>{
+      console.warn(e); Object.assign(rec, { clip:null, clip_sec:0, clip_bytes:0, clip_note:'声の保存に失敗しました（端末の空き容量など）' }); savDet(rec);
+    }).finally(()=>{ rec._saving=false; CLIP_RESERVED-=bytes; liveUpdate(); });
+  }
+}
+
+/* ---------- 声の再生（再生中は聞き取りを止め、再生音をAIが拾わないようにする） ---------- */
+let _player=null, _playId=null, _playGen=0;
+function wav(i16, sr){
+  const buf=new ArrayBuffer(44+i16.length*2), v=new DataView(buf);
+  const w=(o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
+  w(0,'RIFF'); v.setUint32(4,36+i16.length*2,true); w(8,'WAVE'); w(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true); v.setUint32(24,sr,true);
+  v.setUint32(28,sr*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true); w(36,'data'); v.setUint32(40,i16.length*2,true);
+  new Int16Array(buf,44).set(i16);
+  return new Blob([buf], {type:'audio/wav'});
+}
+function playMark(){ document.querySelectorAll('[data-play]').forEach(b=>b.classList.toggle('playing', b.dataset.play===_playId)); }
+function playStop(){
+  _playGen++;
+  if(_player){ const p=_player; _player=null; try{ p.onended=p.onpause=p.onerror=null; p.pause(); }catch(e){} try{ URL.revokeObjectURL(p.src); }catch(e){} }
+  _playId=null; playMark();
+  resumeFor('play');
+}
+async function playClip(id){
+  if(_playId===id){ playStop(); return; }
+  playStop();
+  const g=_playGen;
+  let c=null; try{ c=await dbGet('clip', id); }catch(e){}
+  if(g!==_playGen) return;
+  if(!c || !c.pcm){ toast('声が見つかりませんでした'); return; }
+  pauseFor('play');
+  const a=new Audio(URL.createObjectURL(wav(c.pcm, c.sr||CLIP_SR)));
+  _player=a; _playId=id; playMark();
+  const end=()=>{ if(_player===a) playStop(); };
+  a.onended=end; a.onpause=end; a.onerror=end;
+  a.play().catch(end);
+}
+
+/* =====================================================================
+   画面
+   ===================================================================== */
+const UI={ tab:'listen', day:null, birdSort:'new', mapPeriod:'all', mapSp:'' };
+const TABS=[['listen','きく',IC.ear],['log','きろく',IC.list],['map','地図',IC.map],['birds','見つけた鳥',IC.bird]];
+function paintTabs(){
+  $('#tabs').innerHTML=TABS.map(([k,l,ic])=>`<button onclick="setTab('${k}')" ${UI.tab===k?'aria-current="page"':''}>${ic}<span>${l}</span>${k==='listen'&&LS.want&&UI.tab!=='listen'?'<i class="dot" aria-label="聞いています"></i>':''}</button>`).join('');
+}
+function setTab(t){
+  if(UI.tab===t && !UI.day){ window.scrollTo({top:0, behavior:'smooth'}); return; }
+  UI.tab=t;
+  if(UI.day){ UI.day=null; if(history.state && history.state.day) history.back(); }
+  render(); window.scrollTo(0,0);
+}
+function hdr(title, right=''){ $('#hdr').innerHTML=`<h1>${title}</h1>${right}`; }
+function render(){
+  paintTabs();
+  const mw=$('#mapWrap'); mw.hidden = UI.tab!=='map';
+  $('#main').hidden = UI.tab==='map';
+  destroyMini();
+  if(UI.tab==='listen') renderListen();
+  else if(UI.tab==='log') (UI.day ? renderDay() : renderLog());
+  else if(UI.tab==='map') renderMap();
+  else if(UI.tab==='birds') renderBirds();
+}
+let _liveT=null;
+function liveUpdate(){   // 検出のたびに呼ぶ（まとめて0.3秒後に描き直す）
+  if(_liveT) return;
+  _liveT=setTimeout(()=>{ _liveT=null;
+    if(UI.tab==='listen') paintToday();
+    else if(UI.tab==='log' || UI.tab==='birds') render();
+    else if(UI.tab==='map') mapDraw(false);
+    paintPocket();
+  }, 300);
+}
+
+/* ---------- きく ---------- */
+function renderListen(){
+  hdr(`<span class="logo"><i>${IC.wave}</i>こえログ</span>`, `<button class="iconbtn" onclick="openSettings()" aria-label="設定">${IC.gear}</button>`);
+  const m=$('#main');
+  if(AI.state==='nosupport'){
+    m.innerHTML=`<div class="card welcome"><h2>この端末では使えません</h2><p class="muted">マイク・AIの処理に対応していないブラウザです。Chrome（Android）か Safari（iPhone）の新しい版で開いてください。</p></div>`; return; }
+  if(AI.state!=='ready'){ m.innerHTML=welcomeHtml()+todaySection(); paintToday(); return; }
+  m.innerHTML=`<div class="stage" id="stage"></div>${todaySection()}`;
+  paintListen(); paintToday();
+}
+function welcomeHtml(){
+  const inst=AI.state==='installing';
+  const size=AI.haveModel?'約2MB':'約64MB';
+  return `<div class="card welcome">
+    <div style="width:64px;height:64px;margin:0 auto;border-radius:20px;background:var(--pri);color:var(--pri-ink);display:grid;place-items:center">${IC.wave.replace('<svg','<svg style="width:36px;height:36px"')}</div>
+    <h2>鳥の声を、場所と一緒に残そう</h2>
+    <p class="muted small" style="margin:0">スマホが聞こえた鳥の名前を教えてくれます</p>
+    <ol class="steps">
+      <li><span>最初に1回だけ、鳴き声AIを取り込みます（${size}・Wi-Fi がおすすめ）</span></li>
+      <li><span>外で「聞く」を押して、スマホを持って歩くだけ</span></li>
+      <li><span>聞こえた鳥・時刻・場所・声が、自動で記録されます</span></li>
+    </ol>
+    ${inst ? `<div class="progress" aria-label="取り込み中"><i data-aiprog style="width:${Math.round(AI.progress*100)}%"></i></div>
+      <p class="muted small" style="margin:8px 0 0">取り込み中… <span data-aiprogt>${Math.round(AI.progress*100)}%</span>　画面を閉じずにお待ちください</p>`
+    : `<button class="btn pri wide" onclick="aiInstall()">${IC.download}鳴き声AIを取り込む</button>
+      ${AI.state==='failed'?`<p class="small" style="color:var(--danger);margin:10px 0 0">${esc(AI.err)}</p>`:''}`}
+    <p class="tiny muted" style="margin:14px 0 0">音も記録も、この端末の中だけで扱います。どこにも送りません。</p>
+  </div>`;
+}
+function paintListen(){
+  paintTabs();
+  const st=$('#stage'); if(!st) return;
+  const on=LS.want, wait=on && (LS.preparing || LS.starting || !LS.cap);
+  let status, cls='';
+  if(!on){ status='聞いていません'; }
+  else if(LS.preparing){ status='AIを準備中…'; cls='wait'; }
+  else if(LS.cap){ status=`聞いています <span id="elapsed" style="font-variant-numeric:tabular-nums">${dur(LS.sess?LS.sess.sec:0)}</span>`; cls='on'; }
+  else if(LS.reasons.has('play')){ status='声の再生中は一時停止'; cls='wait'; }
+  else if(LS.reasons.has('hidden')){ status='一時停止中'; cls='wait'; }
+  else { status='マイクを準備中…'; cls='wait'; }
+  st.className='stage'+(on?' on':'');
+  st.innerHTML=`<div class="status ${cls}"><i class="d"></i><span>${status}</span></div>
+    <div class="bigwrap">
+      <i class="ring pulse"></i><i class="ring lv" id="lvRing"></i>
+      <button class="bigbtn${wait?' busy':''}" onclick="listenToggle()" aria-label="${on?'聞くのを止める':'聞き始める'}">${on?IC.stop:IC.mic}<span>${on?'止める':'聞く'}</span></button>
+    </div>
+    <p class="hint">${on
+      ? '画面をつけたままにしてください。画面が消えると一時停止し、つけ直すと続きから聞きます'
+      : '外で押すと、聞こえた鳥の名前・時刻・場所・声を記録します'}</p>
+    <div class="metaRow" id="metaRow"></div>`;
+  paintMeta();
+}
+function paintMeta(){
+  const el=$('#metaRow'); if(!el) return;
+  if(!LS.want){ el.innerHTML=''; return; }
+  const pos=LS.pos && Date.now()-LS.pos.t<POS_MAX_AGE ? `位置 ±${Math.round(LS.pos.acc)}m` : (LS.geoErr?'位置なしで記録中':'位置を取得中…');
+  el.innerHTML=`<span class="meta">${IC.pin}${pos}</span>${LS.cap?`<button class="meta btnlike" onclick="pocketOpen()">${IC.moon}画面を暗くする</button>`:''}`;
+}
+function todayAgg(){
+  const k=dayKey(Date.now()), m=new Map();
+  for(const d of DETS.values()){ if(dayKey(d.t0)!==k) continue;
+    let a=m.get(d.ja); if(!a){ a={ ja:d.ja, n:0, last:0, best:null, max:0, fixed:false }; m.set(d.ja,a); }
+    a.n++; if(d.t1>a.last) a.last=d.t1; if(d.fixed) a.fixed=true;
+    if((d.max||0)>a.max) a.max=d.max||0;
+    if(d.clip && (!a.best || (d.max||0)>(a.best.max||0))) a.best=d;
+  }
+  return [...m.values()].sort((a,b)=>b.last-a.last);
+}
+function todaySection(){ return `<div id="today"></div>`; }
+function paintToday(){
+  const el=$('#today'); if(!el) return;
+  const list=todayAgg(), known=firstSeen();
+  const k=dayKey(Date.now());
+  el.innerHTML=`<div class="sec-h"><h2>今日きこえた鳥</h2><span>${list.length?list.length+'種':''}</span></div>`
+    + (list.length ? list.map(a=>{
+        const isNew=known.get(a.ja)===k;
+        return `<div class="card sp-card${LS.flash.has(a.ja)?' flash':''}">
+          ${avatar(a.ja)}
+          <div class="body"><div class="nm">${esc(a.ja)}</div>
+            <div class="sub">${isNew?'<span class="chip c-new">はじめて</span>':''}${conf({max:a.max, fixed:a.fixed})}<span>${a.n}回 ・ さいご ${hm(a.last)}</span></div></div>
+          ${a.best?playBtn(a.best.clip):''}
+        </div>`; }).join('')
+      : `<div class="empty card">${IC.bird}<div>${LS.want?'耳をすませています…<br><span class="small">鳥の声が聞こえると、ここに出てきます</span>':'まだありません'}</div></div>`);
+  LS.flash.clear(); playMark();
+}
+function firstSeen(){ const m=new Map(); for(const d of DETS.values()){ const k=dayKey(d.t0); if(!m.has(d.ja) || k<m.get(d.ja)) m.set(d.ja,k); } return m; }
+
+/* ---------- 暗い画面（電池の節約。聞き取りは続ける） ---------- */
+let _pocketTap=0;
+function pocketOpen(){ const p=$('#pocket'); p.hidden=false; paintPocket();
+  p.onclick=()=>{ const now=Date.now(); if(now-_pocketTap<450){ pocketClose(); } _pocketTap=now; }; }
+function pocketClose(){ $('#pocket').hidden=true; }
+function paintPocket(){ const p=$('#pocket'); if(p.hidden) return;
+  const n=todayAgg().length;
+  p.innerHTML=`<b>${LS.cap?'聞いています':'一時停止中'}</b><div>今日 ${n}種</div><div class="last">${LS.lastName?'さいごに聞こえた鳥: '+esc(LS.lastName):''}</div><div class="help">2回タップで戻ります</div>`; }
+
+/* ---------- きろく ---------- */
+function dayGroups(){
+  const g=new Map();
+  for(const d of DETS.values()){ const k=dayKey(d.t0); let a=g.get(k); if(!a){ a={ key:k, dets:[], sp:new Map(), sec:0 }; g.set(k,a); } a.dets.push(d); a.sp.set(d.ja, (a.sp.get(d.ja)||0)+1); }
+  for(const s of SESS.values()){ const a=g.get(dayKey(s.t0)); if(a) a.sec+=s.sec||0; }
+  return [...g.values()].sort((a,b)=>a.key<b.key?1:-1);
+}
+function renderLog(){
+  hdr('きろく');
+  const gs=dayGroups();
+  $('#main').innerHTML = gs.length ? gs.map(g=>{
+    const names=[...g.sp.entries()].sort((a,b)=>b[1]-a[1]).map(x=>x[0]);
+    return `<button class="card day" onclick="openDay('${g.key}')">
+      <div class="top"><span class="dt">${dayLabel(g.key)}</span><span class="cnt">${g.sp.size}種 ・ ${g.dets.length}回</span></div>
+      ${g.sec?`<div class="small muted">聞いた時間 ${durWords(g.sec)}</div>`:''}
+      <div class="names">${names.slice(0,8).map(n=>`<span>${esc(n)}</span>`).join('')}${names.length>8?`<span>ほか${names.length-8}種</span>`:''}</div>
+    </button>`; }).join('')
+    : `<div class="empty">${IC.list}<div>まだ記録がありません<br><span class="small">「きく」で鳥の声を聞くと、日ごとにここへたまります</span></div></div>`;
+}
+function openDay(k){ UI.day=k; history.pushState({day:k},''); render(); window.scrollTo(0,0); }
+function renderDay(){
+  const k=UI.day;
+  const ds=detList().filter(d=>dayKey(d.t0)===k);
+  if(!ds.length){ UI.day=null; renderLog(); return; }
+  const sp=new Set(ds.map(d=>d.ja));
+  hdr(`<button class="back" onclick="history.back()" aria-label="きろくへ戻る">${IC.back}きろく</button>`);
+  const hasPos=ds.some(d=>d.lat!=null);
+  $('#main').innerHTML=`<div class="sec-h" style="margin-top:4px"><h2 style="font-size:23px">${dayLabel(k)}</h2><span>${sp.size}種 ・ ${ds.length}回</span></div>
+    ${hasPos?'<div class="minimap" id="mini"></div>':''}
+    <div class="card list" style="margin-top:12px">${ds.map(rowHtml).join('')}</div>
+    <div style="margin-top:22px"><button class="btn danger wide" onclick="delDay('${k}')">この日の記録をすべて消す</button></div>`;
+  if(hasPos) miniMap(ds);
+  playMark();
+}
+function rowHtml(d){
+  const note=d.clip?'':(d.clip_note?`<span>${esc(d.clip_note)}</span>`:'');
+  return `<div class="row">
+    <span class="tm">${hm(d.t0)}</span>
+    ${avatar(d.ja,true)}
+    <div class="body"><div class="nm">${esc(d.ja)}</div>
+      <div class="sub">${conf(d)}${d.count>1?`<span>${Math.round((d.t1-d.t0)/1000)}秒間</span>`:''}${d.lat==null?'<span>場所なし</span>':''}${note}</div></div>
+    ${d.clip?playBtn(d.clip):''}
+    <button class="more" onclick="detMenu('${safeId(d.id)}')" aria-label="この記録の操作">${IC.more}</button>
+  </div>`;
+}
+async function delDay(k){
+  const ids=detList().filter(d=>dayKey(d.t0)===k).map(d=>d.id);
+  if(!confirm(`${dayLabel(k,false)}の記録 ${ids.length}件（声も）を消します。元に戻せません。よろしいですか？`)) return;
+  try{ await delDets(ids); toast('消しました'); }catch(e){ toast('消せませんでした'); }
+  history.back();
+}
+function detMenu(id){
+  const d=DETS.get(id); if(!d) return;
+  openSheet(`<h2>${esc(d.ja)}</h2>
+    <p class="muted small" style="margin-top:-6px">${shortDate(d.t0)} ${hm(d.t0)} ・ ${d.fixed?'名前を直した（AIは「'+esc(d.orig_ja)+'」）':'AIの判定 '+Math.round((d.max||0)*100)+'%'}${d.acc!=null?' ・ 位置 ±'+d.acc+'m':''}</p>
+    <div class="acts">
+      <button class="btn wide" onclick="fixName('${safeId(id)}')">名前を直す（AIの間違い）</button>
+      <button class="btn wide" data-act="species" data-v="${esc(d.ja)}">${esc(d.ja)}の記録をまとめて見る</button>
+      <button class="btn danger wide" onclick="delOne('${safeId(id)}')">この記録を消す</button>
+      <button class="btn wide" onclick="closeSheet()">閉じる</button>
+    </div>`);
+}
+async function delOne(id){
+  if(!confirm('この記録（声も）を消します。よろしいですか？')) return;
+  try{ await delDets([id]); toast('消しました'); }catch(e){ toast('消せませんでした'); }
+  closeSheet(); render();
+}
+function fixName(id){
+  const d=DETS.get(id); if(!d) return;
+  openSheet(`<h2>正しい名前を選ぶ</h2>
+    <p class="muted small" style="margin-top:-6px">いまの名前: ${esc(d.ja)}${d.fixed?'（AIは「'+esc(d.orig_ja)+'」）':''}</p>
+    <input class="search" id="fixQ" placeholder="名前で探す（ひらがなでも可）" oninput="fixList('${safeId(id)}')" autocomplete="off">
+    <div class="card list" id="fixL" style="margin-top:10px"></div>`);
+  fixList(id);
+  setTimeout(()=>{ const q=$('#fixQ'); if(q) q.focus(); }, 250);
+}
+function nameCandidates(){
+  const P=AI.prep; const m=new Map();
+  for(const d of DETS.values()) if(!m.has(d.ja)) m.set(d.ja, d.sci||'');
+  if(P){ for(const [ja,sci] of P.hkNames) if(!m.has(ja)) m.set(ja, sci);
+    if(!CFG.hk) for(const l of P.labels) if(l.ja && !m.has(l.ja) && !/[A-Za-z]/.test(l.ja)) m.set(l.ja, l.sci); }
+  return m;
+}
+function fixList(id){
+  const el=$('#fixL'); if(!el) return;
+  const q=kata(($('#fixQ')||{}).value||'').trim();
+  const cur=DETS.get(id); if(!cur) return;
+  const all=[...nameCandidates().entries()].filter(([ja])=>ja!==cur.ja);
+  const used=speciesSet();
+  let hit=q ? all.filter(([ja])=>ja.includes(q)) : all.filter(([ja])=>used.has(ja));
+  hit.sort((a,b)=>(q ? (a[0].indexOf(q)-b[0].indexOf(q)) : 0) || a[0].localeCompare(b[0],'ja'));
+  const more=hit.length>60; hit=hit.slice(0,60);
+  el.innerHTML = (q?'':'<div class="small muted" style="padding:10px 14px 0">これまでに記録した鳥（ほかは名前で探してください）</div>')
+    + (hit.length ? hit.map(([ja])=>`<button class="birdrow" data-act="fix" data-id="${esc(id)}" data-v="${esc(ja)}">${avatar(ja,true)}<div class="body"><div class="nm">${esc(ja)}</div></div></button>`).join('')
+       : '<div class="empty small">見つかりません</div>')
+    + (more?'<div class="small muted" style="padding:10px 14px">さらに絞り込んでください</div>':'');
+}
+async function fixApply(id, ja){
+  const d=DETS.get(id); if(!d) return;
+  const sci=(AI.prep && AI.prep.hkNames.get(ja)) || nameCandidates().get(ja) || '';   // 書き換える前に引く
+  if(!d.fixed){ d.orig_ja=d.ja; d.orig_sci=d.sci; }
+  d.ja=ja; d.sci=sci; d.fixed=(ja!==d.orig_ja);
+  if(!d.fixed){ d.sci=d.orig_sci; delete d.orig_ja; delete d.orig_sci; }
+  d.updated_at=new Date().toISOString();
+  LS.events.forEach(e=>{ if(e.rec.id===id) e.closed=true; });   // 聞き取り中でも、直した記録には足さない
+  await savDet(d);
+  closeSheet(); render(); toast(`「${ja}」に直しました`);
+}
+
+/* ---------- 見つけた鳥 ---------- */
+function birdAgg(){
+  const m=new Map();
+  for(const d of DETS.values()){
+    let a=m.get(d.ja); if(!a){ a={ ja:d.ja, sci:d.sci, n:0, first:d.t0, last:d.t0, days:new Set(), best:null }; m.set(d.ja,a); }
+    a.n++; a.days.add(dayKey(d.t0)); if(d.t0<a.first) a.first=d.t0; if(d.t0>a.last) a.last=d.t0;
+    if(d.clip && (!a.best || (d.max||0)>(a.best.max||0))) a.best=d;
+  }
+  return [...m.values()];
+}
+function renderBirds(){
+  hdr('見つけた鳥');
+  const list=birdAgg();
+  const s=UI.birdSort;
+  list.sort(s==='new'?(a,b)=>b.first-a.first : s==='many'?(a,b)=>b.n-a.n||a.ja.localeCompare(b.ja,'ja') : (a,b)=>a.ja.localeCompare(b.ja,'ja'));
+  const segBtn=(k,l)=>`<button aria-pressed="${s===k}" onclick="UI.birdSort='${k}';render()">${l}</button>`;
+  $('#main').innerHTML = list.length ? `
+    <div class="card total"><b>${list.length}</b><div><div style="font-weight:800">種類の鳥の声を聞きました</div><div class="small muted">${shortDate(Math.min(...list.map(a=>a.first)))}から</div></div></div>
+    <div class="seg" style="margin:14px 0 12px">${segBtn('new','見つけた順')}${segBtn('many','回数順')}${segBtn('abc','名前順')}</div>
+    <div class="card list">${list.map(a=>`<button class="birdrow" data-act="species" data-v="${esc(a.ja)}">
+      ${avatar(a.ja)}<div class="body"><div class="nm">${esc(a.ja)}</div><div class="sub">はじめて ${shortDate(a.first)} ・ ${a.days.size}日</div></div>
+      <span class="n">${a.n}回</span></button>`).join('')}</div>`
+    : `<div class="empty">${IC.bird}<div>まだありません<br><span class="small">聞こえた鳥が、ここにたまっていきます</span></div></div>`;
+}
+function openSpecies(ja){
+  const a=birdAgg().find(x=>x.ja===ja); if(!a){ closeSheet(); return; }
+  const ds=detList().filter(d=>d.ja===ja);
+  const days=[...a.days].sort().reverse();
+  openSheet(`<div style="display:flex;align-items:center;gap:14px;margin-bottom:6px">${avatar(ja)}<div style="flex:1;min-width:0"><h2 style="margin:0">${esc(ja)}</h2><div class="small muted"><i>${esc(a.sci||'')}</i></div></div>${a.best?playBtn(a.best.clip):''}</div>
+    <div class="small muted">はじめて ${shortDate(a.first)} ・ さいご ${shortDate(a.last)} ・ ${a.days.size}日 ・ ${a.n}回</div>
+    <div class="acts" style="margin:14px 0 4px"><button class="btn pri wide" data-act="mapfor" data-v="${esc(ja)}">${IC.map}地図で見る</button></div>
+    ${days.slice(0,30).map(k=>`<h3>${dayLabel(k)}</h3><div class="card list">${ds.filter(d=>dayKey(d.t0)===k).map(rowHtml).join('')}</div>`).join('')}
+    ${days.length>30?`<p class="small muted">ほか${days.length-30}日（地図・書き出しで見られます）</p>`:''}`);
+  playMark();
+}
+function mapFor(ja){ closeSheet(); UI.mapSp=ja; UI.mapPeriod='all'; UI.tab='map'; UI.day=null; render(); }
+
+/* ---------- 地図 ---------- */
+let MAP=null, MAPLAYER=null, MINI=null;
+const TILE='https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png';
+const TILE_ATTR='<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>';
+function renderMap(){
+  hdr('地図');
+  $('#mapMe').innerHTML=IC.locate;
+  if(!window.L || !window.L.map){ $('#mapEmpty').hidden=false; $('#mapEmpty').textContent='地図の部品を読み込めませんでした'; return; }
+  if(!MAP){
+    MAP=window.L.map('map', { zoomControl:false, attributionControl:true }).setView([43.06,141.35], 7);
+    window.L.tileLayer(TILE, { attribution:TILE_ATTR, maxZoom:18, maxNativeZoom:18 }).addTo(MAP);
+    window.L.control.zoom({ position:'bottomleft' }).addTo(MAP);
+    MAPLAYER=window.L.layerGroup().addTo(MAP);
+  }
+  mapBar();
+  setTimeout(()=>{ MAP.invalidateSize(); mapDraw(true); }, 30);
+}
+function mapBar(){
+  const p=UI.mapPeriod, seg=(k,l)=>`<button aria-pressed="${p===k}" onclick="UI.mapPeriod='${k}';mapBar();mapDraw(true)">${l}</button>`;
+  const names=birdAgg().map(a=>a.ja).sort((a,b)=>a.localeCompare(b,'ja'));
+  if(UI.mapSp && !names.includes(UI.mapSp)) UI.mapSp='';
+  $('#mapBar').innerHTML=`<div class="seg">${seg('today','今日')}${seg('week','1週間')}${seg('all','すべて')}</div>
+    <select onchange="UI.mapSp=this.value;mapDraw(true)" aria-label="鳥で絞り込む"><option value="">すべての鳥</option>${names.map(n=>`<option ${n===UI.mapSp?'selected':''}>${esc(n)}</option>`).join('')}</select>`;
+}
+function mapDets(){
+  const now=Date.now(), today=dayKey(now);
+  return detList().filter(d=>d.lat!=null && d.lng!=null
+    && (!UI.mapSp || d.ja===UI.mapSp)
+    && (UI.mapPeriod==='all' || (UI.mapPeriod==='today' ? dayKey(d.t0)===today : now-d.t0<=7*864e5)));
+}
+function popHtml(d){ return `<div class="pop">${avatar(d.ja,true)}<div style="flex:1"><b>${esc(d.ja)}</b><div class="small muted">${shortDate(d.t0)} ${hm(d.t0)}</div><div>${conf(d)}</div></div>${d.clip?playBtn(d.clip):''}</div>`; }
+function marker(d){
+  return window.L.circleMarker([d.lat,d.lng], { radius:9, color:'#fff', weight:2.5, fillColor:spColor(d.ja), fillOpacity:.95 })
+    .bindPopup(()=>popHtml(d), { closeButton:true, autoPanPadding:[30,80] }).on('popupopen', playMark);
+}
+function mapDraw(fit){
+  if(!MAP) return;
+  MAPLAYER.clearLayers();
+  const ds=mapDets();
+  ds.slice().reverse().forEach(d=>marker(d).addTo(MAPLAYER));
+  const em=$('#mapEmpty');
+  if(!ds.length){
+    em.hidden=false;
+    const anyPos=[...DETS.values()].some(d=>d.lat!=null);
+    em.innerHTML = anyPos ? 'この条件の記録はありません' : 'まだ場所つきの記録がありません<div class="small muted">「きく」で聞くと、聞こえた場所に印が付きます</div>';
+    return;
+  }
+  em.hidden=true;
+  if(fit){ const b=window.L.latLngBounds(ds.map(d=>[d.lat,d.lng])); MAP.fitBounds(b, { padding:[50,50], maxZoom:15 }); }
+}
+function mapLocate(){
+  if(!navigator.geolocation){ toast('位置を使えません'); return; }
+  toast('今いる場所を探しています…', 2000);
+  navigator.geolocation.getCurrentPosition(p=>{ if(MAP) MAP.setView([p.coords.latitude,p.coords.longitude], 15); },
+    ()=>toast('位置を取得できませんでした（位置の使用を許可してください）', 4000), { enableHighAccuracy:true, timeout:15000, maximumAge:30000 });
+}
+function miniMap(ds){
+  if(!window.L || !window.L.map) return;
+  MINI=window.L.map('mini', { zoomControl:false, attributionControl:true, scrollWheelZoom:false });
+  window.L.tileLayer(TILE, { attribution:TILE_ATTR, maxZoom:18 }).addTo(MINI);
+  const pts=ds.filter(d=>d.lat!=null);
+  pts.slice().reverse().forEach(d=>marker(d).addTo(MINI));
+  MINI.fitBounds(window.L.latLngBounds(pts.map(d=>[d.lat,d.lng])), { padding:[30,30], maxZoom:15 });
+}
+function destroyMini(){ if(MINI){ try{ MINI.remove(); }catch(e){} MINI=null; } }
+
+/* ---------- シート ---------- */
+function openSheet(html){
+  const s=$('#sheet');
+  s.innerHTML=`<div class="backdrop" onclick="closeSheet()"></div><div class="panel" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div>`;
+  if(s.hidden){ s.hidden=false; history.pushState(Object.assign({}, history.state||{}, {sheet:1}),''); }
+}
+function closeSheet(fromPop){
+  const s=$('#sheet'); if(s.hidden) return;
+  s.hidden=true; s.innerHTML='';
+  if(!fromPop && history.state && history.state.sheet) history.back();
+}
+window.addEventListener('popstate', e=>{
+  if(!$('#sheet').hidden){ closeSheet(true); playMark(); return; }
+  const day=(e.state&&e.state.day)||null;
+  if(day!==UI.day){ UI.day=day; render(); }
+});
+
+/* ---------- 設定 ---------- */
+function openSettings(){
+  const bytes=CLIP_BYTES, nDet=DETS.size, nClip=[...DETS.values()].filter(d=>d.clip).length;
+  const ai = AI.state==='ready' ? `<div class="setrow"><div class="body"><div class="t">鳴き声AI</div><div class="d">取り込み済み（${MODEL_VER}）。圏外でも使えます</div></div><button class="btn" onclick="aiUninstall()">消す</button></div>`
+    : AI.state==='installing' ? `<div class="setrow"><div class="body"><div class="t">鳴き声AI</div><div class="progress" style="margin-top:8px"><i data-aiprog style="width:${Math.round(AI.progress*100)}%"></i></div></div></div>`
+    : `<div class="setrow"><div class="body"><div class="t">鳴き声AI</div><div class="d">${AI.state==='nosupport'?'この端末では使えません':'まだ取り込んでいません'}</div></div>${AI.state!=='nosupport'?'<button class="btn pri" onclick="closeSheet();aiInstall()">取り込む</button>':''}</div>`;
+  openSheet(`<h2>設定</h2>
+    <h3>聞き方</h3>
+    <div class="card" style="padding:14px 14px 12px">
+      <div class="t" style="font-weight:700;margin-bottom:8px">拾う感度</div>
+      <div class="seg">${Object.entries(SENS).map(([k,v])=>`<button aria-pressed="${CFG.sens===k}" onclick="cfgSet('sens','${k}');openSettings()">${v.label}</button>`).join('')}</div>
+      <div class="small muted" style="margin-top:8px">${SENS[CFG.sens].d}${LS.want?'（いま聞いている分からすぐ効きます）':''}</div>
+    </div>
+    <div class="card" style="margin-top:10px">
+      <div class="setrow"><div class="body"><div class="t">北海道の鳥に絞る</div><div class="d">オフにすると世界の約6,500種から探します（間違いが増えます）</div></div>
+        <button class="sw" role="switch" aria-checked="${CFG.hk}" onclick="cfgSet('hk',${!CFG.hk});openSettings()" aria-label="北海道の鳥に絞る"></button></div>
+      <div class="setrow"><div class="body"><div class="t">声も残す</div><div class="d">よく聞こえた7秒ほどを残します（同じ鳥は1日3件まで）。人の声が入った所は残しません</div></div>
+        <button class="sw" role="switch" aria-checked="${CFG.clips}" onclick="cfgSet('clips',${!CFG.clips});openSettings()" aria-label="声も残す"></button></div>
+    </div>
+    <h3>AI</h3><div class="card">${ai}</div>
+    <h3>記録</h3>
+    <div class="card">
+      <div class="setrow"><div class="body"><div class="t">記録 ${nDet}件 ・ 声 ${nClip}件（${mb(bytes)}）</div><div class="d">この端末の中にだけ保存しています。端末を替える・アプリを消すと記録も消えるため、ときどき書き出してください</div></div></div>
+      <div class="setrow"><div class="body"><div class="t">表に書き出す</div><div class="d">Excel で開ける形（CSV）。日時・鳥・場所など</div></div><button class="btn" onclick="exportCsv()" ${nDet?'':'disabled'}>書き出す</button></div>
+      <div class="setrow"><div class="body"><div class="t">すべての記録を消す</div><div class="d">元に戻せません</div></div><button class="btn danger" onclick="delAll()" ${nDet?'':'disabled'}>消す</button></div>
+    </div>
+    <h3>このアプリについて</h3>
+    <div class="card" style="padding:14px 16px"><div class="credit">
+      こえログ ${APP_VERSION}<br>
+      AIの判定は目安です。めずらしい鳥ほど間違いが多くなります。<br><br>
+      鳴き声AI: <a href="https://birdnet.cornell.edu/" target="_blank" rel="noopener">BirdNET</a>（Cornell Lab of Ornithology / Chemnitz University of Technology）CC BY-SA 4.0<br>
+      判定の処理: BirdNET Live（BirdNET-Team）・birdnet-web（georg95）MIT License<br>
+      TensorFlow.js Apache License 2.0 ／ Leaflet BSD-2-Clause<br>
+      地図: 国土地理院 地理院タイル（淡色地図）
+    </div></div>`);
+}
+async function delAll(){
+  if(!confirm('すべての記録と声を消します。元に戻せません。よろしいですか？')) return;
+  if(!confirm('本当に消しますか？（書き出していない記録は二度と見られません）')) return;
+  if(LS.want) listenStop();
+  playStop();
+  DETS.clear(); SESS.clear(); CLIP_BYTES=0; LS.pending=[];   // 先に手元から外す（書き戻し防止）
+  try{ const d=await db(); const tx=d.transaction(['det','clip','sess'],'readwrite');
+    tx.objectStore('det').clear(); tx.objectStore('clip').clear(); tx.objectStore('sess').clear(); await txDone(tx);
+    toast('すべて消しました'); }
+  catch(e){ toast('消せませんでした'); }
+  closeSheet(); render();
+}
+// 文字の項目: 表計算ソフトが式とみなす先頭（= + - @ タブ 改行。前に空白があっても）なら ' を付けて文字にする（監査 Major2）
+// 数値の項目（typeof number）はそのまま
+function csvCell(v){
+  if(v==null) v='';
+  let t=String(v);
+  if(typeof v==='string' && /^[\s　]*[=+\-@\t\r\n]/.test(t)) t="'"+t;
+  return /[",\r\n]/.test(t) ? '"'+t.replace(/"/g,'""')+'"' : t;
+}
+function isoLocal(ms){ const d=new Date(ms); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`; }
+function exportCsv(){
+  const cols=['日付','聞こえ始め','聞こえ終わり','鳥','学名','AIの判定(%)','目安','回数(3秒区間)','緯度','経度','位置の誤差(m)','名前を直した','AIの判定名','声','AIの版','記録ID'];
+  const rows=detList().slice().reverse().map(d=>[dayKey(d.t0), isoLocal(d.t0).slice(11), isoLocal(d.t1).slice(11), d.ja, d.sci||'', Math.round((d.max||0)*100),
+    d.fixed?'名前を直した':(d.max>=0.7?'ほぼ確実':d.max>=0.4?'たぶん':'かも'), d.count||0,
+    d.lat!=null?Number(d.lat.toFixed(6)):'', d.lng!=null?Number(d.lng.toFixed(6)):'', d.acc!=null?Number(d.acc):'',
+    d.fixed?1:0, d.fixed?d.orig_ja:'', d.clip?'あり':'', d.model||'', d.id]);
+  const body='﻿'+[cols].concat(rows).map(r=>r.map(csvCell).join(',')).join('\r\n');
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([body],{type:'text/csv;charset=utf-8'}));
+  a.download=`こえログ_${dayKey(Date.now())}.csv`; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  toast('書き出しました');
+}
+
+// 種名など外から来た文字は onclick に埋め込まず、data 属性で受け渡す（監査 Major1）
+document.addEventListener('click', e=>{
+  const t=e.target.closest && e.target.closest('[data-act]'); if(!t) return;
+  const a=t.dataset.act, v=t.dataset.v||'', id=t.dataset.id||'';
+  if(a==='species') openSpecies(v);
+  else if(a==='mapfor') mapFor(v);
+  else if(a==='fix') fixApply(id, v);
+});
+
+/* ---------- 起動 ---------- */
+(async function boot(){
+  render();
+  try{ await loadAll(); }catch(e){ console.warn(e); toast('記録を読めませんでした（プライベートブラウズでは使えません）', 7000); }
+  await aiCheck();
+  render();
+  if('serviceWorker' in navigator && location.protocol!=='file:'){ try{ navigator.serviceWorker.register('./sw.js').catch(()=>{}); }catch(e){} }
+})();
+window.addEventListener('pagehide', ()=>{ if(LS.sess){ LS.sess.t1=Date.now(); dbPut('sess', LS.sess).catch(()=>{}); } });
+</script>
+</body>
+</html>

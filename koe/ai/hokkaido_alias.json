@@ -1,0 +1,53 @@
+{
+ "format": "hokkaido-alias",
+ "version": 1,
+ "approved_at": "2026-11-07",
+ "approved_by": "user",
+ "alias": {
+  "BD010": [
+   "Anser cygnoides"
+  ],
+  "BD011": [
+   "Anser serrirostris",
+   "Anser fabalis"
+  ],
+  "BD141": [
+   "Charadrius morinellus"
+  ],
+  "BD227": [
+   "Larus argentatus"
+  ],
+  "BD448": [
+   "Parus minor"
+  ],
+  "BD453": [
+   "Calandrella dukhunensis",
+   "Calandrella brachydactyla"
+  ],
+  "BD479": [
+   "Phylloscopus plumbeitarsus"
+  ],
+  "BD494": [
+   "Helopsaltes certhiola"
+  ],
+  "BD495": [
+   "Helopsaltes ochotensis"
+  ],
+  "BD634": [
+   "Emberiza spodocephala"
+  ]
+ },
+ "extra": [
+  {
+   "id": "BD467",
+   "list_ja": "ヤブサメ",
+   "master_ja": "ヤブサメ",
+   "sci": "Urosphena squameiceps",
+   "birdnet": [
+    "Urosphena squameiceps"
+   ],
+   "reason": "北海道で普通の夏鳥だが、鳥類DBの北海道目録（HOKKAIDO5）に登録が無い。目録外の追加種として扱う（鳥類DBは書き換えない）",
+   "approved_at": "2026-11-07"
+  }
+ ]
+}
